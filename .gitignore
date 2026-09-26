@@ -1,0 +1,30 @@
+# OpenSquawk repos (cloned as submodules, not committed to this repo)
+OpenSquawk/
+OpenSquawk-API/
+OpenSquawk-Bridge/
+
+# Environment files with secrets
+.env
+*.env.local
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# MongoDB data
+storage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
