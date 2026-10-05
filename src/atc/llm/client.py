@@ -20,6 +20,10 @@ import urllib.error
 import urllib.request
 
 
+class DailyQuotaExceeded(RuntimeError):
+    """HTTP 429 for a per-day limit (OpenRouter free tier), as opposed to a short burst limit."""
+
+
 class StubLLM:
     """Canned replies. Good enough to test the loop, the prompt builder and the voice."""
 
@@ -69,6 +73,8 @@ class OpenAICompatLLM:
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:300]
+                if exc.code == 429 and "per-day" in detail:  # daily quota, not a burst: retrying can't help
+                    raise DailyQuotaExceeded(detail) from None
                 if exc.code in (429, 502, 503) and attempt < self.retries:
                     time.sleep(1.0)  # free tiers get rate-limited in bursts
                     continue
@@ -83,9 +89,17 @@ class OpenAICompatLLM:
 
     def complete(self, messages: list[dict]) -> str:
         errors = []
+        free_quota_gone = False
         for model in self.models:
+            if free_quota_gone and model.endswith(":free"):
+                continue  # OpenRouter's daily limit is shared by every :free model
             try:
                 return self._call(model, messages)
+            except DailyQuotaExceeded:
+                free_quota_gone = model.endswith(":free")
+                errors.append(f"{model}: daily quota used up")
+                print(f"[LLM {model}: daily free quota used up (OpenRouter: 50/day, 1000/day after a one-time "
+                      "10 credit top-up); resets 00:00 UTC]")
             except Exception as exc:  # HTTP error, timeout, bad JSON, empty reply -> next model
                 errors.append(f"{model}: {exc}")
                 print(f"[LLM {model} failed, trying next: {str(exc)[:120]}]")

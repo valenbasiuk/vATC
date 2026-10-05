@@ -1,5 +1,8 @@
 # Before you open the IDE: do and check these yourself
 
+> Status 2026-10-05: Parts A, B, C and D1 are done (model chosen, env, own data, AI traffic, airports, Piper voice).
+> Still open: D2 (speech-to-text / push-to-talk). Part E is superseded by `tools/compare_models.py`. See docs/ROADMAP.md.
+
 Everything here needs your PC, your MSFS or your accounts, so I could not do it for you.
 Go in order. Each step says what "good" looks like and what to bring to the IDE session if it isn't.
 Commands are for Windows PowerShell, run from the project folder.

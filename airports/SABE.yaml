@@ -17,12 +17,16 @@ runways:
   surface: PEM
   pattern_alt_agl_ft: 1000
   pattern_direction: left
+  lat: -34.553902
+  lon: -58.425098
 - ident: '31'
   heading_deg: 304.0
   length_ft: 7710.0
   surface: PEM
   pattern_alt_agl_ft: 1000
   pattern_direction: left
+  lat: -34.564499
+  lon: -58.406101
 frequencies:
 - kind: APP
   mhz: 120.6

@@ -55,6 +55,10 @@ class Runway:
     # Pattern rules. None = unknown, needs a human to fill in.
     pattern_alt_agl_ft: int | None = None
     pattern_direction: str | None = None  # "left" | "right"
+    # Threshold position (OurAirports le/he_latitude_deg). None = unknown: sequence.py then assumes the
+    # airport reference point is the runway midpoint, which is only right for single-runway fields.
+    lat: float | None = None
+    lon: float | None = None
 
 
 @dataclass

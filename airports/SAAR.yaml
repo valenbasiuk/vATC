@@ -15,10 +15,14 @@ runways:
   heading_deg: 10.0
   length_ft: 9842.0
   surface: CON
+  lat: -32.9168015
+  lon: -60.7876015
 - ident: '20'
   heading_deg: 190.0
   length_ft: 9842.0
   surface: CON
+  lat: -32.8903008
+  lon: -60.7816010
 frequencies:
 - kind: TWR
   mhz: 118.7

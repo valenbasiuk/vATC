@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import sys
 
-from atc.geo import distance_nm
+from atc.geo import distance_nm, heading_diff
 from atc.models import OwnState, Traffic
 
 
@@ -28,6 +28,7 @@ class SimConnectSource:
         self._sm = SimConnect(library_path=library_path) if library_path else SimConnect()
         self._ai = None
         self._ai_failed = False
+        self._own_object_id: int | None = None
         self._aq = AircraftRequests(self._sm, _time=500)
         self._callsign = callsign
 
@@ -81,10 +82,14 @@ class SimConnectSource:
             reach_m = int((radius_nm + distance_nm(own.lat, own.lon, center_lat, center_lon)) * 1852)
             out = []
             for rec in self._ai.read(reach_m):
-                if abs(rec.lat - own.lat) < 1e-4 and abs(rec.lon - own.lon) < 1e-4:
-                    continue  # confirmed: the user's own aircraft IS in the list (KJFK probe); position match drops it
-                    # TODO: while taxiing/flying the two reads are ~ms apart and the match is ~11 m; if you
-                    # ever see yourself as traffic, filter by object id/callsign instead.
+                # Confirmed: the user's own aircraft IS in the list (KJFK probe). Drop it by object id once
+                # known; learn the id from a position match. The own read can be up to 500 ms old
+                # (AircraftRequests cache), so the match allows for 1 s of travel at the current speed.
+                if rec.object_id == self._own_object_id:
+                    continue
+                if self._own_object_id is None and _is_own(rec, own):
+                    self._own_object_id = rec.object_id
+                    continue
                 t = to_traffic(rec)
                 if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm:
                     out.append(t)
@@ -98,3 +103,13 @@ class SimConnectSource:
         if self._ai is not None:
             self._ai.close()
         self._sm.exit()
+
+
+def _is_own(rec, own: OwnState) -> bool:
+    """AI record that is really the user's aircraft: same place (within 1 s of travel), level and heading."""
+    tol_nm = 0.01 + max(own.gs_kt, 0.0) / 3600.0
+    return (
+        distance_nm(rec.lat, rec.lon, own.lat, own.lon) <= tol_nm
+        and abs(rec.alt_ft - own.alt_msl_ft) < 150
+        and heading_diff(rec.heading_deg, own.heading_deg) < 15
+    )

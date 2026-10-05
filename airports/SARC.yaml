@@ -10,18 +10,22 @@ country: AR
 towered: true
 language: en
 runways:
-- ident: '2'
+- ident: '02'
   heading_deg: 8.0
   length_ft: 6890.0
   surface: CON
   pattern_alt_agl_ft: 1000
   pattern_direction: left
+  lat: -27.4547996
+  lon: -58.7633018
 - ident: '20'
   heading_deg: 188.0
   length_ft: 6890.0
   surface: CON
   pattern_alt_agl_ft: 1000
   pattern_direction: left
+  lat: -27.4361992
+  lon: -58.7603989
 frequencies:
 - kind: TWR
   mhz: 118.3

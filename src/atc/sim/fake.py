@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 from atc.geo import distance_nm
@@ -55,6 +56,30 @@ class FakeSim:
             alt_msl_ft=self._airport.elevation_ft + agl_ft,
             gs_kt=gs_kt,
         )
+
+    def add_on_final(self, nm: float, callsign: str = "AI001", runway: str | None = None) -> None:
+        """AI arrival on a 3-degree final, `nm` from the threshold (runway in use if not given)."""
+        from atc.runway import runway_in_use
+        from atc.sequence import threshold
+
+        rwy = next((r for r in self._airport.runways if r.ident == runway), None) or runway_in_use(
+            self._airport, self._own.wind_dir_deg, self._own.wind_kt)
+        tlat, tlon = threshold(self._airport, rwy)
+        h = math.radians(rwy.heading_deg)
+        lat = tlat - nm * math.cos(h) / 60.0
+        lon = tlon - nm * math.sin(h) / (60.0 * math.cos(math.radians(tlat)))
+        alt = self._airport.elevation_ft + 50 + nm * 318  # 318 ft per NM = 3 degrees
+        self.add_traffic(Traffic(callsign, lat, lon, alt, 140.0, rwy.heading_deg, False))
+
+    def add_on_runway(self, callsign: str = "AI002", runway: str | None = None) -> None:
+        """AI aircraft lined up on the runway threshold."""
+        from atc.runway import runway_in_use
+        from atc.sequence import threshold
+
+        rwy = next((r for r in self._airport.runways if r.ident == runway), None) or runway_in_use(
+            self._airport, self._own.wind_dir_deg, self._own.wind_kt)
+        lat, lon = threshold(self._airport, rwy)
+        self.add_traffic(Traffic(callsign, lat, lon, self._airport.elevation_ft, 0.0, rwy.heading_deg, True))
 
     def set_on_ground(self) -> None:
         self.update(

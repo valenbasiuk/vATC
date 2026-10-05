@@ -30,6 +30,10 @@ using a frequency from CONTEXT.
 A readback or an acknowledgement ("roger", "wilco") needs no new instruction.
 7. Wind, altimeter/QNH and the runway in use appear in CONTEXT only when they are known. State only \
 what is given there. If wind or altimeter is missing, do not state or invent it.
+8. Traffic information is given from the pilot's point of view, using the "from the pilot" values in CONTEXT: \
+clock position, distance, direction of flight and level (e.g. "traffic, two o'clock, three miles, northwest bound, \
+one thousand feet below"). Never state an aircraft type, airline or intention that CONTEXT does not give.
+9. If CONTEXT has a RUNWAY STATUS block, it decides who may take off or land. Follow it exactly.
 
 AIRPORT
 {airport_block}
@@ -96,8 +100,10 @@ def build_context(
     spoken_callsign: str | None = None,
     role: str | None = None,
     first_contact: bool | None = None,
+    preferred_runway: str | None = None,
 ) -> str:
-    """Live state block, rebuilt every turn and prepended to the pilot's transmission."""
+    """Live state block, rebuilt every turn and prepended to the pilot's transmission.
+    `preferred_runway`: the flight plan's departure runway (see runway.runway_in_use)."""
     d = distance_nm(own.lat, own.lon, airport.lat, airport.lon)
     brg = bearing_deg(airport.lat, airport.lon, own.lat, own.lon)
     lines = [
@@ -115,24 +121,37 @@ def build_context(
     if first_contact is not None:
         lines.append("This is your first contact with this pilot: say your station name once." if first_contact
                      else "Not first contact: do not say your station name.")
-    lines += _weather_lines(own, airport)
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt)
+    lines += _weather_lines(own, airport, preferred_runway)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway)
     if role == "ground" and rwy is not None and own.on_ground:
         route = airport.taxi_routes.get(rwy.ident)
         lines.append(f"TAXI ROUTE to runway {rwy.ident} (from the charts, treat as fact): {route}" if route
                      else "No taxi route on file: give the taxi clearance without naming any taxiway.")
-    lines.append("Nearby traffic:")
+    lines.append("Nearby traffic (aircraft type unknown):")
     if not traffic:
         lines.append("  none reported")
     for t in sorted(traffic, key=lambda t: distance_nm(airport.lat, airport.lon, t.lat, t.lon))[:8]:
         td = distance_nm(airport.lat, airport.lon, t.lat, t.lon)
         tb = bearing_deg(airport.lat, airport.lon, t.lat, t.lon)
-        state = "on ground" if t.on_ground else f"{t.alt_msl_ft:.0f} ft MSL"
-        lines.append(f"  {t.callsign}: {td:.1f} NM {compass_point(tb)} of airport, {state}, {t.gs_kt:.0f} kt")
+        state = "on ground" if t.on_ground else f"{t.alt_msl_ft:.0f} ft MSL, {compass_point(t.heading_deg)} bound"
+        lines.append(f"  {t.callsign}: {td:.1f} NM {compass_point(tb)} of airport, {state}, {t.gs_kt:.0f} kt; "
+                     f"from the pilot: {_relative(own, t)}")
     return "\n".join(lines)
 
 
-def _weather_lines(own: OwnState, airport: Airport) -> list[str]:
+def _relative(own: OwnState, t: Traffic) -> str:
+    """Traffic as a controller tells it to this pilot: clock position, distance, level difference."""
+    d = distance_nm(own.lat, own.lon, t.lat, t.lon)
+    rel = (bearing_deg(own.lat, own.lon, t.lat, t.lon) - own.heading_deg) % 360
+    clock = round(rel / 30) % 12 or 12
+    out = f"{clock} o'clock, {d:.1f} NM"
+    if not (own.on_ground and t.on_ground):
+        dalt = t.alt_msl_ft - own.alt_msl_ft
+        out += ", same level" if abs(dalt) < 300 else f", {abs(dalt):.0f} ft {'above' if dalt > 0 else 'below'}"
+    return out
+
+
+def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None = None) -> list[str]:
     out: list[str] = []
     if own.wind_dir_deg is not None and own.wind_kt is not None:
         if own.wind_kt <= 3:
@@ -148,7 +167,7 @@ def _weather_lines(own: OwnState, airport: Airport) -> list[str]:
             out.append(f"QNH: {own.qnh_hpa:.0f} hectopascals")
     else:
         out.append('Altimeter/QNH: NOT AVAILABLE (if asked, reply "altimeter not available"; never state one)')
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway)
     if rwy is not None:
         out.append(f"Runway in use (computed from wind, treat as fact): {rwy.ident}")
     return out

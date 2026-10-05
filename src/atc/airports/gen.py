@@ -77,6 +77,8 @@ def build_airport(icao: str, data_dir: Path) -> Airport:
                     # Safe default only for the US. Everywhere else: left empty on purpose.
                     pattern_alt_agl_ft=1000 if is_us else None,
                     pattern_direction="left" if is_us else None,
+                    lat=_float(r.get(f"{end}_latitude_deg", "")),
+                    lon=_float(r.get(f"{end}_longitude_deg", "")),
                 )
             )
 

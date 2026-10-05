@@ -47,6 +47,20 @@ def procedure(name: str) -> str:
 
 
 def callsign(telephony: str | None, icao_callsign: str) -> str:
-    """('Martinair', 'MAR4133') -> 'Martinair four one three three'. Without telephony, spell it."""
+    """('Martinair', 'MAR4133') -> 'Martinair four one three three'. Without telephony, spell it:
+    'LV-ABC' -> 'Lima Victor Alfa Bravo Charlie', 'N123AB' -> 'November one two three Alfa Bravo'."""
     num = "".join(c for c in icao_callsign if c.isdigit())
-    return f"{telephony} {digits(num)}" if telephony and num else icao_callsign
+    if telephony and num:
+        return f"{telephony} {digits(num)}"
+    return spell(icao_callsign)
+
+
+def spell(text: str) -> str:
+    """Letters in the ICAO alphabet, digits one by one; everything else dropped."""
+    out = []
+    for c in text.upper():
+        if c.isdigit():
+            out.append(_DIGIT_WORDS[int(c)])
+        elif c in _NATO:
+            out.append(_NATO[c].title())
+    return " ".join(out)

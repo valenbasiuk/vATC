@@ -41,9 +41,15 @@ def issuing_role(airport: Airport) -> str:
 
 
 def _compact(text: str) -> str:
-    """Normalized text with digit groups joined: 'one two zero decimal six' -> '1206', '120.600' -> '120600'."""
-    t = _normalize(text)
-    return re.sub(r"(?<=\d) (?:(?:decimal|point) )?(?=\d)", "", t)
+    """Normalized text with digit groups joined: 'one two zero decimal six' -> '1206', '120.600' -> '120600'.
+    A comma ends a number, so 'flight level 200, 120.6' stays '200 1206' (not '2001206')."""
+    return " ".join(
+        re.sub(r"(?<=\d) (?:(?:decimal|point) )?(?=\d)", "", _normalize(part)) for part in re.split(r"[,;]", text)
+    )
+
+
+# What speech-to-text writes for a spoken single digit in a SID name ("ATOVO four bravo" -> "Atovil for Bravo").
+_DIGIT_SOUNDALIKES = {"1": "won", "2": "to|too", "4": "for", "8": "ate"}
 
 
 def items(session: Session, airport: Airport, dest_name: str) -> list[Item]:
@@ -65,7 +71,8 @@ def items(session: Session, airport: Airport, dest_name: str) -> list[Item]:
         spoken = f"{phrase.procedure(plan.sid)} departure"
         if plan.sid_transition and plan.sid_transition != base:
             spoken += f", {plan.sid_transition} transition"
-        pat = rf"{base[:4].lower()}\w*\s*{num}" + (rf"\s*(?:{letter.lower()}|{nato})\b" if letter else "")
+        num_pat = f"(?:{num}|{_DIGIT_SOUNDALIKES[num]})" if num in _DIGIT_SOUNDALIKES else num
+        pat = rf"{base[:4].lower()}\w*\s*{num_pat}" + (rf"\s*(?:{letter.lower()}|{nato})\b" if letter else "")
         out.append(Item("SID", spoken, pat))
     out.append(Item("route", "flight planned route", "", required=False))
     if plan.cruise_ft:
@@ -96,7 +103,11 @@ def handle_clearance(
     who = issuing_role(airport)
     norm = _normalize(pilot_text)
 
-    if session.clearance in ("none", "standby") and is_clearance_request(pilot_text):
+    # On a dedicated Delivery position with the plan on file, any call (radio checks and questions aside) is
+    # the clearance request: real Delivery just reads it out, and a speech-to-text slip mustn't lose it.
+    any_call_is_request = (who == "clearance" and facility.role == who and session.clearance == "none"
+                           and "radio check" not in norm and "?" not in pilot_text)
+    if session.clearance in ("none", "standby") and (is_clearance_request(pilot_text) or any_call_is_request):
         if facility.role != who:  # asked the wrong position: send them to the right one
             f = _freq(airport, {"clearance": "CLD", "ground": "GND", "tower": "TWR"}[who])
             name = {"clearance": "Delivery", "ground": "Ground", "tower": "Tower"}[who]
@@ -188,6 +199,10 @@ def context_lines(session: Session, airport: Airport, facility: Facility) -> lis
         if facility.role != who:
             lines.append(f"  IFR clearance NOT yet issued. Only {who} issues it. If the pilot asks for push, start "
                          f"or taxi, tell them to get their clearance from {who} first.")
+        else:  # the request reached the model, so software didn't recognise it (often a speech-to-text slip)
+            lines.append("  IFR clearance NOT yet issued. Software issues it when the pilot asks for it clearly. "
+                         "Never give a clearance, route, level or squawk yourself: if the pilot seems to want "
+                         "it, reply '<callsign>, say again'.")
     else:
         lines.append(f"  IFR clearance issued ({'read back correctly' if session.clearance == 'confirmed' else 'readback pending'}): "
                      f"{session.clearance_text}. Never repeat or change it.")

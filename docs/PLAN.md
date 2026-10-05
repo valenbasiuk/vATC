@@ -99,4 +99,6 @@ atc/
 3. `airports/gen.py` for SARC, then SABE, then one US airport.
 
 ---
-Status note (added with the skeleton): see docs/ROADMAP.md for the ordered work and docs/PRE_IDE_CHECKLIST.md for what to verify on the PC first.
+Status note (2026-10-05): this is the original plan. Phases 0-2 are done, Phase 3 is partly done (Piper works; STT/PTT
+not reported yet), and Phase 4 has real LLM calls plus a code-driven IFR departure flow at SABE. Live status per item is in
+docs/ROADMAP.md.
