@@ -1,0 +1,4 @@
+id,ident,type,name,latitude_deg,longitude_deg,elevation_ft,continent,iso_country,iso_region,municipality,scheduled_service,gps_code,icao_code,iata_code,local_code,home_link,wikipedia_link,keywords
+1,KTST,small_airport,Testfield Municipal Airport,40.0,-100.0,1000,NA,US,US-NE,Testville,no,KTST,KTST,,TST,,,
+2,SATS,medium_airport,Synthetic Sur International Airport,-30.0,-60.0,200,SA,AR,AR-S,Ciudad Sintetica,yes,SATS,SATS,,,,,
+3,KNTW,small_airport,Notower Field,41.0,-101.0,1500,NA,US,US-NE,Nowhere,no,KNTW,KNTW,,NTW,,,

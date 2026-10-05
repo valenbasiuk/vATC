@@ -1,0 +1,5 @@
+id,airport_ref,airport_ident,length_ft,width_ft,surface,lighted,closed,le_ident,le_latitude_deg,le_longitude_deg,le_elevation_ft,le_heading_degT,le_displaced_threshold_ft,he_ident,he_latitude_deg,he_longitude_deg,he_elevation_ft,he_heading_degT,he_displaced_threshold_ft
+1,1,KTST,6000,100,ASP,1,0,09,,,,90,,27,,,,270,
+2,1,KTST,3000,75,ASP,1,1,18,,,,180,,36,,,,360,
+3,2,SATS,8000,150,ASP,1,0,03,,,,30,,21,,,,210,
+4,3,KNTW,2500,60,TURF,0,0,14,,,,140,,32,,,,320,

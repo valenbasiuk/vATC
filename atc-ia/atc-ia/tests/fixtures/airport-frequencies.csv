@@ -1,0 +1,7 @@
+id,airport_ref,airport_ident,type,description,frequency_mhz
+1,1,KTST,TWR,Testfield Tower,118.1
+2,1,KTST,GND,Testfield Ground,121.7
+3,1,KTST,ATIS,Testfield ATIS,127.25
+4,2,SATS,TWR,Sintetica Torre,118.3
+5,2,SATS,GND,Sintetica Superficie,121.9
+6,3,KNTW,CTAF,,122.8

@@ -1,0 +1,6 @@
+name: ATIS frequency - nobody answers a transmission
+airport: KTST
+setup: {freq: 127.25}
+turns:
+  - say: "Testfield ATIS, N123AB"
+    expect_silence: true

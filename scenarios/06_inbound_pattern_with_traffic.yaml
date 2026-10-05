@@ -1,0 +1,18 @@
+name: Tower - inbound call with traffic on final, no invented traffic
+airport: KTST
+setup:
+  freq: 118.1
+  airborne: true
+  agl_ft: 2500
+  wind: [90, 6, 1013]
+  traffic:
+    - {callsign: N777XY, dlat: 0.0, dlon: -0.03, alt_msl_ft: 1600, gs_kt: 80, heading_deg: 90}
+turns:
+  - say: "Testfield Tower, N123AB, ten miles west, two thousand five hundred, inbound for landing with information Alpha"
+    must_contain_any: ["runway 09", "runway 9", "runway zero niner", "enter", "report", "pattern", "number"]
+    must_not_contain: ["N999", "runway 36"]
+    max_words: 55
+  - say: "Report downwind, N123AB"
+    freq: 118.1
+    must_not_contain: ["N999"]
+    max_words: 40

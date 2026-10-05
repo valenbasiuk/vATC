@@ -1,0 +1,16 @@
+# SEED ONLY. Coordinates and elevation are approximate and written from memory.
+# On your PC:  atc-gen --download   then   atc-gen SABE --force
+icao: SABE
+name: Aeroparque Jorge Newbery
+lat: -34.559
+lon: -58.416
+elevation_ft: 18
+country: AR
+towered: true
+language: en   # switch to es when a Spanish voice exists
+runways: []
+frequencies: []
+notes:
+  - "Home airport. Busy airspace with real local procedures (noise abatement, river approaches, visual reporting points). Needs a careful manual pass from the AIP charts."
+  - "Non-US: pattern altitude and direction must be filled by hand."
+needs_review: true

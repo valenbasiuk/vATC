@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atc-ia"
+version = "0.1.0"
+description = "Personal AI ATC for MSFS 2024 (SimConnect + local STT/TTS + small LLM)"
+requires-python = ">=3.11"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+# Real sim link. Needs 64-bit Python on Windows. Unverified against MSFS 2024, see docs/OPEN_QUESTIONS.md
+sim = ["SimConnect"]
+# Voice loop
+audio = ["numpy", "sounddevice", "faster-whisper", "piper-tts", "pynput"]
+dev = ["pytest"]
+
+[project.scripts]
+atc = "atc.main:main"
+atc-gen = "atc.airports.gen:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
