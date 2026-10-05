@@ -17,6 +17,7 @@ from atc.facility import resolve_facility
 from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
 from atc.models import Airport
+from atc.readback import check_readback
 from atc.sim.base import SimSource
 
 TRAFFIC_RADIUS_NM = 15.0
@@ -33,10 +34,24 @@ def handle(airport: Airport, sim: SimSource, llm, speaker, history: list, pilot_
         print(f"[{facility.role} on {own.com1_mhz:.3f}: nobody answers here]")
         return None
 
+    rb = check_readback(history[-1][1] if history else None, pilot_text)
+    if rb.status == "correct":  # decided by code, no LLM call: instant and free
+        reply = f"{own.callsign}, readback correct."
+        history.append((pilot_text, reply))
+        speaker.say(reply)
+        return reply
+
     traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
+    context = build_context(own, traffic, airport)
+    if rb.status == "incomplete":
+        context += (
+            "\nREADBACK CHECK (computed by code, treat as fact): the pilot's readback of your previous "
+            f"instruction is wrong or incomplete, missing: {', '.join(rb.missing)}. Repeat the instruction "
+            "and ask for a correct readback."
+        )
     messages = build_messages(
         build_system_prompt(airport, facility),
-        build_context(own, traffic, airport),
+        context,
         history,
         pilot_text,
     )

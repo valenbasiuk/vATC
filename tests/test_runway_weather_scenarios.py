@@ -46,7 +46,9 @@ def test_no_runway_headings_means_no_decision():
 def test_context_includes_weather_only_when_known():
     a = build_airport("KTST", FIX)
     sim = FakeSim(a)
-    assert "Wind:" not in build_context(sim.own(), [], a)  # unknown -> not stated
+    unknown = build_context(sim.own(), [], a)
+    assert "Wind: NOT AVAILABLE" in unknown and "degrees at" not in unknown  # unknown -> explicit, no value
+    assert "Altimeter/QNH: NOT AVAILABLE" in unknown and "inches" not in unknown
     sim.update(wind_dir_deg=270, wind_kt=10, qnh_hpa=1013.25)
     ctx = build_context(sim.own(), [], a)
     assert "Wind: 270 degrees at 10 knots" in ctx

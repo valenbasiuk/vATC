@@ -4,6 +4,7 @@ Ollama...) plus an offline stub so the loop works with no key at all.
 Config comes from env vars:
     ATC_LLM_BASE_URL   e.g. https://openrouter.ai/api/v1   (empty -> stub mode)
     ATC_LLM_API_KEY
+    ATC_LLM_TIMEOUT_S  per-attempt timeout, default 10
     ATC_LLM_MODEL      e.g. a free OpenRouter model while developing, Claude Haiku 4.5 later;
                        comma-separated list = fallback order (first that answers wins)
 """
@@ -115,4 +116,5 @@ def make_llm():
         base_url=base,
         api_key=os.environ.get("ATC_LLM_API_KEY", ""),
         model=os.environ.get("ATC_LLM_MODEL", ""),
+        timeout_s=float(os.environ.get("ATC_LLM_TIMEOUT_S", "10")),  # raise for a local model's cold load
     )

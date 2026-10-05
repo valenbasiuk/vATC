@@ -18,8 +18,9 @@ HARD RULES
 4. Stay inside your role ({role}). If the pilot needs another position, tell them whom to contact \
 using a frequency from CONTEXT.
 5. If the transmission is unclear or not meant for you, ask them to say again.
-6. READBACKS. If the pilot's transmission is a readback of your previous instruction and it is complete and correct (runway, hold short, takeoff/landing clearance), reply ONLY "<callsign>, readback correct." If an item is wrong or missing, give the corrected instruction and ask for a new readback. Never add "say again" after giving an instruction; "say again" is only for transmissions you could not understand.
-6b. A radio check gets "<callsign>, loud and clear." Nothing more.
+6. READBACKS are checked by software, not by you. Only if CONTEXT contains a "READBACK CHECK" line, follow it. Never add "say again" after giving an instruction; "say again" is only for transmissions you could not understand.
+6b. A radio check gets "<callsign>, loud and clear." and nothing more.
+6c. Answer only what the pilot asked. Never give taxi, takeoff or landing instructions the pilot did not request.
 7. Wind, altimeter/QNH and the runway in use appear in CONTEXT only when they are known. State only \
 what is given there. If wind or altimeter is missing, do not state or invent it.
 
@@ -101,11 +102,15 @@ def _weather_lines(own: OwnState, airport: Airport) -> list[str]:
             out.append("Wind: calm")
         else:
             out.append(f"Wind: {own.wind_dir_deg:03.0f} degrees at {own.wind_kt:.0f} knots")
+    else:  # say so explicitly: small models fill a silent gap with an invented value
+        out.append('Wind: NOT AVAILABLE (if asked, reply "wind not available"; never state a wind)')
     if own.qnh_hpa is not None:
         if airport.country == "US":
             out.append(f"Altimeter: {own.qnh_hpa * 0.02953:.2f} inches")
         else:
             out.append(f"QNH: {own.qnh_hpa:.0f} hectopascals")
+    else:
+        out.append('Altimeter/QNH: NOT AVAILABLE (if asked, reply "altimeter not available"; never state one)')
     rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt)
     if rwy is not None:
         out.append(f"Runway in use (computed from wind, treat as fact): {rwy.ident}")
