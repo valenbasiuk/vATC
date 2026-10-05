@@ -11,6 +11,7 @@ kept in memory, which matters for latency (no process spawn per reply).
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +40,7 @@ class PiperTTS:
         self.radio_fx = radio_fx
         self.lead_pad_s = lead_pad_s
         self.tail_pad_s = tail_pad_s
+        self.last_synth_s: float | None = None
         self.length_scale = length_scale  # < 1.0 speaks faster (controllers talk fast)
 
     def synthesize(self, text: str):
@@ -67,11 +69,13 @@ class PiperTTS:
         from atc.audio.radio_fx import apply_radio_fx
 
         print(f"ATC> {text}")
+        t0 = time.perf_counter()
         samples, rate = self.synthesize(text)
         if len(samples) == 0:
             return
         if self.radio_fx:
             samples = apply_radio_fx(samples, rate)
+        self.last_synth_s = time.perf_counter() - t0  # synth + fx = delay before audio starts
         import numpy as np  # type: ignore
 
         # Silence padding: the output device often clips the last ~100-300 ms ("takeo..") and the first word.

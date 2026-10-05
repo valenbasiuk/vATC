@@ -24,6 +24,10 @@ src/atc/geo.py           distance / bearing helpers
 src/atc/runway.py        runway in use from wind (headwind, calm -> longest)
 src/atc/facility.py      COM1 frequency -> which controller answers (None / ATIS / CTAF = silent)
 src/atc/main.py          handle() = one transmission -> one reply; text REPL around it
+src/atc/flightplan.py    SimBrief OFP json -> FlightPlan, squawk assigned by code
+src/atc/session.py       per-flight state: telephony ("Martinair"), clearance state
+src/atc/clearance.py     IFR clearance issued + readback-checked by code, push/start
+src/atc/phrase.py        ICAO pronunciation (digits, "decimal", flight levels, SID names)
 src/atc/scenarios.py     scripted scenario replay with content checks (python -m atc.scenarios)
 src/atc/sim/             base.py (interface), fake.py (works), simconnect_source.py (own aircraft, UNTESTED),
                          ai_traffic.py (raw ctypes AI traffic, parsing tested, DLL calls UNTESTED)

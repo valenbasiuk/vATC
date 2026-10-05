@@ -3,6 +3,7 @@
 # then set needs_review: false.
 icao: SABE
 name: Aeroparque Jorge Newbery
+spoken_name: Aeroparque
 lat: -34.559419
 lon: -58.415536
 elevation_ft: 18.0
@@ -38,6 +39,12 @@ frequencies:
 - kind: TWR
   mhz: 118.85
   description: TWR
+# Taxi route from the main apron to each runway, copied from the AD chart (ANAC AIP). Until filled,
+# Ground gives taxi clearances without naming taxiways. Example format:
+# taxi_routes:
+#   '13': via Alfa, Bravo
+#   '31': via Charlie
+taxi_routes: {}
 notes:
 - Home airport. Busy airspace with real local procedures (noise abatement, river approaches,
   visual reporting points). Needs a careful manual pass from the AIP charts.

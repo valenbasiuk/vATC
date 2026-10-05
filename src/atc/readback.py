@@ -46,13 +46,32 @@ def _items(text: str) -> dict[str, str | bool]:
     rwy = _runway(t)
     if rwy:
         items["runway"] = rwy
-    if "hold short" in t or "holding short" in t:
+    if "hold short" in t or "holding short" in t or "holding point" in t:  # FAA / ICAO
         items["hold short"] = True
     if "cleared for takeoff" in t or "cleared takeoff" in t:
         items["cleared for takeoff"] = True
     if "cleared to land" in t:
         items["cleared to land"] = True
     return items
+
+
+_ACK_WORDS = ("roger", "wilco", "copied", "copy", "standing by", "will call", "good day", "thank")
+
+
+def is_acknowledgement(last_atc: str | None, pilot_text: str, ignore: tuple[str, ...] = ()) -> bool:
+    """'Roger', 'wilco', or a readback that only repeats words of the last instruction (no request in it).
+    A real controller does not answer these, so code keeps the frequency quiet. `ignore`: callsign words."""
+    if not last_atc:
+        return False
+    t = _normalize(pilot_text)
+    if any(w in t for w in _REQUEST_WORDS) or "?" in pilot_text:
+        return False
+    if any(w in t for w in _ACK_WORDS):
+        return True
+    said = set(_normalize(last_atc).split())
+    skip = {w.lower() for w in ignore}
+    words = [w for w in t.split() if not w.isdigit() and len(w) > 2 and w not in skip]
+    return bool(words) and sum(w in said for w in words) / len(words) >= 0.7
 
 
 def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:

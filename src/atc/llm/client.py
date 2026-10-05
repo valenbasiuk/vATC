@@ -1,5 +1,6 @@
 """LLM client: OpenAI-compatible chat endpoint (OpenRouter, Anthropic compat, Google AI Studio compat,
-Ollama...) plus an offline stub so the loop works with no key at all.
+NVIDIA NIM...) plus an offline stub so the loop works with no key at all.
+A local model (Ollama) was tried and dropped: it made MSFS stutter and was too slow to answer.
 
 Config comes from env vars:
     ATC_LLM_BASE_URL   e.g. https://openrouter.ai/api/v1   (empty -> stub mode)
@@ -49,15 +50,13 @@ class OpenAICompatLLM:
         return ", ".join(self.models)
 
     def _call(self, model: str, messages: list[dict]) -> str:
-        body = json.dumps(
-            {
-                "model": model,
-                "messages": messages,
-                "max_tokens": 120,
-                "temperature": 0.3,
-                "reasoning": {"enabled": False},  # OpenRouter: no thinking tokens (latency); ignored if unsupported
-            }
-        ).encode()
+        payload = {"model": model, "messages": messages, "max_tokens": 120, "temperature": 0.3}
+        # No thinking tokens (latency). Each provider spells it differently and rejects the others' field (HTTP 400).
+        if "openrouter" in self.url:
+            payload["reasoning"] = {"enabled": False}
+        elif "googleapis" in self.url:
+            payload["reasoning_effort"] = "none"
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             self.url,
             data=body,
@@ -116,5 +115,5 @@ def make_llm():
         base_url=base,
         api_key=os.environ.get("ATC_LLM_API_KEY", ""),
         model=os.environ.get("ATC_LLM_MODEL", ""),
-        timeout_s=float(os.environ.get("ATC_LLM_TIMEOUT_S", "10")),  # raise for a local model's cold load
+        timeout_s=float(os.environ.get("ATC_LLM_TIMEOUT_S", "10")),
     )

@@ -58,7 +58,7 @@ def _check(turn: dict, reply: str | None) -> list[str]:
             fails.append(f"expected silence, got: {reply!r}")
         return fails
     if reply is None:
-        return ["expected a reply, got silence"]
+        return [] if turn.get("silence_ok") else ["expected a reply, got silence"]
     low = reply.lower()
     any_of = [s.lower() for s in turn.get("must_contain_any", [])]
     if any_of and not any(s in low for s in any_of):

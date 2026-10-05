@@ -13,14 +13,21 @@ on {freq:.3f} MHz as the {role} position.
 
 HARD RULES
 1. Reply with ONLY the words to be spoken on the radio. No markdown, no quotes, no explanations.
-2. Use standard {phraseology} phraseology. Be brief: one to three short sentences.
-3. Use ONLY the runways, frequencies and traffic listed under CONTEXT. NO taxiway, gate, stand, ramp or hold-point data is on file: never name any taxiway ("Alpha"), gate or intersection, and never mention a runway other than the one the pilot is going to. Taxi clearances are only "taxi to runway X, hold short" using the runway in use. Never invent wind, altimeter, frequencies or traffic. If a value you would need is missing, say "unable" instead of guessing.
+2. Use standard {phraseology} phraseology. Be brief: one to three short sentences. Start every reply with the \
+pilot's spoken callsign exactly as CONTEXT gives it. Say your own station name only when CONTEXT says "first contact".
+2b. Say numbers the way they are said on the radio: {number_rule}
+2c. Never say "standby" and never promise to call back: answer the request now, or say "unable".
+3. Use ONLY the runways, frequencies, taxi routes and traffic listed under CONTEXT. Name taxiways only if CONTEXT \
+has a TAXI ROUTE line, and then exactly as given; never invent a taxiway, gate or intersection. Never mention a \
+runway other than the one the pilot is going to. Taxi clearance form: {taxi_form}. Never invent wind, altimeter, \
+frequencies or traffic. If a value you would need is missing, say "unable" instead of guessing.
 4. Stay inside your role ({role}). If the pilot needs another position, tell them whom to contact \
 using a frequency from CONTEXT.
 5. If the transmission is unclear or not meant for you, ask them to say again.
-6. READBACKS are checked by software, not by you. Only if CONTEXT contains a "READBACK CHECK" line, follow it. Never add "say again" after giving an instruction; "say again" is only for transmissions you could not understand.
+6. READBACKS are checked and answered by software, not by you: never say "readback correct" and never ask for a readback. Never add "say again" after giving an instruction; "say again" is only for transmissions you could not understand.
 6b. A radio check gets "<callsign>, loud and clear." and nothing more.
-6c. Answer only what the pilot asked. Never give taxi, takeoff or landing instructions the pilot did not request.
+6c. Answer only what the pilot asked. Never give taxi, takeoff or landing instructions the pilot did not request. \
+A readback or an acknowledgement ("roger", "wilco") needs no new instruction.
 7. Wind, altimeter/QNH and the runway in use appear in CONTEXT only when they are known. State only \
 what is given there. If wind or altimeter is missing, do not state or invent it.
 
@@ -45,11 +52,25 @@ def build_system_prompt(airport: Airport, facility: Facility) -> str:
         f"Frequencies: {describe_frequencies(airport.frequencies)}"
     )
     notes = "\n".join(f"- {n}" for n in airport.notes) or "- none"
+    faa = phraseology_for(airport) == "FAA"
     return SYSTEM_TEMPLATE.format(
         facility_name=callsign_for(airport, facility),
         freq=facility.freq.mhz,
         role=facility.role,
         phraseology=phraseology_for(airport),
+        number_rule=(
+            "digit by digit, 9 as 'niner'. Frequencies with '" + ("point" if faa else "decimal") + "' "
+            "(121.9 = 'one two one " + ("point" if faa else "decimal") + " niner'), flight levels digit by digit "
+            "('flight level two zero zero'), "
+            + ("altimeter digit by digit ('altimeter two niner niner two')" if faa else "QNH digit by digit ('QNH one zero two zero')")
+            + ", runways digit by digit ('runway one three')."
+        ),
+        taxi_form=(
+            "'runway X, taxi via <TAXI ROUTE>' (without a route: 'runway X, taxi')"
+            if faa
+            else "'taxi to holding point runway X via <TAXI ROUTE>, QNH <QNH>' (without a route: 'taxi to holding "
+            "point runway X, QNH <QNH>'; leave out QNH if it is not available)"
+        ),
         airport_block=airport_block,
         notes=notes,
     )
@@ -68,13 +89,21 @@ def _runway_line(r) -> str:
     return ", ".join(bits)
 
 
-def build_context(own: OwnState, traffic: list[Traffic], airport: Airport) -> str:
+def build_context(
+    own: OwnState,
+    traffic: list[Traffic],
+    airport: Airport,
+    spoken_callsign: str | None = None,
+    role: str | None = None,
+    first_contact: bool | None = None,
+) -> str:
     """Live state block, rebuilt every turn and prepended to the pilot's transmission."""
     d = distance_nm(own.lat, own.lon, airport.lat, airport.lon)
     brg = bearing_deg(airport.lat, airport.lon, own.lat, own.lon)
     lines = [
         "CONTEXT (live)",
-        f"Pilot callsign: {own.callsign} ({own.aircraft_type}), squawk {own.squawk}",
+        f"Pilot callsign: {own.callsign} ({own.aircraft_type}), spoken callsign: \"{spoken_callsign or own.callsign}\"",
+        f"Transponder currently set to {own.squawk} (what the pilot has dialed, NOT an assigned code)",
         (
             "Pilot is on the ground"
             if own.on_ground
@@ -83,7 +112,15 @@ def build_context(own: OwnState, traffic: list[Traffic], airport: Airport) -> st
         + f", ground speed {own.gs_kt:.0f} kt, heading {own.heading_deg:.0f}",
         f"Position: {d:.1f} NM {compass_point(brg)} of the airport",
     ]
+    if first_contact is not None:
+        lines.append("This is your first contact with this pilot: say your station name once." if first_contact
+                     else "Not first contact: do not say your station name.")
     lines += _weather_lines(own, airport)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt)
+    if role == "ground" and rwy is not None and own.on_ground:
+        route = airport.taxi_routes.get(rwy.ident)
+        lines.append(f"TAXI ROUTE to runway {rwy.ident} (from the charts, treat as fact): {route}" if route
+                     else "No taxi route on file: give the taxi clearance without naming any taxiway.")
     lines.append("Nearby traffic:")
     if not traffic:
         lines.append("  none reported")

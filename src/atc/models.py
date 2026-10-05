@@ -71,6 +71,9 @@ class Airport:
     frequencies: list[Frequency] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # local procedures, free text
     needs_review: bool = True  # flip to false once a human checked the file
+    spoken_name: str | None = None  # how controllers say it: "Aeroparque" (station names, clearance limits)
+    # Hand-written from the charts: runway ident -> taxi route from the main apron, e.g. {"13": "via Alfa, Charlie"}.
+    taxi_routes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

@@ -8,3 +8,4 @@ __pycache__/
 data/*.csv
 voices/*.onnx
 voices/*.onnx.json
+simbrief_last.json

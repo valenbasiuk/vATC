@@ -40,13 +40,15 @@ def resolve_facility(airport: Airport, com1_mhz: float) -> Facility | None:
 
 def callsign_for(airport: Airport, facility: Facility) -> str:
     """Spoken facility name, e.g. 'Corrientes Tower'. Edit names in the YAML if this sounds off."""
-    short = airport.name.replace("International", "").replace("Airport", "").replace("Aeropuerto", "").strip()
+    short = airport.spoken_name or (
+        airport.name.replace("International", "").replace("Airport", "").replace("Aeropuerto", "").strip()
+    )
     suffix = {
         "tower": "Tower",
         "ground": "Ground",
         "approach": "Approach",
         "departure": "Departure",
-        "clearance": "Clearance Delivery",
+        "clearance": "Delivery",
     }.get(facility.role, "")
     return f"{short} {suffix}".strip()
 

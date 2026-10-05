@@ -7,8 +7,8 @@ Do docs/PRE_IDE_CHECKLIST.md first. It covers items 1-7 below as checks you run 
 ## A. Make it real on Valen's PC (Phases 0-1)
 1. **Environment.** 64-bit Python 3.11+, `pip install -e .[dev,sim]`. Done when `pytest` passes on Windows.
 2. **Own telemetry from MSFS 2024.** Run `SimConnectSource.own()` in a loop and print it. Fix the VERIFY items (indexed simvar names, heading units, COM frequency, squawk encoding). Done when values match the cockpit.
-3. **AI traffic.** `ai_traffic.py` is written but untested. Run `tools/probe_traffic.py`, fix what it shows (OPEN_QUESTIONS #1). Done when traffic around the airport prints with callsign, position, altitude and on-ground flag, and `python -m atc --sim` feeds it into the prompt.
-4. **Real airport data.** `atc-gen --download`, check the real column names, then `atc-gen SARC SABE --force` (copy the seed notes first) and one random US airport. Done when KXXX takes under 1 minute from ICAO to usable file.
+3. **AI traffic.** DONE, verified on Valen's PC (2026-10): traffic around the airport works fine.
+4. **Real airport data.** DONE, verified on Valen's PC (2026-10): SARC and SABE generate perfectly.
 
 ## B. Voice (Phase 3)
 5. **Piper.** `PiperTTS` now uses the Python API and keeps the voice loaded (written from the docs, never run). Pick a US voice with `tools/probe_voice.py`, fix whatever breaks.
@@ -17,6 +17,7 @@ Do docs/PRE_IDE_CHECKLIST.md first. It covers items 1-7 below as checks you run 
 
 ## C. Make the ATC good (Phase 4+), the part that decides if it's worth using
 8. **Weather.** DONE in the skeleton: wind and QNH are read from the sim, put in CONTEXT, and stated only when known. TODO: check the values against the sim (checklist C1), consider METAR as an alternative source, magnetic vs true (OPEN_QUESTIONS #10).
+9a. **IFR departure flow.** DONE (2026-10): SimBrief plan (`--simbrief`), `session.py` (telephony learned from the pilot's call, clearance state), `clearance.py` (clearance issued by code from the plan, item-by-item readback check, "negative, I say again" corrections, wrong position -> "contact Delivery", push/start gated on a read-back clearance), `phrase.py` (ICAO number pronunciation). Silence on correct readbacks and acknowledgements. TODO: taxi routes in the airport YAML (`taxi_routes`, SABE/SARC from the AD charts), or read taxiways from MSFS (SimConnect facility data).
 9. **Session state.** Keep a small `Session` (assigned runway, squawk, clearance state, position in pattern, who was last told what). Update it from structured LLM output (JSON alongside the spoken text) so the model does not have to re-derive everything from chat history.
 10. **Runway-in-use logic.** DONE (`runway.py`): best headwind, longest runway in calm wind, passed as fact. TODO: crosswind limits, prefer-calm-wind-runway lists per airport, noise-abatement rules for SABE.
 11. **Readback check.** Compare the pilot's readback to the clearance in code, then tell the LLM "readback correct / missing runway".
