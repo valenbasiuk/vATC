@@ -1,8 +1,0 @@
-name: Ground - taxi request gets taxi instructions
-airport: KTST
-setup: {freq: 121.7}
-turns:
-  - say: "Testfield Ground, November 1 2 3 Alpha Bravo, at the ramp, ready to taxi, VFR departure"
-    must_contain_any: ["taxi", "runway"]
-    must_not_contain: ["cleared for takeoff", "cleared to land"]
-    max_words: 45

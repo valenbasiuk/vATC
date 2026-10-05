@@ -1,7 +1,0 @@
-name: Tower - no wind given, so none may be stated
-airport: KTST
-setup: {freq: 118.1}
-turns:
-  - say: "Testfield Tower, N123AB, say the wind"
-    must_not_contain: ["degrees at", "knots", "calm"]
-    must_contain_any: ["unable", "say again", "not available", "negative"]

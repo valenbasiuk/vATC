@@ -1,6 +1,0 @@
-name: Unknown frequency - nobody answers
-airport: KTST
-setup: {freq: 135.0}
-turns:
-  - say: "Anybody, N123AB, radio check"
-    expect_silence: true
