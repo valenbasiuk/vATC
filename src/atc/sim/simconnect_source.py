@@ -53,8 +53,8 @@ class SimConnectSource:
             gs_kt=self._get("GROUND_VELOCITY"),
             heading_deg=heading % 360,
             on_ground=bool(self._get("SIM_ON_GROUND")),
-            com1_mhz=self._get("COM_ACTIVE_FREQUENCY:1", 0.0),  # VERIFY
-            squawk=str(int(self._get("TRANSPONDER_CODE:1", 1200))).zfill(4),  # VERIFY (BCD?)
+            com1_mhz=round(self._get("COM_ACTIVE_FREQUENCY:1", 0.0), 3),  # confirmed; 8.33 channel 118.105 reads as 118.105
+            squawk=format(int(self._get("TRANSPONDER_CODE:1", 0x1200)), "04x"),  # BCD16: 13669 -> "3565" (confirmed on MSFS 2024)
             callsign=self._callsign,
             # VERIFY units: AMBIENT_WIND_DIRECTION degrees, AMBIENT_WIND_VELOCITY knots,
             # SEA_LEVEL_PRESSURE millibars. Wind is read at the aircraft, not at the airport.
@@ -82,7 +82,9 @@ class SimConnectSource:
             out = []
             for rec in self._ai.read(reach_m):
                 if abs(rec.lat - own.lat) < 1e-4 and abs(rec.lon - own.lon) < 1e-4:
-                    continue  # VERIFY: the user's own aircraft may be included in the list
+                    continue  # confirmed: the user's own aircraft IS in the list (KJFK probe); position match drops it
+                    # TODO: while taxiing/flying the two reads are ~ms apart and the match is ~11 m; if you
+                    # ever see yourself as traffic, filter by object id/callsign instead.
                 t = to_traffic(rec)
                 if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm:
                     out.append(t)

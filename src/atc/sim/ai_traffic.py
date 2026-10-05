@@ -8,11 +8,9 @@ hardcodes SIMCONNECT_SIMOBJECT_TYPE_USER), so listing AI aircraft needs our own 
 used here is the public one from the MSFS SDK:
     SimConnect_Open, SimConnect_Close, SimConnect_AddToDataDefinition,
     SimConnect_RequestDataOnSimObjectType, SimConnect_GetNextDispatch
-Numeric constants: CONFIRMED from the SimConnect Python package's Enum.py: SIMOBJECT_TYPE_AIRCRAFT=2,
-DATATYPE INT32=1, FLOAT64=4, STRING8=5. NOT confirmed (from memory, the online SDK docs could not
-be fetched): DATATYPE_STRING32=6 and the RECV ids EXCEPTION=1, OPEN=2, QUIT=3, SIMOBJECT_DATA=8,
-SIMOBJECT_DATA_BYTYPE=9. Check them against the installed package:
-    .venv/Lib/site-packages/SimConnect/Enum.py  (search SIMCONNECT_RECV_ID and SIMCONNECT_DATATYPE)
+Numeric constants: CONFIRMED against the SimConnect Python package's Enum.py (checked on the installed
+package): SIMOBJECT_TYPE_AIRCRAFT=2, DATATYPE INT32=1, FLOAT64=4, STRING8=5, STRING32=6, and the RECV ids
+EXCEPTION=1, OPEN=2, QUIT=3, SIMOBJECT_DATA=8, SIMOBJECT_DATA_BYTYPE=9.
 """
 
 from __future__ import annotations
