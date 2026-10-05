@@ -10,12 +10,14 @@ REPL commands (fake sim only):  /state  /freq 118.1  /wind 270 8 1013  /air  /gr
 from __future__ import annotations
 
 import argparse
+import random
+import threading
 import time
 from pathlib import Path
 
 from atc.airports.schema import load_airport
 from atc.facility import resolve_facility
-from atc.clearance import context_lines, handle_clearance, handle_push
+from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.flightplan import load_simbrief
 from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
@@ -98,6 +100,36 @@ def handle(
     return reply
 
 
+class _Callbacks:
+    """Calls the controller makes on its own: the clearance 10-25 s after "standby". Fired from a timer
+    thread; `lock` keeps it from interleaving with a pilot turn."""
+
+    def __init__(self, airport, sim, speaker, history, session, prompt: str = "") -> None:
+        self.airport, self.sim, self.speaker, self.history, self.session = airport, sim, speaker, history, session
+        self.prompt = prompt  # re-printed after a callback so the text REPL still shows "YOU> "
+        self.lock = threading.Lock()
+        self.timer: threading.Timer | None = None
+
+    def after_turn(self) -> None:
+        if self.session.clearance == "standby" and self.timer is None:
+            self.timer = threading.Timer(random.uniform(10.0, 25.0), self._fire)
+            self.timer.daemon = True
+            self.timer.start()
+
+    def _fire(self) -> None:
+        with self.lock:
+            self.timer = None
+            plan = self.session.plan
+            facility = resolve_facility(self.airport, self.sim.own().com1_mhz)
+            reply = deliver_after_standby(self.session, self.airport, facility, self.session.dest_name or plan.destination_name)
+            if reply is None:
+                return
+            print()
+            self.history.append(("(pilot standing by)", reply))
+            _say_timed(self.speaker, reply, None, 0.0)
+            print(self.prompt, end="", flush=True)
+
+
 def _say_timed(speaker, reply: str, stt_s: float | None, llm_s: float) -> None:
     """Speak, then print per-stage latency (roadmap item 15). Target: under 3-4 s to first audio."""
     speaker.say(reply)
@@ -149,6 +181,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--telephony", help='airline radio name, e.g. "Martinair" (else learned from your first call)')
     p.add_argument("--dll", help="path to SimConnect.dll (MSFS 2024 SDK) if the bundled one fails")
     p.add_argument("--simbrief", type=Path, help="SimBrief OFP json (tools/probe_simbrief.py saves simbrief_last.json)")
+    p.add_argument("--standby", type=float, default=0.3,
+                   help="chance (0-1) Delivery says 'standby' and calls back with the clearance 10-25 s later")
     args = p.parse_args(argv)
 
     plan = load_simbrief(args.simbrief) if args.simbrief else None
@@ -178,7 +212,7 @@ def main(argv: list[str] | None = None) -> None:
 
         speaker = PrintTTS()
 
-    session = Session(callsign=args.callsign, plan=plan, telephony=args.telephony)
+    session = Session(callsign=args.callsign, plan=plan, telephony=args.telephony, standby_chance=args.standby)
     if plan is not None:
         dest_file = args.airports_dir / f"{plan.destination}.yaml"
         if dest_file.exists():  # its spoken_name is how the clearance limit is said ("Rosario")
@@ -200,9 +234,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _run_text(airport, sim, llm, speaker, history, session) -> None:
     print(f"{airport.icao} {airport.name}. Type your radio calls. /quit to exit.")
+    cb = _Callbacks(airport, sim, speaker, history, session, prompt="YOU> ")
     while True:
         try:
-            line = input("YOU> ").lstrip("﻿").strip()  # piped input from PowerShell starts with a BOM
+            line = input("YOU> ").lstrip("\ufeff").strip()  # piped input from PowerShell starts with a BOM
         except EOFError:
             break
         if not line:
@@ -211,7 +246,9 @@ def _run_text(airport, sim, llm, speaker, history, session) -> None:
             if not _repl_command(line, sim):
                 break
             continue
-        handle(airport, sim, llm, speaker, history, line, session=session)
+        with cb.lock:
+            handle(airport, sim, llm, speaker, history, line, session=session)
+        cb.after_turn()
 
 
 def _run_ptt(args, airport, sim, llm, speaker, history, session) -> None:
@@ -222,6 +259,7 @@ def _run_ptt(args, airport, sim, llm, speaker, history, session) -> None:
     stt = FasterWhisperSTT(model_size=args.stt_model)
     ptt = PushToTalk(key=args.ptt_key)
     print(f"{airport.icao} {airport.name}. Hold {args.ptt_key.upper()} to talk. Ctrl+C to exit.")
+    cb = _Callbacks(airport, sim, speaker, history, session)
     while True:
         audio = ptt.record_once()
         if len(audio) < 4800:  # under 0.3 s: a tap, not a call
@@ -233,7 +271,9 @@ def _run_ptt(args, airport, sim, llm, speaker, history, session) -> None:
             print("[nothing heard]")
             continue
         print(f"YOU> {text}")
-        handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session)
+        with cb.lock:
+            handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session)
+        cb.after_turn()
 
 
 if __name__ == "__main__":

@@ -119,6 +119,43 @@ def test_wrong_runway_readback_is_not_taken_as_acknowledgement():
     assert reply == "Martinair four one three three, negative, I say again, taxi to holding point runway three one."
 
 
+def _standby_session():
+    from atc.facility import resolve_facility
+
+    sim = FakeSim(APT, callsign=PLAN.callsign)
+    sim.update(com1_mhz=129.3)
+    s = Session(callsign=PLAN.callsign, plan=PLAN, dest_name="Rosario", standby_chance=1.0)
+    first = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Delivery, Martinair 4133, request IFR clearance", session=s)
+    return sim, s, first, lambda: resolve_facility(APT, sim.own().com1_mhz)
+
+
+def test_standby_then_controller_calls_back():
+    from atc.clearance import deliver_after_standby
+
+    sim, s, first, fac = _standby_session()
+    assert first == "Martinair four one three three, Testa Delivery, standby." and s.clearance == "standby"
+    assert handle(APT, sim, StubLLM(), _Quiet(), [("x", first)], "Standing by, Martinair 4133", session=s) is None
+    later = deliver_after_standby(s, APT, fac(), "Rosario")
+    assert later.startswith("Martinair four one three three, cleared to Rosario") and s.clearance == "issued"
+
+
+def test_standby_then_pilot_asks_again_gets_it_now_and_timer_does_nothing():
+    from atc.clearance import deliver_after_standby
+
+    sim, s, _, fac = _standby_session()
+    again = handle(APT, sim, StubLLM(), _Quiet(), [], "Delivery, Martinair 4133, still waiting for IFR clearance", session=s)
+    assert "cleared to Rosario" in again and s.clearance == "issued"
+    assert deliver_after_standby(s, APT, fac(), "Rosario") is None
+
+
+def test_standby_missed_if_pilot_left_the_frequency():
+    from atc.clearance import deliver_after_standby
+
+    sim, s, _, fac = _standby_session()
+    sim.update(com1_mhz=121.9)
+    assert deliver_after_standby(s, APT, fac(), "Rosario") is None and s.clearance == "none"
+
+
 def test_say_again_repeats_clearance():
     replies, _ = _run(["Testa Delivery, Martinair 4133, request IFR clearance", "Say again, Martinair 4133"])
     assert replies[1].startswith("Martinair four one three three, I say again, cleared to Rosario")

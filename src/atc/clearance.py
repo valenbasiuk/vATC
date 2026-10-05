@@ -6,6 +6,7 @@ reliable than asking a small model to phrase them. The LLM only sees the result 
 
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass
 
@@ -95,15 +96,18 @@ def handle_clearance(
     who = issuing_role(airport)
     norm = _normalize(pilot_text)
 
-    if session.clearance == "none" and is_clearance_request(pilot_text):
+    if session.clearance in ("none", "standby") and is_clearance_request(pilot_text):
         if facility.role != who:  # asked the wrong position: send them to the right one
             f = _freq(airport, {"clearance": "CLD", "ground": "GND", "tower": "TWR"}[who])
             name = {"clearance": "Delivery", "ground": "Ground", "tower": "Tower"}[who]
             return f"{cs}, contact {name} {phrase.frequency(f.mhz, airport.country == 'US')}."
         station = f", {callsign_for(airport, facility)}" if session.first_contact(facility.role) else ""
-        session.clearance_text = ", ".join(i.spoken for i in items(session, airport, dest_name))
-        session.clearance = "issued"
-        return f"{cs}{station}, {session.clearance_text}."
+        if session.clearance == "none" and random.random() < session.standby_chance:
+            # Busy controller: "standby" now, the clearance comes 10-25 s later without the pilot asking
+            # again (deliver_after_standby, called by a timer in main). Asking again meanwhile gets it now.
+            session.clearance = "standby"
+            return f"{cs}{station}, standby."
+        return f"{cs}{station}, {_issue(session, airport, dest_name)}."
 
     if session.clearance == "issued" and facility.role == who:
         if "say again" in norm:
@@ -127,6 +131,23 @@ def handle_clearance(
                     f"{phrase.frequency(gnd.mhz, airport.country == 'US')}.")
         return f"{cs}, readback correct. Report ready for push and start."
     return None
+
+
+def _issue(session: Session, airport: Airport, dest_name: str) -> str:
+    session.clearance_text = ", ".join(i.spoken for i in items(session, airport, dest_name))
+    session.clearance = "issued"
+    return session.clearance_text
+
+
+def deliver_after_standby(session: Session, airport: Airport, facility: Facility | None, dest_name: str) -> str | None:
+    """The controller calls back with the clearance. If the pilot has left the frequency they miss it,
+    and the request starts over the next time they call."""
+    if session.clearance != "standby":
+        return None  # already given (pilot asked again) or nothing pending
+    if facility is None or facility.role != issuing_role(airport):
+        session.clearance = "none"
+        return None
+    return f"{session.spoken_callsign}, {_issue(session, airport, dest_name)}."
 
 
 def handle_push(session: Session, airport: Airport, facility: Facility, pilot_text: str) -> str | None:
@@ -159,7 +180,10 @@ def context_lines(session: Session, airport: Airport, facility: Facility) -> lis
     ]
     if not (plan.is_ifr and airport.icao == plan.origin):
         return lines
-    if session.clearance == "none":
+    if session.clearance == "standby":
+        lines.append("  IFR clearance requested; you told the pilot to standby and will call back with it. "
+                     "Do not give or invent the clearance yourself.")
+    elif session.clearance == "none":
         who = issuing_role(airport)
         if facility.role != who:
             lines.append(f"  IFR clearance NOT yet issued. Only {who} issues it. If the pilot asks for push, start "

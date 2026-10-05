@@ -25,7 +25,8 @@ class Session:
     plan: FlightPlan | None = None
     telephony: str | None = None  # "Martinair"
     dest_name: str | None = None  # clearance limit as spoken ("Rosario"); falls back to the plan's airport name
-    clearance: str = "none"  # "none" -> "issued" -> "confirmed"
+    clearance: str = "none"  # "none" -> ("standby" ->) "issued" -> "confirmed"
+    standby_chance: float = 0.0  # chance Delivery says "standby" and calls back later (main sets it from --standby)
     clearance_text: str = ""  # exactly what was said, for "say again"
     pending: list[str] = field(default_factory=list)  # clearance items still to be read back after a correction
     contacted: set[str] = field(default_factory=set)  # facility roles already talked to
