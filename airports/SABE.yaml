@@ -14,10 +14,14 @@ runways:
   heading_deg: 124.0
   length_ft: 7710.0
   surface: PEM
+  pattern_alt_agl_ft: 1000
+  pattern_direction: left
 - ident: '31'
   heading_deg: 304.0
   length_ft: 7710.0
   surface: PEM
+  pattern_alt_agl_ft: 1000
+  pattern_direction: left
 frequencies:
 - kind: APP
   mhz: 120.6
@@ -35,5 +39,9 @@ frequencies:
   mhz: 118.85
   description: TWR
 notes:
-- 'Non-US airport: pattern altitude/direction left empty, fill from the local charts.'
+- Home airport. Busy airspace with real local procedures (noise abatement, river approaches,
+  visual reporting points). Needs a careful manual pass from the AIP charts.
+- 'Non-US: pattern altitude and direction must be filled by hand.'
+- 'ASSUMED: pattern 1000 ft AGL, left traffic (ICAO default placeholder). Real Aeroparque
+  ops differ (river procedures); verify against AIP.'
 needs_review: true

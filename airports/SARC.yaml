@@ -14,14 +14,22 @@ runways:
   heading_deg: 8.0
   length_ft: 6890.0
   surface: CON
+  pattern_alt_agl_ft: 1000
+  pattern_direction: left
 - ident: '20'
   heading_deg: 188.0
   length_ft: 6890.0
   surface: CON
+  pattern_alt_agl_ft: 1000
+  pattern_direction: left
 frequencies:
 - kind: TWR
   mhz: 118.3
   description: TWR
 notes:
-- 'Non-US airport: pattern altitude/direction left empty, fill from the local charts.'
+- Home airport. Fill runways, frequencies and local procedures from the AIP (ANAC
+  / EANA) charts.
+- 'Non-US: pattern altitude and direction must be filled by hand.'
+- 'ASSUMED: pattern 1000 ft AGL, left traffic (ICAO default placeholder); verify against
+  AIP.'
 needs_review: true
