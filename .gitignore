@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .env
+.env.*
 # big downloads, regenerate with atc-gen --download and piper.download_voices
 data/*.csv
 voices/*.onnx

@@ -25,11 +25,20 @@ class PrintTTS:
 
 
 class PiperTTS:
-    def __init__(self, model_path: Path, radio_fx: bool = True, length_scale: float = 1.0) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        radio_fx: bool = True,
+        length_scale: float = 1.0,
+        lead_pad_s: float = 0.15,
+        tail_pad_s: float = 0.5,
+    ) -> None:
         from piper import PiperVoice  # type: ignore
 
         self._voice = PiperVoice.load(str(model_path))
         self.radio_fx = radio_fx
+        self.lead_pad_s = lead_pad_s
+        self.tail_pad_s = tail_pad_s
         self.length_scale = length_scale  # < 1.0 speaks faster (controllers talk fast)
 
     def synthesize(self, text: str):
@@ -63,5 +72,10 @@ class PiperTTS:
             return
         if self.radio_fx:
             samples = apply_radio_fx(samples, rate)
-        sd.play(samples, rate)
+        import numpy as np  # type: ignore
+
+        # Silence padding: the output device often clips the last ~100-300 ms ("takeo..") and the first word.
+        lead = np.zeros(int(rate * self.lead_pad_s), dtype=np.float32)
+        tail = np.zeros(int(rate * self.tail_pad_s), dtype=np.float32)
+        sd.play(np.concatenate([lead, samples, tail]), rate)
         sd.wait()

@@ -40,7 +40,11 @@ def handle(airport: Airport, sim: SimSource, llm, speaker, history: list, pilot_
         history,
         pilot_text,
     )
-    reply = llm.complete(messages)
+    try:
+        reply = llm.complete(messages)
+    except Exception as exc:  # network, rate limit, bad model: never crash the session
+        print(f"[LLM error, say again: {exc}]")
+        return None
     history.append((pilot_text, reply))
     speaker.say(reply)
     return reply
