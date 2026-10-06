@@ -33,6 +33,18 @@ class World:
     def nearest(self, own: OwnState) -> Airport:
         return min(self.airports, key=lambda a: distance_nm(own.lat, own.lon, a.lat, a.lon))
 
+    def stations(self) -> list[tuple[str, str]]:
+        """(position group, frequency digits without trailing zeros) for every frequency on file."""
+        from atc.facility import group
+
+        out = []
+        for a in self.airports + self.airspaces:
+            for f in a.frequencies:
+                fac = resolve_facility(a, f.mhz)
+                if fac is not None and group(fac.role):
+                    out.append((group(fac.role), f"{f.mhz:.3f}".replace(".", "").rstrip("0")))
+        return out
+
     def control(self) -> tuple[Airport, Facility] | None:
         """First area control frequency on file (handoffs after departure go there)."""
         for a in self.airspaces:

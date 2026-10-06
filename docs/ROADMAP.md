@@ -37,7 +37,20 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
    - Telemetry watcher (1 s, in main `_Callbacks`) detects takeoff/landing and hands off: Tower -> Departure (700 ft AGL), Departure -> Control (FL100 / 30 NM), -> destination Approach (40 NM) or Tower (18 NM if no Approach), Approach -> Tower (12 NM), Tower -> Ground (vacated, < 40 kt). Said again once after 20 s if the frequency isn't changed; never while PTT is held.
    - Check-ins: "radar contact, climb via SID" / arrival "radar contact, expect runway 20, QNH ..."; wrong squawk -> "squawk 2235", then "radar contact" when the code shows.
    - Tower: takeoff ("wind ..., runway 31, cleared for takeoff" or "hold position, traffic on two miles final") and landing ("cleared to land" on final, "number two, traffic to follow..." or "continue approach, report final").
-   - Fake sim: `/near SAAR 30 6000` puts you on an arrival. TODO: climb/descent clearances (FL, STAR from the plan), direct-to, line up and wait, go-around, holding.
+   - Fake sim: `/near SAAR 30 6000` puts you on an arrival.
+   - After Valen's first real-sim flight (2026-10-05, `enroute.py`, tests/test_arrival.py), also code-owned:
+     departure check-in "climb via SID to flight level 200" (filed level, no Control on file); "request direct X"
+     only to route fixes still ahead (SimBrief navlog lat/lon), else "behind you" / "not on your route";
+     "request higher"; descent at the navlog's TOD ("descend to three thousand feet, QNH ..., expect vectors runway 02",
+     transition altitude from the OFP), also with the check-in if already past TOD; "request descent" before TOD ->
+     "expect descent in N miles"; vectors to a point 10 NM out / 3 NM to the side, then "turn right heading 340,
+     maintain 3000 until established, cleared approach runway 02"; Approach -> Tower once established; Tower clears
+     to land on its own at 6 NM; after touchdown below 60 kt "welcome to Rosario, vacate via X when able" (first exit
+     ahead on the taxi map, else backtrack). Destination without Approach (SAAR TWR/APP): Tower takes over at 40 NM
+     and does the approach work. "On final ..." is a report that gets an answer, not a readback.
+   - TODO: STAR/approach procedures and off-route fixes need a nav database (MSFS facility API, or Little Navmap's
+     SQLite db); approach type is said generically ("cleared approach"); SAAR mag variation unknown (headings true);
+     line up and wait, go-around, holding.
 10. **Session state, rest.** First slice DONE (`session.py`: telephony, clearance state, positions contacted). TODO: assigned runway, pattern position, last instruction per position.
 11. **Runway-in-use logic.** DONE (`runway.py`). TODO: crosswind limits, preferred runways per airport, SABE noise abatement.
 12. **Readback check.** DONE: runway / hold short / takeoff / landing / taxi route (`readback.py`) plus the full clearance (`clearance.py`).

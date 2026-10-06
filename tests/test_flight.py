@@ -1,4 +1,4 @@
-"""Whole-flight pieces: taxi routes, handoffs, code-owned takeoff/landing/traffic, fact check, providers."""
+﻿"""Whole-flight pieces: taxi routes, handoffs, code-owned takeoff/landing/traffic, fact check, providers."""
 
 import json
 import struct
@@ -211,7 +211,7 @@ def test_radar_contact_follows_once_the_squawk_is_set():
     cb, _ = _watch(sim, s)
     r = handle(ORIGIN, sim, None, _Quiet(), cb.history, "Testa Approach, Martinair 4133, passing 3000", session=s,
                world=cb.world)
-    assert r == f"{CS}, Testa Approach, squawk {phrase.digits(PLAN.squawk)}, climb via SID."
+    assert r == f"{CS}, Testa Approach, squawk {phrase.digits(PLAN.squawk)}, climb via SID to flight level two zero zero."
     assert cb.tick(now=0) is None
     sim.update(squawk=PLAN.squawk)
     assert cb.tick(now=1) == f"{CS}, radar contact."
@@ -321,7 +321,7 @@ def test_fact_check_retries_then_says_say_again():
     s.first_contact("approach")
     s.where = "SATS"
     s.contacted.add("SATS:approach")
-    r = handle(ORIGIN, sim, Liar(), _Quiet(), [], "Testa Approach, Martinair 4133, request higher", session=s)
+    r = handle(ORIGIN, sim, Liar(), _Quiet(), [], "Testa Approach, Martinair 4133, how is the ride ahead?", session=s)
     assert r == f"{CS}, say again." and Liar.calls == 2
 
 

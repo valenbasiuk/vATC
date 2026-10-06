@@ -18,7 +18,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import factcheck, flow, phrase
+from atc import enroute, factcheck, flow, phrase
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -83,6 +83,10 @@ def handle(
     reply = None
     if session.names_other_flight(pilot_text):  # misheard or wrong callsign: never answer it as ours
         reply = f"Station calling {station}, say again your callsign."
+    if reply is None:  # "Rosario Center ..." on Aeroparque Delivery: "this is Aeroparque Delivery, ..."
+        reply = flow.wrong_station(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "requesting Delivery frequency" / "frequency change": from the files, never invented
+        reply = flow.frequency_request(session, world, airport, facility, own, pilot_text)
     if reply is None and plan is not None:  # IFR clearance is code's job: issue, readback check, correction
         reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
     if reply is None:
@@ -125,6 +129,8 @@ def handle(
         reply = handle_taxi(session, airport, facility, own, pilot_text, world.taxi.get(airport.icao), traffic, rwy)
     if reply is None:
         reply = handle_flow(session, world, airport, facility, own, pilot_text, traffic, preferred)
+    if reply is None:  # direct to / higher / descent / vectors, from the SimBrief route and the telemetry
+        reply = enroute.handle_request(session, world, airport, facility, own, pilot_text)
     if reply is not None:
         return say(reply)
 
@@ -152,13 +158,19 @@ def handle(
     t_llm = time.perf_counter()
     try:
         reply = llm.complete(messages)
-        found = factcheck.problems(reply, [system, context, pilot_text] + [a for _, a in history[-6:]])
+        sources = [system, context, pilot_text] + [a for _, a in history[-6:]]
+        stations = world.stations()
+
+        def check(text: str) -> list[str]:
+            return factcheck.problems(text, sources) + factcheck.contact_problems(text, stations)
+
+        found = check(reply)
         if found:  # it stated something it wasn't told: one retry with the problem named, then a safe reply
             print(f"[fact check rejected: {reply} ({', '.join(found)})]")
             retry = messages + [{"role": "assistant", "content": reply},
                                 {"role": "user", "content": factcheck.correction(found)}]
             reply = llm.complete(retry)
-            if factcheck.problems(reply, [system, context, pilot_text] + [a for _, a in history[-6:]]):
+            if check(reply):
                 print(f"[fact check rejected again: {reply}]")
                 reply = f"{cs}, say again."
     except Exception as exc:  # network, rate limit, bad model: never crash the session
@@ -254,6 +266,10 @@ class _Callbacks:
                     self.session.handoffs_done.add(key)
                     self.session.pending_handoff = flow.Pending(key, body, own.com1_mhz, now)
                     text = f"{self.session.spoken_callsign}, {body}."
+            if text is None and self.session.pending_handoff is None:
+                # descent at top of descent, vectors, intercept, landing clearance, vacate
+                text = enroute.arrival_event(self.session, self.world, own,
+                                             self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
             if text is not None:
                 self._transmit(text, "(controller call)")
             return text

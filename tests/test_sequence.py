@@ -1,4 +1,4 @@
-"""Runway sequencing (who may take off / land) and the audit fixes from the 2026-10-05 flight test."""
+﻿"""Runway sequencing (who may take off / land) and the audit fixes from the 2026-10-05 flight test."""
 
 from atc import phrase
 from atc.audio.tts import PrintTTS
@@ -170,7 +170,7 @@ def test_wind_is_said_magnetic_when_the_variation_is_known():
 
     from atc.runway import magnetic
 
-    sabe = replace(APT, mag_var_deg=-10.0)  # VAR 10° W
+    sabe = replace(APT, mag_var_deg=-10.0)  # VAR 10Â° W
     assert magnetic(sabe, 30.0) == 40.0 and magnetic(sabe, 355.0) == 5.0
     assert magnetic(APT, 30.0) == 30.0  # unknown variation: true, unchanged
     sim = FakeSim(sabe, callsign="MAR4133")
@@ -287,7 +287,7 @@ def test_wrong_squawk_on_check_in_gets_the_code():
     sim.update(squawk=PLAN.squawk)
     s2 = Session(callsign="MAR4133", plan=PLAN, telephony="Martinair", clearance="confirmed", departed_from="SATS")
     reply = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Approach, Martinair 4133, passing 2000", session=s2)
-    assert reply == "Martinair four one three three, Testa Approach, radar contact, climb via SID."
+    assert reply == "Martinair four one three three, Testa Approach, radar contact, climb via SID to flight level two zero zero."
 
 
 def test_daily_quota_skips_the_other_free_models():

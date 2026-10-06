@@ -43,8 +43,10 @@ def main() -> None:
                 print(
                     f"  id {r.object_id:>10} {r.atc_id or '(no callsign)':<10} {d:6.1f} NM | "
                     f"{r.alt_ft:7.0f} ft | {r.gs_kt:4.0f} kt | hdg {r.heading_deg:3.0f} | "
-                    f"{'ground' if r.on_ground else 'air'}{me}"
+                    f"{'ground' if r.on_ground else 'air'} | type {r.model or '?'} | {r.airline or '?'} {r.flight_number}{me}"
                 )
+            if i == 0:
+                print(f"  (data layout: {'full, with type/airline' if reader._define == 1002 else 'basic: sim rejected type/airline'})")
             time.sleep(2)
     finally:
         reader.close()

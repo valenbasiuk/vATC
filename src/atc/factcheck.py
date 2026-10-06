@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from atc.readback import _NATO_WORDS, _normalize
+from atc.readback import _NATO_WORDS, _normalize, join_digits
 
 _TYPE_WORDS = ("airbus", "boeing", "embraer", "cessna", "piper", "cirrus", "fokker", "atr", "canadair",
                "bombardier", "learjet", "citation", "king air", "dash", "a320", "a321", "b737", "b738", "seven three seven")
@@ -22,9 +22,18 @@ def _numbers(text: str) -> list[str]:
     for part in re.split(r"[,;]", text):
         t = _normalize(part)
         t = re.sub(r"(\d) (thousand|hundred)\b", lambda m: m.group(1) + _UNITS[m.group(2)], t)
-        t = re.sub(r"(?<=\d) (?:(?:decimal|point) )?(?=\d)", "", t)
-        out += re.findall(r"\d+", t)
+        out += re.findall(r"\d+", join_digits(t))
     return out
+
+
+def _same_number(n: str, k: str) -> bool:
+    """n (said) is k (given), allowing the zeros a controller drops: FL200 for 20000 ft (two zeros) and
+    frequencies ('11885' for 118.850). One dropped zero is NOT enough otherwise: FL100 is not 1000 ft AGL."""
+    if n == k:
+        return True
+    if not k.startswith(n) or k[len(n):].strip("0"):
+        return False
+    return len(k) - len(n) >= 2 or (len(n) >= 4 and re.fullmatch(r"1[1-3]\d+", n) is not None)
 
 
 def problems(reply: str, sources: list[str]) -> list[str]:
@@ -38,7 +47,7 @@ def problems(reply: str, sources: list[str]) -> list[str]:
             continue
         # whole numbers only, trailing zeros allowed: "1206" = 120.600, "200" = 20000 (FL200), but "300" is NOT in
         # 129.300 (that loose match let "wind three zero zero" through for a 030 wind)
-        if not any(k == n or (k.startswith(n) and not k[len(n):].strip("0")) for k in known):
+        if not any(_same_number(n, k) for k in known):
             found.append(f"number {n}")
     low = reply.lower()
     for w in _TYPE_WORDS:
@@ -49,6 +58,26 @@ def problems(reply: str, sources: list[str]) -> list[str]:
         if m and any(w in _NATO_WORDS for w in m.group(1).split()[:3]):
             found.append("taxiway names")
     return found
+
+
+def contact_problems(reply: str, stations: list[tuple[str, str]]) -> list[str]:
+    """'contact <station> <frequency>' must use a frequency on file that belongs to that kind of station.
+    `stations`: (group, frequency digits without trailing zeros), e.g. ('clearance', '1293'). The model once said
+    'contact Rosario Center one two niner decimal three': 129.3 is on file, but it is Aeroparque Delivery."""
+    from atc.facility import ROLE_WORDS
+
+    m = re.search(r"\bcontact\b(.+)$", _normalize(reply))
+    if not m:
+        return []
+    part = m.group(1)
+    named = next((g for w, g in ROLE_WORDS.items() if re.search(rf"\b{w}\b", part)), None)
+    for n in (n.rstrip("0") for n in _numbers(part) if len(n) >= 4):
+        on_file = [g for g, f in stations if f == n]
+        if not on_file:
+            return [f"frequency {n} (not on file)"]
+        if named and named not in on_file:
+            return [f"frequency {n} is not a {named} frequency"]
+    return []
 
 
 def correction(found: list[str]) -> str:

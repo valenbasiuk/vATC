@@ -27,8 +27,32 @@ class ReadbackResult:
 
 def _normalize(text: str) -> str:
     t = text.lower().replace("-", " ")
+    t = re.sub(r"(?<=\d)\.(?=\d)", " decimal ", t)  # "120.6" -> "120 decimal 6", same as when spoken
     t = re.sub(r"[^a-z0-9 ]", " ", t)
     return " ".join(_DIGITS.get(w, w) for w in t.split())
+
+
+def join_digits(t: str) -> str:
+    """Normalized text with each number as one token: digits said one by one are joined ('2 2 3 5' -> '2235'),
+    'decimal'/'point' joins the parts ('1 2 0 decimal 6' -> '1206', '118 decimal 85' -> '11885'), but two
+    written numbers stay apart ('expecting 200 10 after' is 200 and 10, not 20010)."""
+    out: list[str] = []
+    spoken = False  # the last token was built from single spoken digits
+    glue = False  # 'decimal' / 'point' seen right after a number
+    for tok in t.split():
+        if tok in ("decimal", "point") and out and out[-1].isdigit():
+            glue = True
+            continue
+        if tok.isdigit() and out and out[-1].isdigit() and (glue or (spoken and len(tok) == 1)):
+            out[-1] += tok
+            spoken = spoken and len(tok) == 1
+        else:
+            if glue:
+                out.append("decimal")
+            out.append(tok)
+            spoken = tok.isdigit() and len(tok) == 1
+        glue = False
+    return " ".join(out)
 
 
 def _runway(text: str) -> str | None:
@@ -46,7 +70,7 @@ def _bare_runway(text: str, want: str) -> bool:
     """The runway said as a bare number: 'three one via alfa' reads back runway 31 (no side letters)."""
     if not want[:2].isdigit() or len(want) != 2:
         return False
-    compact = re.sub(r"(?<=\d) (?=\d)", "", text)
+    compact = join_digits(text)
     return re.search(rf"\b0?{int(want)}\b" if want.startswith("0") else rf"\b{want}\b", compact) is not None
 
 
@@ -57,6 +81,10 @@ def _requests(pilot_norm: str, atc_norm: str) -> bool:
     if "when ready" in atc_norm:
         t = t.replace("when ready", " ")
     t = re.sub(r"\bdeparture (?:frequency|on|\d)", " ", t)
+    # a position report that wants an answer (landing clearance): "on final runway 02", "established"
+    t = re.sub(r"\b(?:until|report|when) established\b|\breport final\b", " ", t)  # these are readbacks
+    if re.search(r"\b(?:on|short|long) final\b|\bfinal (?:for )?runway\b|\bestablished\b|\bfully established\b", t):
+        return True
     return any(w in t for w in _REQUEST_WORDS)
 
 
@@ -88,8 +116,16 @@ def _taxi_route(t: str, letters_ok: bool) -> frozenset[str] | None:
 
 
 def _joined(t: str) -> str:
-    """Normalized text with letters split from digits and digit runs joined: 'to nh1015' -> 'to nh 1015'."""
-    return re.sub(r"(?<=\d) (?=\d)", "", re.sub(r"(?<=[a-z])(?=\d)", " ", t))
+    """Normalized text with letters split from digits and numbers joined: 'to nh1015' -> 'to nh 1015'."""
+    return join_digits(re.sub(r"(?<=[a-z])(?=\d)", " ", t))
+
+
+def _units(t: str) -> str:
+    """'3 thousand 5 hundred feet' -> '3500 feet', '3 thousand' -> '3000' (numbers joined first)."""
+    t = join_digits(t)
+    t = re.sub(r"\b(\d+) thousand (\d) hundred\b", lambda m: str(int(m.group(1)) * 1000 + int(m.group(2)) * 100), t)
+    t = re.sub(r"\b(\d+) thousand\b", lambda m: str(int(m.group(1)) * 1000), t)
+    return re.sub(r"\b(\d+) hundred\b", lambda m: str(int(m.group(1)) * 100), t)
 
 
 def _code(t: str, word: str) -> str | None:
@@ -100,7 +136,7 @@ def _code(t: str, word: str) -> str | None:
 
 # ICAO Doc 4444 4.5.7.5: what must be read back. A "roger" to any of these gets "read back".
 _READBACK_REQUIRED = ("taxi", "cleared", "hold short", "line up", "cross", "backtrack", "squawk", "qnh", "altimeter",
-                      "climb", "descend", "heading", "maintain")
+                      "climb", "descend", "heading", "maintain", "direct")
 
 
 def needs_readback(atc_text: str | None) -> bool:
@@ -113,6 +149,8 @@ def needs_readback(atc_text: str | None) -> bool:
 
 
 def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozenset]:
+    # "expect vectors runway 02" / "expect flight level 200" is planning information, not an instruction
+    text = re.sub(r"(?i)\bexpect(?:ing)?\b[^,.;]*", " ", text)
     t = _normalize(text)
     items: dict[str, str | bool | frozenset] = {}
     rwy = _runway(t)
@@ -125,6 +163,16 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
         val = _code(t, word)
         if val:
             items[key] = val
+    # an assigned level ("climb flight level two zero zero"); "expect ..." is not an instruction to read back
+    lvl = re.search(r"\b(climb|descend|maintain)\b[a-z ]*?\bflight level (\d{2,3})\b", join_digits(t))
+    if lvl:
+        items["level"] = lvl.group(2)
+    ft = re.search(r"\b(?:climb|descend|maintain)\b[a-z ]*?\b(\d{3,5}) feet\b", _units(t))
+    if ft:
+        items["altitude"] = ft.group(1)
+    hdg = re.search(r"\bheading (\d{3})\b", join_digits(t))
+    if hdg:
+        items["heading"] = hdg.group(1)
     # FAA "hold short" must be read back. ICAO "taxi to holding point runway 31" is a clearance limit: the runway
     # read back is enough ("three one via alfa"), so "holding point" is not an item of its own.
     if "hold short" in t or "holding short" in t:
@@ -136,7 +184,14 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
     return items
 
 
-_ACK_WORDS = ("roger", "wilco", "copied", "copy", "standing by", "will call", "good day", "thank")
+_ACK_WORDS = ("roger", "wilco", "copied", "copy", "standing by", "will call", "good day", "thank", "nice day",
+              "have a good", "bye", "ciao", "cheers", "see you")
+
+
+def _frequencies(t: str) -> set[str]:
+    """Frequencies in normalized text as digit strings without trailing zeros: 'one one eight decimal eight five'
+    and '118.85' -> '11885'."""
+    return {m.group(1).rstrip("0") for m in re.finditer(r"\b(1[1-3]\d\d+)\b", _joined(t)) if len(m.group(1)) >= 4}
 
 
 def is_acknowledgement(last_atc: str | None, pilot_text: str, ignore: tuple[str, ...] = ()) -> bool:
@@ -149,7 +204,10 @@ def is_acknowledgement(last_atc: str | None, pilot_text: str, ignore: tuple[str,
         return False
     if any(w in t for w in _ACK_WORDS):
         return True
-    said = {_stem(w) for w in _normalize(last_atc).split()}
+    atc_norm = _normalize(last_atc)
+    if "contact" in atc_norm and _frequencies(atc_norm) & _frequencies(t):
+        return True  # "Tower on 118.85": the frequency of a handoff read back
+    said = {_stem(w) for w in atc_norm.split()}
     skip = {w.lower() for w in ignore}
     words = [_stem(w) for w in t.split() if not w.isdigit() and len(w) > 2 and w not in skip]
     return bool(words) and sum(w in said for w in words) / len(words) >= 0.7
@@ -193,15 +251,20 @@ def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:
     got = _items(pilot_text, letters_ok=True)
     if "runway" in expected and "runway" not in got and _bare_runway(pilot_norm, str(expected["runway"])):
         got["runway"] = expected["runway"]
-    joined = _joined(pilot_norm)
-    for key in ("qnh", "squawk"):  # pilots say the number without the word ("one zero one five", "to NH1015")
+    joined = _units(_joined(pilot_norm))
+    # said without the keyword ("one zero one five", "to NH1015", "FL200", "three thousand", "three four zero")
+    for key in ("qnh", "squawk", "level", "altitude", "heading"):
         if key in expected and got.get(key) != expected[key] and re.search(rf"\b{expected[key]}\b", joined):
             got[key] = expected[key]
+    if "level" in expected and "level" not in got:  # a different level read back ("climbing flight level 180")
+        lvl = re.search(r"\b(?:flight level|fl|level) (\d{2,3})\b", joined)
+        if lvl:
+            got["level"] = lvl.group(1)
     if not got:  # nothing of the instruction repeated: not a readback attempt
         return ReadbackResult("none")
     missing = []
     for key, val in expected.items():
-        if key in ("qnh", "squawk"):
+        if key in ("qnh", "squawk", "level", "altitude", "heading"):
             if got.get(key) != val:
                 missing.append(f"{key} {val}")
         elif key == "runway":

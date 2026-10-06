@@ -224,6 +224,29 @@ def arrival_route(net: TaxiNetwork | None, own: OwnState, stand: str) -> str | N
 _STAND = re.compile(r"\b(?:stand|gate|parking|position)\s+([0-9]+[a-z]?)\b")
 
 
+def vacate(net: TaxiNetwork | None, airport: Airport, rwy: Runway, own: OwnState) -> tuple[str, bool] | None:
+    """The taxiway to leave the runway by: the first exit ahead of the aircraft, else the nearest one behind it
+    (then it has to backtrack). Returns (spoken name, backtrack) or None if the map has no named exits."""
+    if net is None:
+        return None
+    here, _ = along_cross(airport, rwy, own.lat, own.lon)
+    exits: dict[str, float] = {}
+    for node, edges in net.edges.items():
+        along, cross = along_cross(airport, rwy, *net.nodes[node])
+        if cross > 0.03:  # not on the runway edge
+            continue
+        for _, _, name in edges:
+            if name and (name not in exits or abs(along - here) < abs(exits[name] - here)):
+                exits[name] = along
+    if not exits:
+        return None
+    ahead = sorted((a, n) for n, a in exits.items() if a > here + 0.05)
+    if ahead:
+        return spoken_route([ahead[0][1]]), False
+    behind = max((a, n) for n, a in exits.items())
+    return spoken_route([behind[1]]), True
+
+
 def is_taxi_request(norm: str) -> bool:
     return "taxi" in norm and ("request" in norm or "ready" in norm)
 

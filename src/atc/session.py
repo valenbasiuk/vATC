@@ -11,7 +11,7 @@ from pathlib import Path
 
 from atc import phrase
 from atc.flightplan import FlightPlan
-from atc.readback import _normalize
+from atc.readback import _normalize, join_digits
 
 # Well-known ICAO airline designator -> radio telephony. Anything else is learned from the pilot's first call.
 TELEPHONY = {
@@ -50,6 +50,14 @@ class Session:
     handoffs_done: set[str] = field(default_factory=set)
     pending_handoff: object | None = None  # flow.Pending
     awaiting_squawk: float | None = None  # frequency where "squawk XXXX" was given; "radar contact" follows
+    # radar / arrival (enroute.py)
+    cleared_level_ft: int | None = None
+    direct_to: str | None = None
+    descent_given: bool = False
+    vectors_given: bool = False
+    intercept_given: bool = False
+    landing_cleared: bool = False
+    vacate_given: bool = False
     # "given" (--telephony), "table" (airline list or remembered from an earlier flight), "learned" (pilot's call)
     telephony_source: str | None = None
     acked_atc: str | None = None  # last ATC instruction already read back / acknowledged: not checked again
@@ -128,8 +136,7 @@ class Session:
 
 def _compact_call(pilot_text: str) -> str:
     """Normalized, digits joined, letters split from digits: 'LATAM1302' -> 'latam 1302', 'four one' -> '41'."""
-    t = re.sub(r"(?<=[a-z])(?=\d)", " ", _normalize(pilot_text))
-    return re.sub(r"(?<=\d) (?=\d)", "", t)
+    return join_digits(re.sub(r"(?<=[a-z])(?=\d)", " ", _normalize(pilot_text)))
 
 
 # Telephonies learned from the pilot's own calls, kept across runs (MAR -> Martinair), so ATC knows the name

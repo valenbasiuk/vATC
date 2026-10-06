@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from atc import phrase
 from atc.facility import callsign_for
 from atc.models import Airport, Facility, Frequency
-from atc.readback import _normalize
+from atc.readback import _normalize, join_digits
 from atc.session import Session
 
 
@@ -43,9 +43,7 @@ def issuing_role(airport: Airport) -> str:
 def _compact(text: str) -> str:
     """Normalized text with digit groups joined: 'one two zero decimal six' -> '1206', '120.600' -> '120600'.
     A comma ends a number, so 'flight level 200, 120.6' stays '200 1206' (not '2001206')."""
-    return " ".join(
-        re.sub(r"(?<=\d) (?:(?:decimal|point) )?(?=\d)", "", _normalize(part)) for part in re.split(r"[,;]", text)
-    )
+    return " ".join(join_digits(_normalize(part)) for part in re.split(r"[,;]", text))
 
 
 # What speech-to-text writes for a spoken single digit in a SID name ("ATOVO four bravo" -> "Atovil for Bravo").

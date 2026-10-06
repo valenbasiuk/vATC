@@ -47,6 +47,7 @@ class Frequency:
     kind: str  # TWR, GND, ATIS, APP, DEP, CLD, CTAF, UNICOM, ...
     mhz: float
     description: str = ""
+    spoken: str | None = None  # hand field: station name on this frequency if not "<airport> <role>"
 
 
 @dataclass

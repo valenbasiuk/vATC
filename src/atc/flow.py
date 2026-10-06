@@ -17,12 +17,12 @@ from dataclasses import dataclass
 
 from atc import phrase
 from atc.clearance import _freq
-from atc.facility import callsign_for, resolve_facility
+from atc.facility import ROLE_WORDS, callsign_for, group, resolve_facility
 from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.readback import _normalize
 from atc.runway import magnetic, runway_in_use
-from atc.sequence import along_cross, on_runway, runway_status
+from atc.sequence import along_cross, final_distance, on_runway, runway_status
 
 DEP_HANDOFF_AGL_FT = 700.0  # Tower -> Departure once climbing through this
 CONTROL_HANDOFF_FT = 10000.0  # Departure -> Control at this altitude or CONTROL_HANDOFF_NM out
@@ -116,12 +116,15 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     if not on_dest:
         if dest_app and d_dest <= ARRIVAL_APP_NM:
             return due(f"{dest.icao}:approach", dest_app)
-        if not dest_app and d_dest <= ARRIVAL_TWR_NM * 1.5:
+        if not dest_app and d_dest <= ARRIVAL_APP_NM:  # no Approach on file: Tower does the approach work
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
         return None
-    # destination Approach -> Tower
-    if fac.role == "approach" and d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000:
-        return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
+    # destination Approach -> Tower, once established on final (or close in and low)
+    if fac.role == "approach":
+        rwy = runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None)
+        established = rwy is not None and final_distance(dest, rwy, own) is not None
+        if established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000):
+            return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
     return None
 
 
@@ -172,6 +175,104 @@ def at_holding_point(session, airport: Airport, facility: Facility, own: OwnStat
     return f"{session.spoken_callsign}, {target[1]}."
 
 
+# --- frequencies and who is being called ----------------------------------------------------------------
+
+_KINDS = {"clearance": ("CLD",), "ground": ("GND", "RMP"), "tower": ("TWR",), "radar": ("APP", "ARR", "DEP")}
+_NOT_ADDRESSEE = {"request", "requesting", "say", "confirm", "what", "contact", "roger", "negative", "affirm"}
+
+
+def _addressee(session, pilot_text: str) -> list[str]:
+    """Words before the callsign: who the pilot is calling ('rosario center martinair 4133 ...' -> rosario center)."""
+    from atc.readback import _frequencies
+    from atc.session import _compact_call
+
+    if _frequencies(_normalize(pilot_text)):  # "Approach 120.6, Martinair 4133" reads back a handoff
+        return []
+    words = _compact_call(pilot_text).split()
+    tele = (session.telephony or "").lower()
+    num = "".join(c for c in session.callsign if c.isdigit())
+    for i, w in enumerate(words):
+        if (tele and w == tele) or (num and w == num):
+            # the station comes first ("Aeroparque Ground, good afternoon, Martinair ..."); a long prefix is a
+            # readback with the callsign at the end ("... ATOVO four bravo departure ..., Martinair 4133")
+            return words[:i] if i <= 5 else []
+    if words and words[0] in ROLE_WORDS:
+        return words[:1]
+    if len(words) > 1 and words[1] in ROLE_WORDS and words[0] not in _NOT_ADDRESSEE:
+        return words[:2]
+    return []
+
+
+def _station(world, airport: Airport, grp: str, words: list[str]) -> tuple[Airport, Facility] | None:
+    """The position of group `grp` at the airport named in `words` (else this one); area control from the world."""
+    if grp == "control":
+        return world.control()
+    named = next((a for a in world.airports if (a.spoken_name or a.name.split()[0]).lower() in words), airport)
+    kinds = ("DEP", "APP", "ARR") if grp == "radar" and "departure" in words else _KINDS[grp]
+    f = _freq(named, *kinds)
+    return (named, resolve_facility(named, f.mhz)) if f else None
+
+
+def _contact_text(a: Airport, fac: Facility) -> str:
+    return f"{callsign_for(a, fac)} {phrase.frequency(fac.freq.mhz, a.country == 'US')}"
+
+
+def wrong_station(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
+    """Calling a position that isn't the one on this frequency: 'this is Aeroparque Delivery, contact ...'.
+    Also an aircraft in the air calling Delivery or Ground."""
+    cs, station = session.spoken_callsign, callsign_for(airport, facility)
+    if not own.on_ground and facility.role in ("clearance", "ground"):
+        tgt = _station(world, airport, "radar", [])
+        return f"{cs}, this is {station}, " + (f"contact {_contact_text(*tgt)}." if tgt else "check frequency.")
+    addr = _addressee(session, pilot_text)
+    named = [ROLE_WORDS[w] for w in addr if w in ROLE_WORDS]
+    here = group(facility.role)
+    if not named or here is None or named[-1] == here:
+        return None
+    tgt = _station(world, airport, named[-1], addr)
+    if tgt is not None and abs(tgt[1].freq.mhz - own.com1_mhz) >= 0.005:
+        return f"{cs}, this is {station}, contact {_contact_text(*tgt)}."
+    return f"{cs}, this is {station}, check frequency."
+
+
+def frequency_request(session, world, airport: Airport, facility: Facility, own: OwnState,
+                      pilot_text: str) -> str | None:
+    """'Requesting Delivery frequency' / 'request frequency change (to Center)': answered from the files, never
+    by the model (it invented "Buenos Aires Center 125.2" and sent an aircraft in flight to Delivery)."""
+    norm = _normalize(pilot_text)
+    if "frequency" not in norm or not (re.search(r"\b(request|requesting|say|what|confirm|change|give)\b", norm)
+                                       or "?" in pilot_text):
+        return None
+    from atc.session import _compact_call
+
+    cs = session.spoken_callsign
+    addr = _addressee(session, pilot_text)
+    rest = _compact_call(pilot_text).split()[len(addr):]
+    asked = [ROLE_WORDS[w] for w in rest if w in ROLE_WORDS]
+    if asked:
+        tgt = _station(world, airport, asked[-1], rest)
+        if tgt is None:  # e.g. Center with no area control file: nobody to send them to
+            return f"{cs}, remain this frequency." if not own.on_ground else f"{cs}, unable, frequency not available."
+        if "change" in norm or not own.on_ground:
+            return f"{cs}, contact {_contact_text(*tgt)}."
+        return f"{cs}, {_contact_text(*tgt)}."
+    # "request frequency change" with no position named: the next one along the flight
+    tgt = None
+    if not own.on_ground:
+        if facility.role == "tower":
+            tgt = _station(world, airport, "radar", [])
+        elif facility.role in ("departure", "approach") and session.departed_from == airport.icao:
+            tgt = world.control()
+        plan = session.plan
+        dest = world.get(plan.destination) if plan else None
+        if tgt is None and dest is not None and dest.icao != airport.icao \
+                and distance_nm(own.lat, own.lon, dest.lat, dest.lon) <= 60:
+            tgt = _station(world, dest, "radar", []) or _station(world, dest, "tower", [])
+    if tgt is None or abs(tgt[1].freq.mhz - own.com1_mhz) < 0.005:
+        return f"{cs}, remain this frequency."
+    return f"{cs}, contact {_contact_text(*tgt)}."
+
+
 # --- check-ins, takeoff and landing --------------------------------------------------------------------
 
 def _qnh(own: OwnState, faa: bool) -> str | None:
@@ -195,19 +296,31 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, pref)
 
     # a plain check-in on a radar position (a check-in with a request or a question goes to the model)
-    if facility.role in ("departure", "approach", "control") and not own.on_ground and first \
-            and "request" not in norm and "?" not in pilot_text:
+    from atc.enroute import _arrival_radar, checkin_extra
+
+    radar = facility.role in ("departure", "approach", "control")
+    tower_as_app = facility.role == "tower" and arriving and _arrival_radar(world, session, airport, facility) \
+        and not own.on_ground and own.alt_agl_ft > 2500  # Rosario TWR/APP: approach work before the final
+    if (radar or tower_as_app) and not own.on_ground and first and "request" not in norm and "?" not in pilot_text:
         session.first_contact(facility.role)
-        bits = [f"{cs}, {station}, radar contact"]
+        bits = [f"{cs}, {station}, radar contact" if radar else f"{cs}, {station}"]
         if plan and plan.is_ifr and session.clearance == "confirmed" and own.squawk != plan.squawk:
             bits = [f"{cs}, {station}, squawk {phrase.digits(plan.squawk)}"]
             session.awaiting_squawk = own.com1_mhz  # the watcher says "radar contact" once the code is set
-        if arriving and facility.role == "approach" and rwy is not None:
+        departing = session.departed_from == airport.icao and plan is not None and not arriving
+        extra = checkin_extra(session, world, airport, facility, own)
+        if extra:  # already past the top of descent: the descent comes with the check-in
+            bits += extra
+        elif (arriving or tower_as_app) and rwy is not None:
             bits.append(f"expect runway {phrase.runway(rwy.ident, faa)}")
             q = _qnh(own, faa)
             if q:
                 bits.append(q)
-        elif session.departed_from == airport.icao and plan and plan.sid and facility.role in ("departure", "approach"):
+        elif departing and facility.role in ("departure", "approach") and plan.cruise_ft:
+            # ICAO 2018: "climb via SID to <level>"; no Control on file, so Departure clears the filed level
+            session.cleared_level_ft = plan.cruise_ft
+            bits.append(("climb via SID to " if plan.sid else "climb ") + phrase.level(plan.cruise_ft))
+        elif departing and plan.sid and facility.role in ("departure", "approach"):
             bits.append("climb via SID")
         return ", ".join(bits) + "."
 

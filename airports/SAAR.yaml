@@ -27,6 +27,9 @@ frequencies:
 - kind: TWR
   mhz: 118.7
   description: TWR/APP
+- kind: ATIS
+  mhz: 127.4
+  description: ATIS (from Valen's map, 2026-10-05)
 notes:
 - 'Non-US airport: pattern altitude/direction left empty, fill from the local charts.'
 needs_review: true

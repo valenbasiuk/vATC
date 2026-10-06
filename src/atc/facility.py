@@ -39,8 +39,22 @@ def resolve_facility(airport: Airport, com1_mhz: float) -> Facility | None:
     return None
 
 
+# Words a pilot uses to name a position -> group. Approach and Departure are the same radar position here.
+ROLE_WORDS = {"delivery": "clearance", "clearance": "clearance", "ground": "ground", "ramp": "ground",
+              "tower": "tower", "approach": "radar", "departure": "radar", "radar": "radar",
+              "control": "control", "center": "control", "centre": "control"}
+_ROLE_GROUP = {"clearance": "clearance", "ground": "ground", "tower": "tower", "approach": "radar",
+               "departure": "radar", "control": "control"}
+
+
+def group(role: str) -> str | None:
+    return _ROLE_GROUP.get(role)
+
+
 def callsign_for(airport: Airport, facility: Facility) -> str:
-    """Spoken facility name, e.g. 'Corrientes Tower'. Edit names in the YAML if this sounds off."""
+    """Spoken facility name, e.g. 'Corrientes Tower'. A frequency's `spoken` in the YAML wins ("Baires Approach")."""
+    if facility.freq.spoken:
+        return facility.freq.spoken
     short = airport.spoken_name or (
         airport.name.replace("International", "").replace("Airport", "").replace("Aeropuerto", "").strip()
     )

@@ -163,6 +163,81 @@ def test_no_read_back_needed_for_handoffs_and_approvals():
     assert not readback_missing(sid, "Climbing via SID, Martinair 4133", cs)
 
 
+def test_third_session():
+    """Valen's third session (2026-10-05): frequency requests, '200 10 after', 'have a nice day', Center."""
+    sabe, world, sim, s = _setup()
+    s.telephony = "Martinair"
+    h: list = []
+
+    def call(text, llm=None):
+        return handle(sabe, sim, llm, _Quiet(), h, text, session=s, world=world)
+
+    sim.update(com1_mhz=121.9)
+    assert call("Aeroparque ground, requesting delivery frequency.") == \
+        f"{CS}, Aeroparque Delivery one two niner decimal three."  # was the model: "...three zero zero"
+    assert call("Roger that thank you martinair 4133.") is None
+    sim.update(com1_mhz=129.3)
+    assert call("Aeroparque delivery good afternoon, martinair 4133 requesting ifr clearance to rosario with juliet.") \
+        .startswith(f"{CS}, Aeroparque Delivery, cleared to Rosario")
+    assert call("Roger that, martinair 4133 is cleared to rosario with the atovo 4 bravo departure, then as filed. "
+                "climbing via sid, expecting 200 10 after. departure on 120.6 squawking 2235.") \
+        .startswith(f"{CS}, readback correct")  # "200 10" was read as 20010
+    sim.update(com1_mhz=121.9)
+    s.contacted.add("SABE:ground")
+    assert call("Aeroparque ground martinair 4133 on holding point alpha for runway 31") == \
+        f"{CS}, contact Aeroparque Tower one one eight decimal eight five."
+    assert call("Tower on 118.85 have a nice day.") is None  # was "contact Tower" again
+    # in the air, with nowhere to send them (no Center frequency on file): remain this frequency, never invent one
+    sim.update(com1_mhz=120.6)
+    sim.set_airborne(20000, 400)
+    s.departed_from = "SABE"
+    assert call("aeroparque approach requesting frequency change to center") == f"{CS}, remain this frequency."
+    assert call("aeroparque approach, martinair 4133, request frequency change") == f"{CS}, remain this frequency."
+    # calling "Rosario Center" while tuned to Aeroparque Delivery, in the air
+    sim.update(com1_mhz=129.3)
+    assert call("rosario center martinair 4133 flight level 200") == \
+        f"{CS}, this is Aeroparque Delivery, contact Aeroparque Approach one two zero decimal six."
+
+
+def test_calling_the_wrong_position_on_the_ground():
+    sabe, world, sim, s = _setup()
+    s.telephony = "Martinair"
+    sim.update(com1_mhz=121.9)
+    r = handle(sabe, sim, None, _Quiet(), [], "Aeroparque delivery, martinair 4133, request IFR clearance",
+               session=s, world=world)
+    assert r == f"{CS}, this is Aeroparque Ground, contact Aeroparque Delivery one two niner decimal three."
+    # Approach and Departure are the same position: "Baires departure" on 120.6 is fine
+    from atc.flow import wrong_station
+
+    sim.update(com1_mhz=120.6)
+    sim.set_airborne(3000, 220)
+    apt, fac = world.pick(sim.own())
+    assert wrong_station(s, world, apt, fac, sim.own(), "baires departure good afternoon martinair 4133 climbing") is None
+
+
+def test_model_cannot_send_you_to_a_frequency_of_another_kind_of_station():
+    from atc.factcheck import contact_problems
+
+    sabe, world, _, _ = _setup()
+    st = world.stations()
+    assert contact_problems(f"{CS}, contact Rosario Center one two niner decimal three.", st) == \
+        ["frequency 1293 is not a control frequency"]
+    assert contact_problems(f"{CS}, contact Buenos Aires Center one two five decimal two.", st) == \
+        ["frequency 1252 (not on file)"]
+    assert contact_problems(f"{CS}, contact Aeroparque Tower one one eight decimal eight five.", st) == []
+
+
+def test_level_readback_and_number_joining():
+    from atc.readback import check_readback, join_digits
+
+    atc = f"{CS}, Aeroparque Approach, radar contact, climb flight level two zero zero."
+    assert check_readback(atc, "cleared for two zero zero martinair 4133").status == "correct"
+    assert check_readback(atc, "climbing flight level 180, martinair 4133").status == "incomplete"
+    assert join_digits("expecting 200 10 after") == "expecting 200 10 after"
+    assert join_digits("squawk 2 2 3 5 departure 1 2 0 decimal 6") == "squawk 2235 departure 1206"
+    assert join_digits("118 decimal 85") == "11885"
+
+
 def test_learned_telephony_is_remembered_for_the_next_flight(tmp_path, monkeypatch):
     import atc.session as sess
 
