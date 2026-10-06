@@ -10,6 +10,10 @@ Accent pools come from the multi-speaker models' speaker lists:
   - single-speaker voices count for their locale (en_GB -> English, en_US -> American).
 The same aircraft / position always gets the same voice (hashed), and voices that aren't downloaded are simply
 not in the pools: with only libritts everything falls back to it, as before.
+
+voices/blacklist.txt (optional, one per line; '#' starts a comment line, ' #' a note after the entry): a voice to
+never use, as tools/voice_samples.py names it ("en_US-l2arctic-medium#3"), or a whole accent ("accent:Spanish":
+those countries then get the next accent on their list, or the generic pool).
 """
 
 from __future__ import annotations
@@ -34,6 +38,23 @@ class Voice:
     @property
     def label(self) -> str:
         return f"{Path(self.model).stem}#{self.speaker} {self.accent}{' F' if self.female else ''}".strip()
+
+    @property
+    def key(self) -> str:
+        """How voices/blacklist.txt names this voice: 'en_US-l2arctic-medium#3' (the model alone if single)."""
+        return Path(self.model).stem + (f"#{self.speaker}" if self.speaker is not None else "")
+
+
+def read_blacklist(voices_dir: Path | str) -> set[str]:
+    path = Path(voices_dir) / "blacklist.txt"
+    if not path.exists():
+        return set()
+    out = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = re.split(r"\s+#", raw.strip(), maxsplit=1)[0].strip()  # "en_US-l2arctic-medium#3  # too fast"
+        if line and not line.startswith("#"):
+            out.add(line)
+    return out
 
 
 # VCTK speaker-info (speaker -> accent, F = female); s5 is a British female reader.
@@ -99,6 +120,7 @@ class VoiceBank:
     def __init__(self, voices_dir: Path | str = "voices", default_model: Path | str | None = None) -> None:
         self.default_model = str(default_model) if default_model else None
         self.pools: dict[str, list[Voice]] = {}
+        self.blacklist = read_blacklist(voices_dir)
         for onnx in sorted(Path(voices_dir).glob("*.onnx")):
             meta = onnx.with_name(onnx.name + ".json")
             if not meta.exists():
@@ -110,6 +132,13 @@ class VoiceBank:
             if info.get("language", {}).get("family") not in (None, "en"):
                 continue  # Spanish/Norwegian voices can't read English phraseology
             self._add(str(onnx), info)
+        for accent in list(self.pools):
+            if f"accent:{accent}" in self.blacklist:
+                del self.pools[accent]
+                continue
+            self.pools[accent] = [v for v in self.pools[accent] if v.key not in self.blacklist]
+            if not self.pools[accent]:
+                del self.pools[accent]
 
     def _add(self, model: str, info: dict) -> None:
         name = Path(model).stem.lower()

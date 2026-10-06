@@ -20,6 +20,8 @@ The plan for the next session is in docs/NEXT_SESSION.md.
     also the ATIS) its own voice from the airport's country (Argentine controllers: Spanish accent); speaking rate
     varies per person, controllers a bit faster; per-station hiss + squelch tail (`radio_fx.squelch_tail`). Models
     preload in a thread at startup. Synthesis checked (0.1-0.2 s per sentence once loaded); NOT heard by Valen yet.
+    `tools/voice_samples.py` writes one WAV per voice (voice_samples/<accent>/<key>.wav); `voices/blacklist.txt`
+    drops a voice ("en_US-l2arctic-medium#3") or a whole accent ("accent:Spanish").
 6. **STT.** PARTLY CHECKED (2026-10-05, Piper -> radio filter -> faster-whisper small.en round trip, no mic): ~2.6 s per call on CPU (over budget with LLM + TTS; try base.en), digits fine, names bad ("Martin Air", "Air park", "Atovil for Bravo"). Fixed in code: STT hint with station/telephony/SID/destination, split telephony joined, SID digit soundalikes, any first call on Delivery = clearance request. Still TODO / not reported yet: `FasterWhisperSTT` on CPU, `small.en` vs `base.en`. Done when a spoken call becomes correct text in about 1 s. Watch callsign and number accuracy: the clearance readback check is done by code on the transcript, so STT errors become "negative, I say again".
 6b. STT 2026-10-06: `without_timestamps`, no conditioning on earlier text, temperature 0 (faster); the hint now
     also lists the sim's station names ("NorCal Departure", "Oakland Center").
@@ -82,8 +84,16 @@ The plan for the next session is in docs/NEXT_SESSION.md.
      their reference point, else a CTR frequency the sim lists for the departure airport, e.g. KSFO "Oakland Center");
      station names the pilot uses ("SoCal Approach") are understood; only VHF airband frequencies (118-137 MHz) are
      ever used (OurAirports had a 36.07 "approach" at KLAX).
-   - TODO: STAR/approach procedures; holding; speed control; Center worldwide from the FIR boundaries in
-     little_navmap_navigraph.sqlite (`boundary`: FIR/UIR name + one frequency, geometry blob, AIRAC 1801).
+   - 2026-10-06 (2): one airspace file per Argentine FIR (SAEF Ezeiza, SARR Resistencia, SACF Cordoba, SAMF
+     Mendoza, SAVF Comodoro Rivadavia; VATSIM Argentina manual): SARC departures go to "Resistencia Control"; a Tower
+     with no Departure on file hands over to Control itself (2000 ft AGL or 5 NM). Worldwide Center from the FIR
+     boundaries in little_navmap_navigraph.sqlite (`navdb.fir_at`: blob = big-endian int32 count + float32 lon/lat
+     pairs, point in polygon; UIR frequency above FL245) when no airspace file is in reach: "Oakland Center",
+     "Los Angeles Center". Center -> Center handoff en route when the FIR changes (hand files: nearest reference
+     point). Speed control: vectors "reduce speed to two one zero knots", intercept 180, or 160 + "traffic to follow,
+     Airbus three twenty on six mile final" when an AI on final is closer than 6 NM; speed is a readback item;
+     indicated airspeed from `AIRSPEED_INDICATED` (VERIFY), ground speed if unknown.
+   - TODO: STAR/approach procedures; holding (needs a hold fix; rare in the sim).
 9d. **Airports load themselves** DONE in code (2026-10-06, `world.py`): no `--airport` needed with `--sim` (the
     airport you are on is found in the sim's scenery db, inside its area first; else airports/*.yaml, else
     OurAirports); spawning or tuning somewhere new loads that airport (a frequency no loaded airport has -> the
@@ -98,8 +108,14 @@ The plan for the next session is in docs/NEXT_SESSION.md.
     "climb and maintain"/"descend and maintain" (ICAO "climb to"/"descend to"), "wind 290 at 13", "then as filed",
     "readback correct, contact Ground point eight when ready", "push back approved", "contact ground point eight",
     after landing "turn left at Bravo, contact ground point eight" (no "welcome"), AI "taxi to the ramp".
-    TODO: initial altitude in FAA clearances ("maintain 5000"), separate departure/arrival runways (SFO departs 1L/1R
-    and lands 28L/28R: YAML hand fields), "hold short" of crossed runways.
+    DONE 2026-10-06 (2): FAA clearance without a SID: "maintain five thousand, expect ... ten minutes after departure"
+    (YAML `initial_alt_ft`, US default 5000; the readback must have it; the radar watches it until Departure climbs
+    you); separate departure/arrival runways (YAML `runway_configs`, KSFO west plan land 28L/28R depart 1L/1R, SE plan
+    19s/10s, picked by the arrival headwind; departures fall back to the arrival runways with > 5 kt tailwind; ATIS
+    "landing runways ..., departing runways ..."); "hold short of runway X" for runways the computed taxi route
+    crosses, then "holding short" -> "cross runway X" (or "hold short ..., traffic on two mile final") by position
+    (`taxi.crossings`, `handle_crossing`); runway thresholds filled from the sim's db when the YAML has none (KSFO
+    had none: parallel runways were all on the reference point); US parallel "R" runways default to right traffic.
 10. **Session state, rest.** First slice DONE (`session.py`: telephony, clearance state, positions contacted). TODO: assigned runway, pattern position, last instruction per position.
 11. **Runway-in-use logic.** DONE (`runway.py`). TODO: crosswind limits, preferred runways per airport, SABE noise abatement.
 12. **Readback check.** DONE: runway / hold short / takeoff / landing / taxi route (`readback.py`) plus the full clearance (`clearance.py`).
@@ -125,15 +141,26 @@ The plan for the next session is in docs/NEXT_SESSION.md.
     apron", "Speedbird two eight six, runway two eight right, taxi via Mike one, Bravo, Foxtrot"). Quiet window after
     ATC talks to the user: 6 s (Valen). 2026-10-06 polish: pushback detected (moving tail first) -> "push and start
     approved" / FAA "push back approved"; departure handoff by name ("contact NorCal Departure ..."); FAA group form;
-    accent voices (5b). Next: Approach/Departure chatter; conditional clearances for the user ("behind the landing
-    A320, line up and wait behind"); ground conflicts (give way); VFR pattern positions (13).
+    accent voices (5b). 2026-10-06 (2): Approach/Departure chatter (AI checks in climbing through 2000 ft AGL ->
+    "radar contact, climb ..."; arrival 7-15 NM -> "descend to ..., cleared ILS approach runway X" / "expect visual
+    approach"; established inside 10 NM -> "contact tower ..."), one queued exchange per aircraft per position.
+    Next: ground conflicts (give way).
 13. **Traffic sequencing (VFR focus).** FIRST SLICE DONE (2026-10-05 audit, `sequence.py`, tests/test_sequence.py): code computes who is on the runway and on final for the runway in use (thresholds from OurAirports, now in the YAMLs), tells Tower whether takeoff/landing clearance is ALLOWED, and a guard replaces any "cleared for takeoff/to land" the model still gives ("hold position, traffic on two miles final" / "number two, traffic to follow..."). Rules: arrival inside 3 NM or anyone on the runway blocks takeoff; anyone closer on final or on the runway blocks landing. Fake sim: `/final 3 [rwy]`, `/onrwy`, `/notraffic`. TODO: pattern positions (downwind/base), departures still climbing out, line up and wait, verify with real AI traffic (own aircraft is now filtered by SimConnect object id, VERIFY).
     VFR circuit IN PROGRESS (2026-10-06): `src/atc/pattern.py` is written (inbound -> "join left downwind runway 31,
     wind, QNH, report downwind" / FAA "enter left downwind ..., report midfield downwind", straight-in when lined up;
     downwind -> number in sequence / FAA "number one, runway X, cleared to land"; base/final -> landing clearance or
     "cleared touch and go" / FAA "cleared for the option"; ready + "request left turnout" / circuits; watcher:
     after a touch and go "report downwind", a VFR departure at 8 NM "frequency change approved") and the session
-    fields exist, but it is NOT wired into main yet and has no tests. See docs/NEXT_SESSION.md step 1.
+    fields exist. WIRED IN 2026-10-06 (2), tests/test_pattern.py: a whole SABE circuit in the REPL makes no LLM
+    call. Pattern calls are handled before the readback check ("left downwind 31" repeats Tower's words); the watcher
+    clears a circuit aircraft on 2.5 NM final if it didn't call; a new downwind lap needs a new clearance; VFR full
+    stops get "welcome, vacate via X"; no Departure handoff from the circuit or after a turn-out request ("VFR"),
+    "frequency change approved" at 8 NM instead; zone transits ("request to transit the zone") stay with the model
+    with a ZONE TRANSIT context line (never "cleared to land"). Fake sim: `/leg downwind|base|final [nm]|upwind|out`.
+    Conditional line-up for the user (ICAO "behind the landing Airbus three twenty on two mile final, line up and
+    wait runway three one, behind", "behind" is a readback item; FAA "hold short of runway X, traffic ...") and the
+    takeoff clearance said by itself once the runway is free (`flow.takeoff_when_clear`). "N mile final" (not
+    "miles").
 14. **ATIS.** DONE in code (2026-10-06, `atis.py`): spoken on the ATIS frequency on COM1 (or COM2 if the sim says
     COM2 receive is on: `COM_RECEIVE:2`, VERIFY), one sentence per watcher tick so calls still get through, looped
     with a 3 s pause (text mode: once a minute), the ATIS position's own voice. ICAO and FAA formats; wind/QNH from

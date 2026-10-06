@@ -115,6 +115,15 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
             a, f = ctl
             return due(f"{apt.icao}:control",
                        (f, f"contact {callsign_for(a, f)} {phrase.frequency(f.freq.mhz, a.country == 'US')}"))
+    # Control -> the next Control en route: into another FIR, or (navdata FIRs) up into the upper sector
+    if fac.role == "control" and (dest is None or distance_nm(own.lat, own.lon, dest.lat, dest.lon) > ARRIVAL_APP_NM):
+        from atc.world import FIR_PREFIX
+
+        ctl = world.control(own, apt)
+        if ctl is not None and (ctl[0] is not apt or apt.icao.startswith(FIR_PREFIX)):
+            a, f = ctl
+            return due(f"control:{a.icao}:{f.freq.mhz:.3f}",
+                       (f, f"contact {callsign_for(a, f)} {phrase.frequency(f.freq.mhz, a.country == 'US')}"))
     if dest is None:
         return None
     d_dest = distance_nm(own.lat, own.lon, dest.lat, dest.lon)
@@ -133,6 +142,29 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         if established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000):
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
     return None
+
+
+def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) -> str | None:
+    """The takeoff clearance Tower held back ("hold position, traffic on two mile final" / "behind the landing
+    ..., line up and wait"), said as soon as the runway is free: nobody on it, nobody on short final."""
+    if session.takeoff_waiting is None:
+        return None
+    if not own.on_ground:  # took off anyway, or the flight moved on
+        session.takeoff_waiting = None
+        return None
+    picked = world.pick(own)
+    if picked is None or picked[1].role != "tower":
+        return None
+    airport, _ = picked
+    ident, clearance = session.takeoff_waiting
+    rwy = next((r for r in airport.runways if r.ident == ident), None)
+    if rwy is None:
+        session.takeoff_waiting = None
+        return None
+    if runway_status(airport, rwy, own, traffic).takeoff_blocked():
+        return None
+    session.takeoff_waiting = None
+    return f"{session.spoken_callsign}, {clearance}."
 
 
 def squawk_now_correct(session, own: OwnState) -> str | None:

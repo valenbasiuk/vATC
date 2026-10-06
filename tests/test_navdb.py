@@ -75,3 +75,25 @@ def test_ksfo_runway_thresholds_and_crossings_from_the_sim():
     names, nodes = _departure_path(net, ksfo, rwy1l, sim.own())
     # departing 1L from stand 107 (calm): both 28s are crossed, named like the runway in use's parallel direction
     assert [c[0] for c in crossings(net, ksfo, nodes, rwy1l)] in (["28R", "28L"], ["10L", "10R"])
+
+
+def test_navdata_fir_control_and_center_to_center_handoff():
+    from atc import flow
+    from atc.session import Session
+    from atc.sim.fake import FakeSim
+    from atc.world import load_world
+
+    if navdb.navigraph_path() is None:
+        pytest.skip("no Navigraph boundary database")
+    world = load_world("KSFO", ROOT / "airports", None)
+    ksfo = world.get("KSFO")
+    sim = FakeSim(ksfo, callsign="UAL436")
+    sim.update(lat=36.0, lon=-120.5, alt_msl_ft=15000, on_ground=False, heading_deg=140)
+    a, f = world.control(sim.own(), ksfo)
+    assert (a.icao, f.freq.mhz, f.freq.spoken) == ("FIR:OAKLAND", 127.8, "Oakland Center")
+    sim.update(com1_mhz=127.8)
+    s = Session(callsign="UAL436", departed_from="KSFO")
+    assert flow.next_handoff(s, world, sim.own()) is None  # still in Oakland's FIR
+    sim.update(lat=34.6, lon=-118.6)  # into Los Angeles Center's
+    key, text = flow.next_handoff(s, world, sim.own())
+    assert text == "contact Los Angeles Center one two five point two seven, good day"

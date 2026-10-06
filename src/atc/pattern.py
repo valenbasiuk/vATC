@@ -24,7 +24,7 @@ from atc.geo import distance_nm, heading_diff
 from atc.models import Airport, Facility, OwnState, Runway, Traffic
 from atc.readback import _normalize
 from atc.runway import magnetic, runway_in_use
-from atc.sequence import _miles, along_cross, final_distance, runway_status
+from atc.sequence import _miles, along_cross, final_distance, runway_status, wait_for_takeoff
 
 LEAVE_ZONE_NM = 8.0
 AUTO_CLEAR_NM = 2.5  # in the circuit, on final this close and not cleared yet: Tower clears without a call
@@ -90,10 +90,7 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
             return None
         st = runway_status(airport, rwy, own, traffic)
         session.first_contact(facility.role)
-        why = st.takeoff_blocked()
-        if why:
-            return f"{pre}, hold position, {why}."
-        bits = [pre]
+        bits = []
         turn = re.search(r"\b(left|right) (?:turn ?out|turn|departure)\b", norm)
         if want == "circuits" or session.circuit_intention in ("circuits", "touch and go"):
             session.in_circuit = True
@@ -108,7 +105,11 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
         bits.append(f"runway {rw}, cleared for takeoff")
         if session.in_circuit and not faa:
             bits.append("report downwind")
-        return ", ".join(bits) + "."
+        wait = wait_for_takeoff(st, airport, own)
+        if wait:  # the takeoff clearance (with the turn-out / circuit) follows once the runway is free
+            session.takeoff_waiting = (rwy.ident, ", ".join(bits))
+            return f"{pre}, {wait}."
+        return ", ".join([pre] + bits) + "."
 
     # airborne
     if is_transit(norm):

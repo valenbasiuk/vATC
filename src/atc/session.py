@@ -57,6 +57,7 @@ class Session:
     descent_given: bool = False  # the final arrival altitude (from the arrival radar)
     center_descent: bool = False  # area control's first step (FL100)
     vectors_given: bool = False
+    speed_assigned: int | None = None  # last speed restriction given by the arrival radar (knots)
     intercept_given: bool = False
     landing_cleared: bool = False
     vacate_given: bool = False

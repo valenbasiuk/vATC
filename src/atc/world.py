@@ -166,18 +166,52 @@ class World:
 
     def control(self, own: OwnState | None = None, near: Airport | None = None) -> tuple[Airport, Facility] | None:
         """Area control for where the aircraft is: the first CTR frequency of the nearest airspace file in reach,
-        else a CTR frequency the sim lists for the departure airport (KSFO: "Oakland Center")."""
-        spaces = self.airspaces if own is None else sorted(
-            self._airspaces_near(own), key=lambda s: distance_nm(own.lat, own.lon, s.lat, s.lon))
+        else the FIR the aircraft is in from the navdata boundaries (anywhere in the world: "Oakland Center",
+        "Los Angeles Center"), else a CTR frequency the sim lists for the departure airport."""
+        hand = [s for s in self.airspaces if not s.icao.startswith(FIR_PREFIX)]
+        spaces = hand if own is None else sorted(
+            (s for s in self._airspaces_near(own) if s in hand), key=lambda s: distance_nm(own.lat, own.lon, s.lat, s.lon))
         for a in spaces:
             for f in a.frequencies:
                 if f.kind == "CTR":
                     return a, resolve_facility(a, f.mhz)
+        found = self._fir(own, near) if own is not None and self.use_navdb else None
+        if found is not None:
+            return found
         for a in ([near] if near is not None else []):
             for f in a.frequencies:
                 if f.kind == "CTR":
                     return a, resolve_facility(a, f.mhz)
         return None
+
+
+    def _fir(self, own: OwnState, near: Airport | None) -> tuple[Airport, Facility] | None:
+        """The navdata FIR at the aircraft's position, kept in `airspaces` (so its frequency answers when tuned)
+        with the aircraft's position as its reference point (a FIR's box centre can be far out at sea)."""
+        from atc import navdb
+        from atc.models import Frequency
+
+        found = navdb.fir_at(own.lat, own.lon, own.alt_msl_ft)
+        if found is None:
+            return None
+        name, mhz, _ = found
+        key = FIR_PREFIX + name.upper().replace(" ", "_")
+        a = next((s for s in self.airspaces if s.icao == key), None)
+        if a is None:
+            ref = near or self.nearest(own)
+            country = ref.country if ref else ""
+            title = name.title()
+            a = Airport(key, f"{title} FIR", own.lat, own.lon, 0.0, country=country, towered=True,
+                        needs_review=False, spoken_name=title, trans_alt_ft=ref.trans_alt_ft if ref else None)
+            self.airspaces.append(a)
+        a.lat, a.lon = own.lat, own.lon
+        if not any(abs(f.mhz - mhz) < 0.005 for f in a.frequencies):  # the UIR above FL245 has its own
+            spoken = f"{a.spoken_name} {'Center' if a.faa else 'Control'}"
+            a.frequencies.append(Frequency("CTR", mhz, f"{name} (navdata, AIRAC 1801: check)", spoken))
+        return a, resolve_facility(a, mhz)
+
+
+FIR_PREFIX = "FIR:"  # airspaces made from the navdata boundaries, not from airspace/*.yaml
 
 
 def ensure_airport(icao: str, airports_dir: Path, data_dir: Path = Path("data"), use_navdb: bool = True,

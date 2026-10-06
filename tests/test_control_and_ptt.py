@@ -142,3 +142,21 @@ def test_sabe_to_rosario_still_with_ezeiza():
     assert world.control(sim.own(), sabe)[0].icao == "SAEF"
     sim.update(lat=-32.95, lon=-60.6)  # 10 NM from Rosario
     assert world.control(sim.own(), sabe)[0].icao == "SAEF"
+
+
+def test_ezeiza_hands_over_to_resistencia_en_route_to_corrientes():
+    plan = FlightPlan(callsign="MAR4133", rules="I", aircraft_type="F100", origin="SABE", destination="SARC",
+                      destination_name="Corrientes", alternate=None, route="DCT", sid=None, sid_transition=None,
+                      cruise_ft=20000, planned_runway="31", dest_runway="02")
+    world = load_world("SABE", ROOT / "airports", plan, use_navdb=False)
+    sabe = world.get("SABE")
+    sim = FakeSim(sabe, callsign="MAR4133")
+    sim.update(squawk=plan.squawk, com1_mhz=135.5, lat=-32.0, lon=-59.0, heading_deg=0)
+    sim.set_airborne(20000, 420)
+    sim.update(alt_msl_ft=20000)
+    s = Session(callsign="MAR4133", plan=plan, telephony="Martinair", clearance="confirmed", departed_from="SABE")
+    s.contacted.add("SAEF:control")
+    cb = _Callbacks(world, sim, _Quiet(), [], s)
+    assert cb.tick(now=0) is None  # still nearer Ezeiza's reference point
+    sim.update(lat=-29.6)  # 130 NM from Corrientes, now nearer Resistencia's
+    assert cb.tick(now=1) == f"{CS}, contact Resistencia Control one two four decimal three, good day."

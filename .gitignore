@@ -10,3 +10,4 @@ data/airlines.dat
 voices/*.onnx
 voices/*.onnx.json
 simbrief_last.json
+voice_samples/

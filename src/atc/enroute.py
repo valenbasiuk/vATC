@@ -19,7 +19,7 @@ from atc.geo import bearing_deg, distance_nm, heading_diff, offset_nm
 from atc.models import Airport, Facility, OwnState, Runway, Traffic
 from atc.readback import _normalize
 from atc.runway import magnetic, runway_in_use
-from atc.sequence import final_distance, on_runway, runway_status, threshold
+from atc.sequence import _miles, final_distance, on_runway, runway_status, threshold
 
 VECTORS_NM = 25.0  # the arrival radar starts vectoring inside this
 INTERCEPT_POINT_NM = 10.0  # on the extended centerline...
@@ -154,11 +154,45 @@ def vectors_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
     plat, plon = _point(dest, rwy, -INTERCEPT_POINT_NM, side)
     _, hdg = _heading_words(bearing_deg(own.lat, own.lon, plat, plon), dest)
     session.vectors_given = True
-    return f"{session.spoken_callsign}, fly heading {hdg}, vectors {_approach(dest, rwy)}."
+    speed = _speed_text(session, own, VECTORS_KT, dest)
+    return f"{session.spoken_callsign}, fly heading {hdg}, vectors {_approach(dest, rwy)}" + \
+        (f", {speed}" if speed else "") + "."
 
 
-def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
-    """Turn onto a 30-degree intercept (or straight in if already lined up) and the approach clearance."""
+VECTORS_KT = 210  # speed on vectors
+INTERCEPT_KT = 180  # speed with the approach clearance
+SPACING_KT = 160  # with traffic on final ahead closer than SPACING_NM
+SPACING_NM = 6.0
+
+
+def _speed_text(session, own: OwnState, kt: int, airport: Airport) -> str | None:
+    """'reduce speed to two one zero knots' (FAA without 'knots') when the aircraft is faster than that (indicated
+    airspeed, else ground speed) and hasn't been given this speed or a lower one already."""
+    now = own.ias_kt if own.ias_kt is not None else own.gs_kt
+    if now <= kt + 10 or (session.speed_assigned is not None and session.speed_assigned <= kt):
+        return None
+    session.speed_assigned = kt
+    return f"reduce speed to {phrase.digits(str(kt))}" + ("" if airport.faa else " knots")
+
+
+def _traffic_ahead(dest: Airport, rwy: Runway, own: OwnState, traffic) -> tuple[str, float] | None:
+    """(spoken type or 'traffic', NM final) of an aircraft on final ahead that will be closer than SPACING_NM to us
+    once we are on the same final, or None."""
+    from atc.traffic import spoken_type
+
+    along, _ = _signed_cross(dest, rwy, own.lat, own.lon)
+    ours = max(-along, 0.0)
+    best = None
+    for t in traffic:
+        d = final_distance(dest, rwy, t)
+        if d is not None and d < ours and ours - d < SPACING_NM and (best is None or d > best[1]):
+            best = (spoken_type(getattr(t, "type", None)) or "traffic", d)
+    return best
+
+
+def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState, traffic=()) -> str:
+    """Turn onto a 30-degree intercept (or straight in if already lined up) and the approach clearance, with the
+    speed: 180 kt, or 160 kt and the traffic to follow when someone is on final close ahead."""
     _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
     app = _approach(dest, rwy)
     cleared = f"cleared {app}" if app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer")) else \
@@ -166,13 +200,17 @@ def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
     alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)), dest)
     session.intercept_given = True
     cs = session.spoken_callsign
+    ahead = _traffic_ahead(dest, rwy, own, traffic)
+    speed = _speed_text(session, own, SPACING_KT if ahead else INTERCEPT_KT, dest)
+    tail = (f", {speed}" if speed else "") + \
+        (f", traffic to follow, {ahead[0]} on {_miles(ahead[1])} final" if ahead else "")
     if abs(cross) < 0.5 and heading_diff(own.heading_deg, rwy.heading_deg) <= 20:
-        return f"{cs}, {cleared}, report established."
+        return f"{cs}, {cleared}{tail}, report established."
     true_int = (rwy.heading_deg - 30) % 360 if cross > 0 else (rwy.heading_deg + 30) % 360
     hval, hdg = _heading_words(true_int, dest)
     own_mag = magnetic(dest, own.heading_deg) % 360
     turn = "left" if ((hval - own_mag) % 360) > 180 else "right"
-    return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, {cleared}."
+    return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, {cleared}{tail}."
 
 
 def _due_for_intercept(dest: Airport, rwy: Runway, own: OwnState) -> bool:
@@ -316,7 +354,7 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
     d_dest = distance_nm(own.lat, own.lon, dest.lat, dest.lon)
     if session.descent_given and not session.intercept_given and d_dest <= VECTORS_NM + 10:
         if _due_for_intercept(dest, rwy, own):
-            return intercept_text(session, dest, rwy, own)
+            return intercept_text(session, dest, rwy, own, traffic)
         if not session.vectors_given and d_dest <= VECTORS_NM:
             return vectors_text(session, dest, rwy, own)
     return None

@@ -306,6 +306,9 @@ class _Callbacks:
                 _surface_wind(own, near, self.session)
             flow.track(self.session, self.world, own, now)
             text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
+            if text is None:  # "hold position, traffic on short final" earlier: the takeoff clearance, now free
+                text = flow.takeoff_when_clear(self.session, self.world, own,
+                                               self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
             if text is None and self.session.pending_handoff is None:
                 due = flow.next_handoff(self.session, self.world, own)
                 if due is not None:

@@ -315,3 +315,60 @@ def find_fix(ident: str, near: tuple[float, float], con: sqlite3.Connection | No
             if d <= max_nm and (best is None or d < best[0]):
                 best = (d, (lat, lon))
     return best[1] if best else None
+
+
+# --- FIR boundaries (Navigraph db that ships with Little Navmap; AIRAC 1801 on Valen's PC) -----------------
+
+def navigraph_path() -> Path | None:
+    """little_navmap_navigraph.sqlite next to the sim's database (it has the FIR/UIR boundaries; the sim's has none)."""
+    main = default_path()
+    if main is None:
+        return None
+    p = Path(main).with_name("little_navmap_navigraph.sqlite")
+    return p if p.exists() else None
+
+
+def _ring(blob: bytes) -> list[tuple[float, float]]:
+    """Boundary geometry: big-endian int32 point count, then that many big-endian float32 (lon, lat) pairs."""
+    import struct
+
+    n = struct.unpack(">i", blob[:4])[0]
+    vals = struct.unpack(f">{2 * n}f", blob[4:4 + 8 * n])
+    return list(zip(vals[0::2], vals[1::2]))
+
+
+def _inside(lon: float, lat: float, ring: list[tuple[float, float]]) -> bool:
+    """Point in polygon (ray casting)."""
+    inside = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+        if (y1 > lat) != (y2 > lat) and lon < x1 + (lat - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+@lru_cache(maxsize=256)
+def _fir_at(lat_cell: float, lon_cell: float, upper: bool) -> tuple[str, float, tuple[float, float]] | None:
+    path = navigraph_path()
+    con = _connect(str(path)) if path else None
+    if con is None:
+        return None
+    kinds = ("UIR", "FIR") if upper else ("FIR",)
+    rows = con.execute(
+        "select type, name, com_frequency, min_laty, max_laty, min_lonx, max_lonx, geometry from boundary "
+        f"where type in ({','.join('?' * len(kinds))}) and com_frequency is not null and min_lonx <= max_lonx "
+        "and ? between min_laty and max_laty and ? between min_lonx and max_lonx",
+        (*kinds, lat_cell, lon_cell)).fetchall()
+    rows.sort(key=lambda r: kinds.index(r[0]))  # above the UIR floor the UIR's frequency first
+    for _, name, khz, la1, la2, lo1, lo2, geom in rows:
+        if geom and _inside(lon_cell, lat_cell, _ring(geom)):
+            return str(name), round(khz / 1000.0, 3), ((la1 + la2) / 2, (lo1 + lo2) / 2)
+    return None
+
+
+def fir_at(lat: float, lon: float, alt_ft: float | None = None) -> tuple[str, float, tuple[float, float]] | None:
+    """(FIR name, MHz, centre of its box) for a position, e.g. ('OAKLAND', 127.8, ...). Above FL245 the UIR's
+    frequency where there is one. Looked up per ~6 NM cell (cached). None without the database."""
+    try:
+        return _fir_at(round(lat, 1), round(lon, 1), (alt_ft or 0) >= 24500)
+    except sqlite3.Error:
+        return None

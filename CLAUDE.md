@@ -4,7 +4,15 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-06)
+## Where we are (2026-10-06, second session)
+- Second session 2026-10-06 (worked docs/NEXT_SESSION.md steps 1, 2, 4.1-4.6): VFR circuit wired in (a whole circuit
+  at SABE makes no LLM call; zone transits stay with the model); one airspace file per Argentine FIR (SARC departures
+  -> Resistencia Control) + worldwide Center from the Navigraph FIR boundaries + Center->Center handoffs; FAA
+  "maintain five thousand" without a SID; runway crossings ("hold short of runway 28R" -> "cross runway 28R");
+  KSFO runway thresholds from the sim's db (were missing); separate departure/arrival runways (`runway_configs`,
+  KSFO 1L/1R + 28L/28R); Approach/Departure chatter for AI; ICAO conditional line-up + automatic takeoff clearance
+  once the runway is free; speed control on the arrival; tools/voice_samples.py + voices/blacklist.txt.
+  203 tests, 6/6 scenarios. All fake-sim / sim-db only: see docs/NEXT_SESSION.md step 1 (real-sim checks).
 - Session 2026-10-06 (Valen: "polish everything, as realistic as SayIntentions"): airports load themselves (spawn
   anywhere, no --airport with --sim; YAML written once from OurAirports or the sim's db), US/FAA phraseology (group
   callsigns "United four thirty-six", altitudes by transition altitude, "climb and maintain", "then as filed", "ground
@@ -13,8 +21,6 @@ docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (s
   frequency), accent voices (l2arctic + vctk downloaded: every AI pilot and every controller position has its own
   voice by country), chatter polish (pushback, "NorCal Departure"), descent in two steps (Center FL100, Approach the
   final altitude). KSFO -> KLAX flown in the fake sim with the real sim data. 161 tests, 6/6 scenarios.
-- Unfinished: `src/atc/pattern.py` (VFR circuit) is written but not wired in. Known bug: SARC departures get Ezeiza
-  Control (only SAEF.yaml exists). Both are steps 1-2 of docs/NEXT_SESSION.md.
 - Real sim, 2026-10-06: KSFO Ground answers after the auto-airport fix; AI chatter uses the sim's airline + flight
   number ("Speedbird two eight six"). Everything else from this session is fake-sim only (see Status honesty).
 
@@ -52,7 +58,9 @@ reports buttons 19 and 32 as always held: switches, don't use). `--mic` / `--aud
 (defaults: Blue Snowball mic, Samsung USB-C earphones). AI chatter is always on (Tower/Ground of the airport you're at).
 Old style still works (`ATC_LLM_BASE_URL` + `ATC_LLM_API_KEY` + unprefixed models). Keys: `GROQ_API_KEY`, `GEMINI_API_KEY`,
 `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` (client.py PROVIDERS).
-Fake-sim REPL: `/wind 300 10 1015`, `/final 2 31`, `/onrwy`, `/notraffic`, `/air`, `/near SAAR 30 6000`, `/ground`.
+Fake-sim REPL: `/wind 300 10 1015`, `/final 2 31`, `/onrwy`, `/notraffic`, `/air`, `/near SAAR 30 6000`, `/ground`,
+`/leg downwind|base|final 2|upwind|out` (own aircraft in the circuit), `/aidep`, `/aiarr 20` (AI with Approach chatter).
+Voices: `python tools/voice_samples.py [--accent Spanish]` -> voice_samples/; bad ones into voices/blacklist.txt.
 Compare models: `python tools/compare_models.py [--only groq] [--runs N]` (scores the LLM-owned turns).
 Piping input from Windows PowerShell 5.1 to python is buffered until the end and starts with a BOM; to test timers
 (standby callback) drive the REPL from a Python subprocess script instead.
@@ -83,19 +91,22 @@ Context fed to the LLM each turn: own telemetry (incl. wind, QNH) + nearby AI tr
 ```
 src/atc/models.py        dataclasses (OwnState, Traffic, Airport, Runway, Frequency, Facility)
 src/atc/geo.py           distance / bearing helpers
-src/atc/runway.py        runway in use from wind (headwind, calm -> longest)
+src/atc/runway.py        runway in use from wind (headwind, calm -> longest); use="departure"/"arrival" with the
+                         YAML's runway_configs (KSFO lands 28s, departs 1s)
 src/atc/facility.py      COM1 frequency -> which controller answers (None / ATIS / CTAF = silent)
 src/atc/main.py          handle() = one transmission -> one reply (code-owned replies first, then LLM + fact check);
                          text/PTT loops; _Callbacks = watcher thread for controller-initiated calls (standby, handoffs)
 src/atc/world.py         all airports of the plan + airspace/*.yaml; tuned frequency -> (airport, facility);
                          discover(): loads/writes the airport you spawned at or tuned; control(): Center near you
+                         (airspace file in reach, else the navdata FIR at your position: navdb.fir_at)
 src/atc/atis.py          ATIS text (ICAO/FAA) + letter state + "information X is now current" check
 src/atc/weather.py       METAR from aviationweather.gov (cached, background thread; ATC_METAR=off)
 src/atc/monitor.py       radar watch: level bust, 7700, traffic alerts, go-around; pilot mayday/pan pan/going around
-src/atc/pattern.py       VFR circuit at towered fields (WRITTEN, NOT WIRED IN YET: docs/NEXT_SESSION.md step 1)
+src/atc/pattern.py       VFR circuit at towered fields: join/straight-in, sequence, touch and go, turn-outs, zone exit
 src/atc/voices.py        voice bank: accent pools from voices/*.onnx; pilot voice by country, one per ATC position
 src/atc/flow.py          takeoff/landing detection, handoffs, check-ins, takeoff/landing clearances (code-owned)
-src/atc/taxi.py          taxi graph (OSM / MSFS json) -> route -> taxi clearance (code-owned)
+src/atc/taxi.py          taxi graph (OSM / MSFS json) -> route -> taxi clearance (code-owned); runway crossings
+                         ("hold short of runway X" -> "cross runway X")
 src/atc/traffic.py       traffic information from the pilot's view (code-owned), aircraft type names
 src/atc/factcheck.py     rejects LLM replies stating numbers/types/taxiways not in their input
 src/atc/enroute.py       radar work: directs, climb, descent at TOD, vectors, approach clearance, landing, vacate
@@ -119,12 +130,14 @@ src/atc/audio/           tts.py (Piper; voice bank, models cached + preloaded), 
                          joystick.py (WinMM buttons), radio_fx.py (band-pass, hiss, squelch tail)
 tools/                   check_env.py, probe_own.py, probe_traffic.py, probe_voice.py, probe_stt.py, probe_ptt.py,
                          probe_simbrief.py (fetch OFP), compare_models.py (score LLM-owned turns),
-                         download_voices.py (accent voices -> voices/), list_models.py,
+                         download_voices.py (accent voices -> voices/), voice_samples.py (one WAV per voice, for
+                         voices/blacklist.txt), list_models.py,
                          fetch_osm_taxi.py (OSM taxiways -> airports/osm/), probe_taxi.py (MSFS taxi data, UNTESTED)
 scenarios/               6 scenarios (YAML; `silence_ok` / `expect_silence` for turns ATC shouldn't answer)
 airports/                SABE, SARC, SAAR, SAAV, KSFO (+ any the world writes when you spawn/tune there); osm/ maps
-airspace/                SAEF.yaml (Ezeiza Control 135.5 / 134.5 / 125.2); other Argentine FIRs: NEXT_SESSION step 2
-tests/                   161 tests; synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
+airspace/                one per Argentine FIR: SAEF Ezeiza, SARR Resistencia, SACF Cordoba, SAMF Mendoza, SAVF
+                         Comodoro Rivadavia (VATSIM Argentina manual); elsewhere the navdata FIRs (AIRAC 1801)
+tests/                   203 tests; synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
                          the LNM db, off the network (ATC_METAR=off) and from writing airport files (AUTO_GENERATE)
 ```
 
@@ -135,8 +148,10 @@ Real sim (Valen, 2026-10-05/06): taxi at SABE, Ground -> Tower -> Approach hando
 flight number in chatter, KSFO Ground after the auto-airport fix.
 Not reported yet: faster-whisper STT and push-to-talk (`--ptt`), radio filter by ear, sentence-streamed Piper playback,
 accent voices by ear, ATIS by ear (COM2 receive simvar unverified), callsign from the sim's ATC settings, spawn
-detection writing a new YAML, radar monitoring/go-around in a real flight, any VFR pattern work at SABE/SARC.
-Fake sim only so far: the whole SABE -> SAAR flow (taxi, Tower, handoffs, arrival), KSFO -> KLAX (FAA).
+detection writing a new YAML, radar monitoring/go-around in a real flight, any VFR pattern work at SABE/SARC,
+AIRSPEED_INDICATED (speed control), runway crossings / runway configs / FIR Center handoffs in a real flight,
+Approach/Departure chatter with real AI.
+Fake sim only so far: the whole SABE -> SAAR flow (taxi, Tower, handoffs, arrival), KSFO -> KLAX (FAA), VFR circuits.
 Unverified spots are marked `VERIFY` or `TODO` in the code. Valen runs the probe scripts and brings you their output;
 start from that, don't guess around it.
 

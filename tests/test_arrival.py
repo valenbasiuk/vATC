@@ -8,6 +8,7 @@ from atc.audio.tts import PrintTTS
 from atc.flightplan import Fix, FlightPlan
 from atc.geo import bearing_deg
 from atc.main import _Callbacks, handle
+from atc.readback import check_readback
 from atc.session import Session
 from atc.sim.fake import FakeSim
 from atc.taxi import load_network
@@ -93,11 +94,15 @@ def test_whole_arrival_into_rosario():
     # 20 NM out, east of the field: vectors toward the intercept point
     _fly(sim, -33.05, -60.45, 4000, toward=(saar.lat, saar.lon))
     v = cb.tick(now=10)
-    assert v.startswith(f"{CS}, fly heading ") and v.endswith("vectors runway zero two.")
+    assert v.startswith(f"{CS}, fly heading ") and v.endswith("vectors runway zero two, reduce speed to two one zero "
+                                                             "knots.")  # 250 kt: slowed for the vectors
+    assert check_readback(v, f"heading {v.split('heading ')[1].split(',')[0]}, vectors runway 02, speed 210, "
+                             "Martinair 4133").status == "correct"
     # near the intercept point: turn to intercept + approach clearance
     _fly(sim, -33.06, -60.76, 3000, hdg=270)
     i = cb.tick(now=60)
     assert "cleared approach runway zero two" in i and "maintain three thousand feet until established" in i
+    assert i.endswith("reduce speed to one eight zero knots.")
     # established on a 5 NM final: Tower clears to land on its own
     sim.update(wind_dir_deg=20.0, wind_kt=8.0)
     sim.place_on_final(saar, 5.0)
@@ -138,3 +143,25 @@ def test_fact_check_no_longer_lets_fl100_pass_as_1000_feet():
     assert "number 100" in problems("climb flight level one zero zero", ["pattern 1000 ft AGL"])
     assert problems("climb flight level two zero zero", ["cruise 20000"]) == []
     assert problems("contact tower one one eight decimal eight five", ["TWR 118.850"]) == []
+
+
+def test_intercept_behind_traffic_on_final_slows_to_160_and_names_it():
+    from atc.enroute import intercept_text
+    from atc.models import Traffic
+    from atc.runway import runway_in_use
+    from atc.sequence import threshold
+
+    world, sim, s, saar = _setup()
+    rwy = runway_in_use(saar, None, None, "02")
+    _fly(sim, -33.06, -60.76, 3000, hdg=270, gs=220)  # near the intercept point, ~10 NM from the threshold
+    tlat, tlon = threshold(saar, rwy)
+    import math
+
+    h = math.radians(rwy.heading_deg)
+    ai = Traffic("ARG1234", tlat - 6 * math.cos(h) / 60, tlon - 6 * math.sin(h) / (60 * math.cos(math.radians(tlat))),
+                 saar.elevation_ft + 1900, 150, rwy.heading_deg, False, type="A320")
+    r = intercept_text(s, saar, rwy, sim.own(), [ai])
+    assert r.endswith("reduce speed to one six zero knots, traffic to follow, Airbus three twenty on six mile final.")
+    s2 = Session(callsign="MAR4133", plan=PLAN, telephony="Martinair")
+    sim.update(ias_kt=175.0)  # already slow (indicated airspeed, ground speed says 220): no speed restriction
+    assert "reduce speed" not in intercept_text(s2, saar, rwy, sim.own(), [])

@@ -29,7 +29,8 @@ def main() -> None:
             qnh = "unknown" if o.qnh_hpa is None else f"{o.qnh_hpa:.1f}hPa"
             print(
                 f"lat {o.lat:.5f} lon {o.lon:.5f} | MSL {o.alt_msl_ft:.0f} AGL {o.alt_agl_ft:.0f} ft | "
-                f"GS {o.gs_kt:.0f} kt | HDG {o.heading_deg:.0f} | ground={o.on_ground} | "
+                f"GS {o.gs_kt:.0f} kt | IAS {'unknown' if o.ias_kt is None else f'{o.ias_kt:.0f} kt'} | "
+                f"HDG {o.heading_deg:.0f} | ground={o.on_ground} | "
                 f"COM1 {o.com1_mhz} | squawk {o.squawk} | wind {wind} | QNH {qnh}"
             )
             time.sleep(1)

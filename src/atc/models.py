@@ -27,6 +27,7 @@ class OwnState:
     temp_c: float | None = None  # outside air temperature at the aircraft
     com2_mhz: float | None = None  # only when COM2 is heard (receive on): the ATIS is often listened to there
     zulu_s: float | None = None  # sim clock, seconds since 00:00 UTC
+    ias_kt: float | None = None  # indicated airspeed (speed control); None = unknown, ground speed is used instead
 
 
 @dataclass

@@ -180,10 +180,15 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
     hdg = re.search(r"\bheading (\d{3})\b", join_digits(t))
     if hdg:
         items["heading"] = hdg.group(1)
+    spd = re.search(r"\bspeed (?:to )?(\d{3})\b", join_digits(t))  # "reduce speed to one eight zero knots"
+    if spd:
+        items["speed"] = spd.group(1)
     # FAA "hold short" must be read back. ICAO "taxi to holding point runway 31" is a clearance limit: the runway
     # read back is enough ("three one via alfa"), so "holding point" is not an item of its own.
     if "hold short" in t or "holding short" in t:
         items["hold short"] = True
+    if re.search(r"\bbehind\b", t) and "line up" in t:  # a conditional clearance: the condition comes back too
+        items["behind"] = True
     if "cleared for takeoff" in t or "cleared takeoff" in t:
         items["cleared for takeoff"] = True
     if "cleared to land" in t:
@@ -264,7 +269,7 @@ def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:
         got["runway"] = expected["runway"]
     joined = _units(_joined(pilot_norm))
     # said without the keyword ("one zero one five", "to NH1015", "FL200", "three thousand", "three four zero")
-    for key in ("qnh", "squawk", "level", "altitude", "heading"):
+    for key in ("qnh", "squawk", "level", "altitude", "heading", "speed"):
         if key in expected and got.get(key) != expected[key] and re.search(rf"\b{expected[key]}\b", joined):
             got[key] = expected[key]
     if "level" in expected and "level" not in got:  # a different level read back ("climbing flight level 180")
@@ -285,7 +290,7 @@ def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:
             if "frequency" in got and not (val & got["frequency"]):
                 missing.append("frequency")
             continue
-        if key in ("qnh", "squawk", "level", "altitude", "heading"):
+        if key in ("qnh", "squawk", "level", "altitude", "heading", "speed"):
             if got.get(key) != val:
                 missing.append(f"{key} {val}")
         elif key == "runway":
