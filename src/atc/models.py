@@ -81,6 +81,9 @@ class Airport:
     spoken_name: str | None = None  # how controllers say it: "Aeroparque" (station names, clearance limits)
     # Hand-written from the charts: runway ident -> taxi route from the main apron, e.g. {"13": "via Alfa, Charlie"}.
     taxi_routes: dict[str, str] = field(default_factory=dict)
+    # Magnetic variation from the AD chart, east positive ("VAR 10° W" -> -10). None = unknown: winds are then
+    # said in true degrees, as the sim gives them.
+    mag_var_deg: float | None = None
 
 
 @dataclass

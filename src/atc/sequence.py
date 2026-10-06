@@ -164,4 +164,19 @@ def guard(reply: str, st: RunwayStatus | None, spoken_callsign: str, own: OwnSta
         if why:
             return f"{spoken_callsign}, {why}, continue approach." if why.startswith("number") else \
                 f"{spoken_callsign}, continue approach, {why}, expect late landing clearance."
+        if st.own_final_nm is None:  # free runway, but not on final yet (e.g. a VFR call 10 NM out): too early
+            return _report_final_instead(reply)
     return reply
+
+
+def _report_final_instead(reply: str) -> str:
+    """'..., runway zero two, cleared to land.' -> '..., runway zero two, report final.' (one 'final' only)."""
+    out: list[str] = []
+    for c in (c.strip() for c in reply.rstrip(". ").split(",")):
+        if _LAND.search(c):
+            rwy = re.search(r"runway [a-z ]+", c)
+            c = (rwy.group(0).strip() + ", " if rwy and not any("runway" in o for o in out) else "") + "report final"
+        if "final" in c and any("final" in o for o in out):
+            continue
+        out.append(c)
+    return ", ".join(out) + "."

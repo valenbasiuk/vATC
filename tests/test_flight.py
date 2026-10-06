@@ -297,6 +297,9 @@ def test_fact_check():
     assert problems("Martinair four one three three, contact approach one two zero decimal six.", ctx) == []
     assert "number 270" in problems("Martinair four one three three, wind two seven zero degrees.", ctx)
     assert "number 4000" in problems("Martinair four one three three, climb four thousand feet.", ctx)
+    wind_ctx = ["Wind: 030 degrees at 7 knots", "CLD 129.300", "flight level 20000"]
+    assert "number 300" in problems("wind three zero zero at seven knots", wind_ctx)  # not hidden in 129.300
+    assert problems("wind zero three zero degrees seven knots, climb flight level two zero zero", wind_ctx) == []
     assert "aircraft type 'boeing'" in problems("Traffic, a Boeing on final.", ctx)
     assert "taxiway names" in problems("Martinair four one three three, taxi via Alfa, Bravo.", ctx)
 

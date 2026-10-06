@@ -19,21 +19,23 @@ import sys
 import time
 from pathlib import Path
 
+from atc import phrase
 from atc.airports.schema import load_airport
+from atc.runway import magnetic
 from atc.audio.tts import PrintTTS
 from atc.llm.client import PROVIDERS, OpenAICompatLLM, env_key
 from atc.main import handle
 from atc.session import Session
 from atc.sim.fake import FakeSim
 
-CANDIDATES = [  # free tiers as of 2026-10; check each provider's model list if one 404s
-    "groq:llama-3.3-70b-versatile",
+CANDIDATES = [  # answering on free keys 2026-10-05 (tools/list_models.py shows what exists now)
+    "groq:qwen/qwen3.8-27b",
     "groq:openai/gpt-oss-120b",
-    "cerebras:llama-3.3-70b",
-    "gemini:gemini-2.5-flash-lite",
-    "gemini:gemini-2.5-flash",
-    "nvidia:meta/llama-3.3-70b-instruct",
-    "mistral:mistral-small-latest",
+    "groq:openai/gpt-oss-20b",
+    "gemini:gemini-3.5-flash-lite",
+    "gemini:gemini-flash-lite-latest",
+    "gemini:gemini-3.5-flash",
+    "nvidia:nvidia/nemotron-3-super-120b-a12b",
     "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
@@ -80,8 +82,9 @@ def _score_question(reply: str) -> list[str]:
     fails = []
     if not low.startswith("martinair four one three three"):
         fails.append("does not start with the spoken callsign")
-    if "zero three zero" not in low or "seven" not in low:
-        fails.append("wind not zero three zero degrees seven knots")
+    want = phrase.digits(f"{magnetic(load_airport(Path('airports/SABE.yaml')), WIND[0]):03.0f}")  # VAR 10 W: 040
+    if want not in low or "seven" not in low:
+        fails.append(f"wind not {want} degrees seven knots (magnetic)")
     if "one zero two zero" not in low:
         fails.append("no QNH one zero two zero")
     if "aeroparque" in low:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from atc.facility import callsign_for, describe_frequencies
 from atc.geo import bearing_deg, compass_point, distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
-from atc.runway import runway_in_use
+from atc.runway import magnetic, runway_in_use
 from atc.traffic import spoken_type
 
 SYSTEM_TEMPLATE = """\
@@ -158,8 +158,8 @@ def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None
     if own.wind_dir_deg is not None and own.wind_kt is not None:
         if own.wind_kt <= 3:
             out.append("Wind: calm")
-        else:
-            out.append(f"Wind: {own.wind_dir_deg:03.0f} degrees at {own.wind_kt:.0f} knots")
+        else:  # magnetic, as controllers say it (true if the airport's variation is unknown)
+            out.append(f"Wind: {magnetic(airport, own.wind_dir_deg):03.0f} degrees at {own.wind_kt:.0f} knots")
     else:  # say so explicitly: small models fill a silent gap with an invented value
         out.append('Wind: NOT AVAILABLE (if asked, reply "wind not available"; never state a wind)')
     if own.qnh_hpa is not None:

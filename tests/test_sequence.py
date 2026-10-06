@@ -131,6 +131,23 @@ def test_guard_keeps_safe_takeoff_clearance():
     assert reply == text
 
 
+def test_early_landing_clearance_becomes_report_final():
+    from atc.sequence import RunwayStatus
+
+    st = RunwayStatus(runway=R31)  # runway free, pilot not on final
+    own = _sim().own()
+    own.on_ground = False
+    cs = "Lima Victor Alfa Bravo Charlie"
+    # what the Groq models really said (2026-10-05 compare_models run)
+    assert guard(f"{cs}, Corrientes Tower, QNH one zero two zero, runway zero two, cleared to land.", st, cs, own) \
+        == f"{cs}, Corrientes Tower, QNH one zero two zero, runway zero two, report final."
+    assert guard(f"{cs} Corrientes Tower, cleared to land runway zero two, report final", st, cs, own) \
+        == f"{cs} Corrientes Tower, runway zero two, report final."
+    assert guard(f"{cs} Corrientes Tower, runway two, QNH one zero two zero, you are cleared to land runway two, "
+                 "advise when on final.", st, cs, own) \
+        == f"{cs} Corrientes Tower, runway two, QNH one zero two zero, report final."
+
+
 def test_guard_only_acts_on_clearances():
     from atc.sequence import RunwayStatus
 
@@ -146,6 +163,21 @@ def test_calm_wind_keeps_the_planned_runway():
     assert runway_in_use(APT, None, None, "31").ident == "31"
     assert runway_in_use(APT, 0, 2, "31").ident == "31"
     assert runway_in_use(APT, None, None).ident == "13"  # no plan: longest (first of equals)
+
+
+def test_wind_is_said_magnetic_when_the_variation_is_known():
+    from dataclasses import replace
+
+    from atc.runway import magnetic
+
+    sabe = replace(APT, mag_var_deg=-10.0)  # VAR 10° W
+    assert magnetic(sabe, 30.0) == 40.0 and magnetic(sabe, 355.0) == 5.0
+    assert magnetic(APT, 30.0) == 30.0  # unknown variation: true, unchanged
+    sim = FakeSim(sabe, callsign="MAR4133")
+    sim.update(com1_mhz=118.85, wind_dir_deg=300.0, wind_kt=12.0)
+    r = handle(sabe, sim, None, _Quiet(), [], "Testa Tower, Martinair 4133, ready for departure",
+               session=Session(callsign="MAR4133", telephony="Martinair"))
+    assert "wind three one zero degrees one two knots" in r
 
 
 def test_light_tailwind_keeps_planned_runway_strong_one_does_not():

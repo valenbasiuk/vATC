@@ -36,7 +36,9 @@ def problems(reply: str, sources: list[str]) -> list[str]:
     for n in _numbers(reply):
         if len(n) < 2:
             continue
-        if not any(n in k for k in known):
+        # whole numbers only, trailing zeros allowed: "1206" = 120.600, "200" = 20000 (FL200), but "300" is NOT in
+        # 129.300 (that loose match let "wind three zero zero" through for a 030 wind)
+        if not any(k == n or (k.startswith(n) and not k[len(n):].strip("0")) for k in known):
             found.append(f"number {n}")
     low = reply.lower()
     for w in _TYPE_WORDS:

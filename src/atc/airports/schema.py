@@ -14,8 +14,9 @@ def airport_to_dict(a: Airport) -> dict:
     d = asdict(a)
     # Keep the file readable: drop empty optional values from runways.
     d["runways"] = [{k: v for k, v in r.items() if v is not None} | {"ident": r["ident"]} for r in d["runways"]]
-    if d.get("spoken_name") is None:  # optional, hand-added; don't write a null that would hide a later edit
-        d.pop("spoken_name", None)
+    for key in ("spoken_name", "mag_var_deg"):  # optional, hand-added; don't write a null that hides a later edit
+        if d.get(key) is None:
+            d.pop(key, None)
     return d
 
 
@@ -50,6 +51,7 @@ def load_airport(path: Path) -> Airport:
         needs_review=bool(raw.get("needs_review", True)),
         spoken_name=raw.get("spoken_name") or None,
         taxi_routes={str(k).zfill(2) if str(k).isdigit() else str(k): str(v) for k, v in (raw.get("taxi_routes") or {}).items()},
+        mag_var_deg=float(raw["mag_var_deg"]) if raw.get("mag_var_deg") is not None else None,
     )
 
 

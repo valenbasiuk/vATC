@@ -20,7 +20,7 @@ from atc.facility import callsign_for, resolve_facility
 from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.readback import _normalize
-from atc.runway import runway_in_use
+from atc.runway import magnetic, runway_in_use
 from atc.sequence import on_runway, runway_status
 
 DEP_HANDOFF_AGL_FT = 700.0  # Tower -> Departure once climbing through this
@@ -188,7 +188,7 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     st = runway_status(airport, rwy, own, traffic)
     pre = f"{cs}, {station}" if first else cs
     rw = phrase.runway(rwy.ident, faa)
-    wind = phrase.wind(own.wind_dir_deg, own.wind_kt)
+    wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt)
 
     if own.on_ground and "ready" in norm and ("departure" in norm or "takeoff" in norm or "take off" in norm):
         session.first_contact(facility.role)

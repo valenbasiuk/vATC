@@ -4,6 +4,7 @@
 icao: SABE
 name: Aeroparque Jorge Newbery
 spoken_name: Aeroparque
+mag_var_deg: -10  # AD chart (LIDO): VAR 10° W. Winds are said magnetic: sim true 030 -> "zero four zero"
 lat: -34.559419
 lon: -58.415536
 elevation_ft: 18.0

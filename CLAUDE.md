@@ -16,7 +16,9 @@ docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (s
   handoffs, check-ins, traffic information. The LLM only gets free-form turns (VFR pattern work, questions), and every
   LLM reply is fact-checked. OpenRouter free tier = 50 requests/day total; Valen won't pay (Argentine card tax), so
   the plan is stacked free providers (groq/gemini/cerebras/...) via provider prefixes in ATC_LLM_MODEL.
-- Next: Valen gets free keys (Groq, Gemini) and runs compare_models; real-sim check of the watcher/handoffs and AI
+- Keys set (user env, 2026-10-05): GROQ_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, OPENROUTER_API_KEY. Model names
+  move fast (2.5 Gemini and NVIDIA llama-3.3 are gone): `python tools/list_models.py` shows what exists.
+- Next: real-sim check of the watcher/handoffs and AI
   type fields; `airspace/SAEF.yaml` frequencies; probe_taxi with the SDK DLL; STT/PTT (6-7); pattern sequencing (13); ATIS (14).
 - Valen wants it as realistic as real ATC. He knows less phraseology than you: fix wrong phraseology without asking.
   Prefer moving decisions into code over "letting the model think" (latency, and errors come from missing facts).
@@ -25,7 +27,7 @@ docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (s
 ```powershell
 python tools/probe_simbrief.py --username Valentino951      # fetch latest OFP -> simbrief_last.json
 # provider-prefixed list, tried in order; keys are read from env vars or the Windows user environment (setx)
-$env:ATC_LLM_MODEL = "groq:llama-3.3-70b-versatile,gemini:gemini-2.5-flash-lite,openrouter:nvidia/nemotron-3-super-120b-a12b:free"
+$env:ATC_LLM_MODEL = "gemini:gemini-flash-lite-latest,nvidia:nvidia/nemotron-3-super-120b-a12b,openrouter:nvidia/nemotron-3-super-120b-a12b:free,groq:qwen/qwen3.8-27b"
 python -m atc --airport SABE --simbrief simbrief_last.json  # /freq 129.3 = Delivery, 121.9 Ground; fake sim starts on Ground
 ```
 Old style still works (`ATC_LLM_BASE_URL` + `ATC_LLM_API_KEY` + unprefixed models). Keys: `GROQ_API_KEY`, `GEMINI_API_KEY`,

@@ -19,6 +19,13 @@ def crosswind_kt(wind_dir_deg: float, wind_kt: float, runway_heading_deg: float)
     return abs(wind_kt * math.sin(math.radians(wind_dir_deg - runway_heading_deg)))
 
 
+def magnetic(airport: Airport, true_deg: float | None) -> float | None:
+    """True direction (as the sim gives wind) -> magnetic, as a controller says it. Unknown variation: unchanged."""
+    if true_deg is None or airport.mag_var_deg is None:
+        return true_deg
+    return (true_deg - airport.mag_var_deg) % 360
+
+
 def runway_in_use(
     airport: Airport, wind_dir_deg: float | None, wind_kt: float | None, preferred: str | None = None
 ) -> Runway | None:

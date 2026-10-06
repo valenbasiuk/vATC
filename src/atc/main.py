@@ -161,7 +161,7 @@ def handle(
 
 
 SURFACE_WIND_AGL_FT = 3000.0
-SURFACE_WIND_RADIUS_NM = 10.0
+SURFACE_WIND_RADIUS_NM = 15.0  # a VFR inbound calls Tower ~10 NM out, below 3000 ft: close enough to surface wind
 
 
 def _surface_wind(own, airport: Airport, session: Session):

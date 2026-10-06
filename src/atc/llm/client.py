@@ -71,6 +71,25 @@ def env_key(name: str) -> str:
         return ""
 
 
+def _no_thinking(payload: dict, ep: "Endpoint") -> None:
+    """No (or minimal) thinking tokens: latency. Each provider spells it differently and some reject the others'
+    fields (HTTP 400). Models that can't switch it off get room in max_tokens so the answer still fits."""
+    model = ep.model.lower()
+    if ep.provider == "openrouter":
+        payload["reasoning"] = {"enabled": False}
+    elif ep.provider == "gemini":
+        payload["reasoning_effort"] = "minimal"  # Gemini 3.x: "none" is a 400 on some models; "minimal" = no thinking
+    elif ep.provider == "groq":
+        if "gpt-oss" in model:  # always reasons; "low" + hidden keeps it short and out of the reply
+            payload.update(reasoning_effort="low", include_reasoning=False, max_tokens=600)
+        elif "qwen" in model:
+            payload["reasoning_effort"] = "none"
+    elif ep.provider == "nvidia":
+        payload["chat_template_kwargs"] = {"enable_thinking": False, "thinking": False}
+    elif ep.provider == "anthropic":
+        pass  # Claude only thinks when asked to
+
+
 @dataclass
 class Endpoint:
     provider: str  # PROVIDERS key, or "custom" (ATC_LLM_BASE_URL)
@@ -123,16 +142,14 @@ class OpenAICompatLLM:
 
     def _call(self, ep: Endpoint, messages: list[dict]) -> str:
         payload = {"model": ep.model, "messages": messages, "max_tokens": 120, "temperature": 0.3}
-        # No thinking tokens (latency). Each provider spells it differently and rejects the others' field (HTTP 400).
-        if "openrouter" in ep.url:
-            payload["reasoning"] = {"enabled": False}
-        elif "googleapis" in ep.url:
-            payload["reasoning_effort"] = "none"
+        _no_thinking(payload, ep)
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
             ep.url + "/chat/completions",
             data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ep.key}"},
+            # A real User-Agent: Groq's Cloudflare answers "403 error code: 1010" to Python's default one.
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ep.key}",
+                     "User-Agent": "atc-ia/0.1 (personal flight-sim ATC)"},
         )
         for attempt in range(self.retries + 1):
             try:

@@ -67,7 +67,16 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
       (`GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`,
       `ANTHROPIC_API_KEY`; read from the Windows user environment too). Free quotas stack. With clearance, taxi,
       takeoff/landing, check-ins, handoffs and traffic in code, a flight needs only a few LLM calls (VFR pattern work,
-      questions). `tools/compare_models.py` now scores those LLM-owned turns; run it once keys exist.
+      questions). `tools/compare_models.py` scores those LLM-owned turns (VFR inbound SARC, wind/QNH question SABE).
+    - Free-key results 2026-10-05 (2 runs x 2 turns, with fact check + landing guard on):
+      4/4 groq:qwen/qwen3.8-27b 0.7 s (but says "cleared to land" 10 NM out: the guard fixes it to "report final"),
+      4/4 nvidia:nvidia/nemotron-3-super-120b-a12b 1.0 s, 4/4 gemini:gemini-flash-lite-latest 1.1 s,
+      4/4 openrouter nemotron-3-super:free 1.1 s, 4/4 gemini:gemini-3.5-flash 4.9 s.
+      Without the guard groq gpt-oss-20b/120b scored 0/4 (early landing clearance, "wind three zero" for 030).
+      Gone/404 now: gemini-2.5-*, nvidia meta/llama-3.3-70b. Groq needs a User-Agent (Cloudflare 403 1010).
+      Gemini thinking off = reasoning_effort "minimal" ("none" is a 400 on 3.5 Lite). Recommended order:
+      gemini flash-lite-latest, nvidia nemotron super, openrouter nemotron super :free, groq qwen3.8.
+    - Winds are said magnetic where `mag_var_deg` is in the YAML (SABE -10 from the LIDO chart); SARC/SAAR TODO.
 
 ## E. Coverage (Phase 6) and extras
 19. SABE/SARC manual pass from the AIP charts: taxi routes, real departure frequency (SABE currently uses APP 120.6 as the departure frequency, VERIFY), procedures, reporting points.
