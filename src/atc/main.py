@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import threading
 import time
 from dataclasses import replace
@@ -26,7 +27,7 @@ from atc.geo import distance_nm
 from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
 from atc.models import Airport
-from atc.readback import _normalize, check_readback, is_acknowledgement
+from atc.readback import _normalize, check_readback, is_acknowledgement, readback_missing
 from atc.runway import runway_in_use
 from atc.sequence import context_lines as sequence_context
 from atc.sequence import guard, runway_status
@@ -86,21 +87,32 @@ def handle(
         reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
     if reply is None:
         reply = handle_push(session, airport, facility, pilot_text)
+    if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
+        reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
     # A readback only answers the position that gave the instruction: after "contact Tower", the first call
     # on Tower is a new call even if it repeats Ground's "holding point runway 31".
     last_atc = history[-1][1] if history and session.last_role in (None, session._key(facility.role)) else None
-    rb = check_readback(last_atc, pilot_text)
-    if reply is None and (
-        rb.status == "correct"
-        or (rb.status == "none" and is_acknowledgement(last_atc, pilot_text, tuple(cs.split())))
+    key = session._key(facility.role)
+    # What this call is checked against: an instruction ATC asked to have read back, else the last instruction
+    # unless it was already read back correctly (later calls like "on holding point Alfa" are not readbacks).
+    target = session.readback_due.get(key) or (last_atc if last_atc != session.acked_atc else None)
+    rb = check_readback(target, pilot_text)
+    words = tuple(cs.split())
+    if reply is None and rb.status == "none" and readback_missing(target, pilot_text, words):
+        session.readback_due[key] = target  # "roger" to a taxi/takeoff/QNH/... instruction: ICAO "read back"
+        reply = f"{cs}, read back."
+    elif reply is None and (
+        rb.status == "correct" or (rb.status == "none" and is_acknowledgement(last_atc, pilot_text, words))
     ):
         # Decided by code, no LLM call. Real controllers don't answer a correct readback or a "roger".
+        session.acked_atc = last_atc
+        session.readback_due.pop(key, None)
         print("[ATC: no reply needed]")
         return None
-    if reply is None and rb.status == "incomplete" and last_atc:
+    elif reply is None and rb.status == "incomplete" and target:
         # Wrong readback: say the instruction again, word for word (ICAO "negative, I say again").
-        instruction = last_atc.removeprefix(cs).lstrip(" ,").removeprefix(station).lstrip(" ,")
-        reply = f"{cs}, negative, I say again, {instruction}"
+        session.readback_due.pop(key, None)  # the correction itself now carries the instruction
+        reply = f"{cs}, negative, I say again, {_instruction(target, cs, station)}"
     if reply is not None:
         return say(reply)
 
@@ -153,11 +165,26 @@ def handle(
         print(f"[LLM error, nobody answers: {str(exc)[:200]}]")
         return None
     llm_s = time.perf_counter() - t_llm
+    if re.fullmatch(rf"{re.escape(cs)}[,\s]*(?:roger|copied|wilco)[.\s]*", reply, re.I):
+        print(f"[ATC: no reply needed (model only said: {reply})]")  # real controllers don't answer a roger
+        return None
     safe = guard(reply, status, cs, own)
     if safe != reply:
         print(f"[sequence guard replaced: {reply}]")
         reply = safe
     return say(reply, llm_s)
+
+
+def _instruction(last_atc: str, cs: str, station: str) -> str:
+    """The instruction itself, without callsign, station name or an earlier 'negative, I say again'
+    (so a second correction doesn't become 'negative, I say again, negative, I say again, ...')."""
+    text = last_atc.removeprefix(cs).lstrip(" ,")
+    while True:
+        stripped = re.sub(r"^(?:negative,?\s*)?i say again,?\s*", "", text, flags=re.I)
+        stripped = stripped.removeprefix(station).lstrip(" ,")
+        if stripped == text:
+            return text
+        text = stripped
 
 
 SURFACE_WIND_AGL_FT = 3000.0
@@ -353,7 +380,12 @@ def main(argv: list[str] | None = None) -> None:
 
         speaker = PrintTTS()
 
+    import atc.session as session_mod
+
+    session_mod.LEARNED_PATH = Path("data/telephony_learned.json")  # MAR -> Martinair, remembered between flights
     session = Session(callsign=args.callsign, plan=plan, telephony=args.telephony, standby_chance=args.standby)
+    if session.telephony:
+        print(f"telephony: {session.spoken_callsign} ({'--telephony' if session.telephony_source == 'given' else 'remembered / airline list; your first call can change it'})")
     dest = world.get(plan.destination) if plan else None
     if dest is not None:  # its spoken_name is how the clearance limit is said ("Rosario")
         session.dest_name = dest.spoken_name or dest.name

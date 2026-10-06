@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import difflib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,7 +50,11 @@ class Session:
     handoffs_done: set[str] = field(default_factory=set)
     pending_handoff: object | None = None  # flow.Pending
     awaiting_squawk: float | None = None  # frequency where "squawk XXXX" was given; "radar contact" follows
-    telephony_source: str | None = None  # "given" (--telephony), "table" (airline list), "learned" (pilot's call)
+    # "given" (--telephony), "table" (airline list or remembered from an earlier flight), "learned" (pilot's call)
+    telephony_source: str | None = None
+    acked_atc: str | None = None  # last ATC instruction already read back / acknowledged: not checked again
+    # "<ICAO>:<role>" -> instruction ATC asked to have read back ("read back"): the next call is checked against it
+    readback_due: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.telephony is not None:
@@ -57,7 +62,8 @@ class Session:
             return
         prefix = re.match(r"[A-Z]{3}(?=\d)", self.callsign.upper())
         if prefix:
-            self.telephony = TELEPHONY.get(prefix.group(0)) or table_telephony(prefix.group(0))
+            code = prefix.group(0)
+            self.telephony = TELEPHONY.get(code) or remembered_telephony(code) or table_telephony(code)
             self.telephony_source = "table" if self.telephony else None
 
     @property
@@ -70,7 +76,7 @@ class Session:
         num = "".join(c for c in self.callsign if c.isdigit())
         if self.telephony_source in ("given", "learned") or not num or not re.match(r"[A-Z]{3}\d", self.callsign.upper()):
             return
-        compact = re.sub(r"(?<=\d) (?=\d)", "", _normalize(pilot_text))
+        compact = _compact_call(pilot_text)
         for m in re.finditer(rf"(?:\b([a-z]{{3,}}) )?\b([a-z]{{3,}}) {num}\b", compact):
             word = m.group(2)
             if word in _NOT_TELEPHONY:
@@ -81,6 +87,7 @@ class Session:
             if not (self.telephony and difflib.SequenceMatcher(None, word, self.telephony.lower()).ratio() >= 0.75):
                 self.telephony = word.title()
             self.telephony_source = "learned"
+            remember_telephony(self.callsign[:3], self.telephony)
             return
 
     def names_other_flight(self, pilot_text: str) -> bool:
@@ -89,7 +96,7 @@ class Session:
         num = "".join(c for c in self.callsign if c.isdigit())
         if not num or not re.match(r"[A-Z]{3}\d", self.callsign.upper()):
             return False
-        compact = re.sub(r"(?<=\d) (?=\d)", "", _normalize(pilot_text))
+        compact = _compact_call(pilot_text)
         if re.search(rf"\b{num}\b", compact):
             return False
         names = {t.lower() for t in TELEPHONY.values()} | _KNOWN_TELEPHONY
@@ -117,6 +124,39 @@ class Session:
         first = self.is_first_contact(role)
         self.contacted.add(self._key(role))
         return first
+
+
+def _compact_call(pilot_text: str) -> str:
+    """Normalized, digits joined, letters split from digits: 'LATAM1302' -> 'latam 1302', 'four one' -> '41'."""
+    t = re.sub(r"(?<=[a-z])(?=\d)", " ", _normalize(pilot_text))
+    return re.sub(r"(?<=\d) (?=\d)", "", t)
+
+
+# Telephonies learned from the pilot's own calls, kept across runs (MAR -> Martinair), so ATC knows the name
+# before the first call. main sets the path; None (tests) = don't read or write anything.
+LEARNED_PATH: Path | None = None
+
+
+def remembered_telephony(designator: str) -> str | None:
+    if LEARNED_PATH is None or not LEARNED_PATH.exists():
+        return None
+    try:
+        return json.loads(LEARNED_PATH.read_text(encoding="utf-8")).get(designator.upper())
+    except (OSError, ValueError):
+        return None
+
+
+def remember_telephony(designator: str, name: str | None) -> None:
+    if LEARNED_PATH is None or not name or not re.fullmatch(r"[A-Za-z]{3}", designator):
+        return
+    try:
+        known = json.loads(LEARNED_PATH.read_text(encoding="utf-8")) if LEARNED_PATH.exists() else {}
+        if known.get(designator.upper()) != name:
+            known[designator.upper()] = name
+            LEARNED_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LEARNED_PATH.write_text(json.dumps(known, indent=1, sort_keys=True), encoding="utf-8")
+    except (OSError, ValueError):
+        pass  # remembering is a convenience; never break the radio over it
 
 
 _AIRLINES: dict[str, str] | None = None

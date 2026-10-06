@@ -40,7 +40,17 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
    - Fake sim: `/near SAAR 30 6000` puts you on an arrival. TODO: climb/descent clearances (FL, STAR from the plan), direct-to, line up and wait, go-around, holding.
 10. **Session state, rest.** First slice DONE (`session.py`: telephony, clearance state, positions contacted). TODO: assigned runway, pattern position, last instruction per position.
 11. **Runway-in-use logic.** DONE (`runway.py`). TODO: crosswind limits, preferred runways per airport, SABE noise abatement.
-12. **Readback check.** DONE: runway / hold short / holding point / takeoff / landing (`readback.py`) plus the full clearance (`clearance.py`).
+12. **Readback check.** DONE: runway / hold short / takeoff / landing / taxi route (`readback.py`) plus the full clearance (`clearance.py`).
+    Fixed from Valen's first session (2026-10-05, replayed in tests/test_valen_session.py): an instruction read back
+    correctly is not checked again (`session.acked_atc`); corrections don't nest; "three one via alfa" and "holding point
+    for 31" are valid ICAO readbacks ("holding point" is a clearance limit, not an item; FAA "hold short" still is);
+    echoed "when ready" isn't a request; "LATAM1302" is split for the callsign check; "finished pushback, ready to taxi"
+    is a taxi request; "on holding point ..." to Ground -> "contact Tower" (also by telemetry when stopped there);
+    a model reply that is only "<callsign>, roger" is dropped; learned telephony is kept in data/telephony_learned.json.
+    Readback demanded (ICAO Doc 4444 4.5.7.5): "roger" to the IFR clearance (or push/taxi before reading it back) ->
+    "read back the clearance"; "roger"/"wilco" to taxi, runway, takeoff/landing, hold short, QNH, squawk, climb/descend/
+    heading -> "read back", and the next call is checked against that instruction (`session.readback_due`). QNH and
+    squawk are now readback items. Handoffs, approvals and "hold position" need none.
 13. **Traffic sequencing (VFR focus).** FIRST SLICE DONE (2026-10-05 audit, `sequence.py`, tests/test_sequence.py): code computes who is on the runway and on final for the runway in use (thresholds from OurAirports, now in the YAMLs), tells Tower whether takeoff/landing clearance is ALLOWED, and a guard replaces any "cleared for takeoff/to land" the model still gives ("hold position, traffic on two miles final" / "number two, traffic to follow..."). Rules: arrival inside 3 NM or anyone on the runway blocks takeoff; anyone closer on final or on the runway blocks landing. Fake sim: `/final 3 [rwy]`, `/onrwy`, `/notraffic`. TODO: pattern positions (downwind/base), departures still climbing out, line up and wait, go-arounds, verify with real AI traffic (own aircraft is now filtered by SimConnect object id, VERIFY).
 14. **ATIS.** TODO: generate ATIS text, speak it on the ATIS frequency, check the information letter the pilot reports. Currently ATIS frequencies are silent.
 15. **Replay test set.** Harness DONE (6 scenarios, `silence_ok` / `expect_silence` supported). TODO: add SABE departure, pattern, go-around and traffic-conflict scenarios.

@@ -11,6 +11,7 @@ The LLM still answers everything else (VFR pattern work, questions, unusual requ
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -21,7 +22,7 @@ from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.readback import _normalize
 from atc.runway import magnetic, runway_in_use
-from atc.sequence import on_runway, runway_status
+from atc.sequence import along_cross, on_runway, runway_status
 
 DEP_HANDOFF_AGL_FT = 700.0  # Tower -> Departure once climbing through this
 CONTROL_HANDOFF_FT = 10000.0  # Departure -> Control at this altitude or CONTROL_HANDOFF_NM out
@@ -78,12 +79,20 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     def due(key: str, target) -> tuple[str, str] | None:
         if key in done or target is None or abs(target[0].freq.mhz - own.com1_mhz) < 0.005:
             return None
-        return key, f"{target[1]}, good day" if fac.role != "tower" or not own.on_ground else target[1]
+        return key, target[1] if own.on_ground else f"{target[1]}, good day"
 
     # after landing: Tower -> Ground, once off the runway and slow
     if fac.role == "tower" and own.on_ground and session.landed and session.landed_at == apt.icao \
             and own.gs_kt < 40 and not any(on_runway(apt, r, own) for r in apt.runways):
         return due(f"{apt.icao}:ground", _contact(apt, ("GND", "RMP")))
+    # before departure: Ground -> Tower once stopped next to the departure end of the runway in use
+    if fac.role == "ground" and own.on_ground and not session.landed and own.gs_kt < 5:
+        pref = plan.planned_runway if plan and plan.origin == apt.icao else None
+        rwy = runway_in_use(apt, own.wind_dir_deg, own.wind_kt, pref)
+        if rwy is not None:
+            along, cross = along_cross(apt, rwy, own.lat, own.lon)
+            if -0.3 <= along <= 0.4 and 0.03 < cross <= 0.15:
+                return due(f"{apt.icao}:tower_from_ground", _contact(apt, ("TWR",)))
     if own.on_ground:
         return None
     d_apt = distance_nm(own.lat, own.lon, apt.lat, apt.lon)
@@ -142,6 +151,25 @@ def repeat_or_clear(session, own: OwnState, now: float) -> str | None:
         p.repeated = True
         return f"{session.spoken_callsign}, I say again, {p.text}."
     return None
+
+
+_AT_HOLDING_POINT = re.compile(
+    r"\b(?:on|at|reaching|approaching|arrived at|established at|holding at|now at) (?:the )?holding point\b")
+
+
+def at_holding_point(session, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
+    """Pilot tells Ground they are at the holding point: Ground hands them to Tower. (A readback such as
+    'taxi to holding point runway 31 via Alfa' doesn't match: it has no 'on/at' before 'holding point'.)"""
+    if facility.role != "ground" or not own.on_ground or session.landed:
+        return None
+    norm = _normalize(pilot_text)
+    if not (_AT_HOLDING_POINT.search(norm) or "ready for departure" in norm):
+        return None
+    target = _contact(airport, ("TWR",))
+    if target is None:
+        return None
+    session.handoffs_done.add(f"{airport.icao}:tower_from_ground")
+    return f"{session.spoken_callsign}, {target[1]}."
 
 
 # --- check-ins, takeoff and landing --------------------------------------------------------------------

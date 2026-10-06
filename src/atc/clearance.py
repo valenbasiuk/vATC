@@ -87,6 +87,9 @@ def items(session: Session, airport: Airport, dest_name: str) -> list[Item]:
     return out
 
 
+_ACK = re.compile(r"\b(roger|wilco|copied|copy|thanks|thank you)\b")
+
+
 def is_clearance_request(pilot_text: str) -> bool:
     t = _normalize(pilot_text)
     return "clearance" in t or ("ifr" in t and "request" in t)
@@ -129,7 +132,12 @@ def handle_clearance(
             its = [i for i in its if i.key in session.pending]
         got = [i for i in its if re.search(i.pattern, compact)]
         if not got and "squawk" not in norm and "cleared" not in norm:
-            return None  # not a readback attempt: normal conversation
+            if is_clearance_request(pilot_text) and not session.pending:
+                return f"{cs}, {session.clearance_text}."  # asked again (e.g. came back to Delivery): give it again
+            # "Roger", or straight to "request push and start": an IFR clearance must be read back (ICAO)
+            if _ACK.search(norm) or re.search(r"\b(push|pushback|start|startup|taxi)\b", norm):
+                return f"{cs}, read back the clearance."
+            return None  # not a readback attempt: normal conversation (a question)
         missing = [i for i in its if i not in got]
         if missing:
             session.pending = [i.key for i in missing]
@@ -167,6 +175,9 @@ def handle_push(session: Session, airport: Airport, facility: Facility, pilot_te
     if facility.role != "ground" or not re.search(r"\b(push|pushback|start up|startup|start)\b", norm):
         return None
     if "request" not in norm and "ready" not in norm:
+        return None
+    # "finished start and pushback, ready to taxi" is a taxi request, not a second push request
+    if "taxi" in norm or re.search(r"\b(finished|complete|completed|done)\b", norm):
         return None
     cs = session.spoken_callsign
     plan = session.plan

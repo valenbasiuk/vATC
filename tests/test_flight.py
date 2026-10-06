@@ -103,15 +103,17 @@ def test_code_owned_taxi_clearance_and_route_readback(tmp_path):
     h = []
     r = handle(ORIGIN, sim, StubLLM(), _Quiet(), h, "Testa Ground, Martinair 4133, request taxi", session=s, world=w)
     assert r == f"{CS}, Testa Ground, taxi to holding point runway three one via Bravo, Alfa, QNH one zero one five."
-    assert handle(ORIGIN, sim, StubLLM(), _Quiet(), h, "holding point 31 via Bravo Alfa, Martinair 4133",
-                  session=s, world=w) is None
     bad = handle(ORIGIN, sim, StubLLM(), _Quiet(), h, "holding point 31 via Bravo, Martinair 4133", session=s, world=w)
     assert bad.startswith(f"{CS}, negative, I say again, taxi to holding point runway three one via Bravo, Alfa")
+    assert handle(ORIGIN, sim, StubLLM(), _Quiet(), h, "holding point 31 via Bravo Alfa, QNH 1015, Martinair 4133",
+                  session=s, world=w) is None
 
 
 def test_route_readback_accepts_letters_from_speech_to_text():
     atc = f"{CS}, taxi to holding point runway three one via Bravo, Alfa, QNH one zero one five."
-    assert check_readback(atc, "Holding point runway 31 via B, A, Martinair 4133").status == "correct"
+    # QNH as Whisper wrote it in the 2026-10-05 voice test: "to NH1015"
+    assert check_readback(atc, "Holding point runway 31 via B, A, to NH1015, Martinair 4133").status == "correct"
+    assert check_readback(atc, "Holding point runway 31 via B, A, Martinair 4133").missing == ["qnh 1015"]
 
 
 def test_arrival_taxi_to_requested_stand(tmp_path):

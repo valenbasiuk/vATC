@@ -6,6 +6,7 @@ __pycache__/
 .env.*
 # big downloads, regenerate with atc-gen --download and piper.download_voices
 data/*.csv
+data/airlines.dat
 voices/*.onnx
 voices/*.onnx.json
 simbrief_last.json

@@ -194,10 +194,11 @@ class OpenAICompatLLM:
                 errors.append("deadline reached")
                 break
             future = _POOL.submit(self._call, ep, messages)
+            wait = min(left, self.timeout_s)  # a stalled model (Gemini sometimes takes 9 s) hands over to the next
             try:
-                return future.result(timeout=left)
+                return future.result(timeout=wait)
             except FutureTimeout:
-                errors.append(f"{ep.label}: no answer in {left:.0f} s")
+                errors.append(f"{ep.label}: no answer in {wait:.0f} s")
                 print(f"[LLM {ep.label} too slow, trying next]")
             except DailyQuotaExceeded:
                 self.quota_gone.add(self._quota_group(ep))
@@ -232,7 +233,7 @@ def make_llm():
         base_url=base,
         api_key=os.environ.get("ATC_LLM_API_KEY", ""),
         model=spec,
-        timeout_s=float(os.environ.get("ATC_LLM_TIMEOUT_S", "10")),
+        timeout_s=float(os.environ.get("ATC_LLM_TIMEOUT_S", "5")),  # per model, then the next one is tried
         deadline_s=float(os.environ.get("ATC_LLM_DEADLINE_S", "12")),
     )
     if not llm.endpoints:
