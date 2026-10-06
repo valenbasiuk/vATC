@@ -38,7 +38,11 @@ DATATYPE_STRING32 = 6
 SIMOBJECT_TYPE_AIRCRAFT = 2
 UNUSED = 0xFFFFFFFF
 
-DEFINE_ID = 1001
+DATATYPE_STRING8 = 5
+DATATYPE_STRING64 = 7
+
+DEFINE_ID = 1001  # basic layout (verified on Valen's PC)
+DEFINE_FULL = 1002  # + type/airline/flight number. VERIFY: falls back to DEFINE_ID if the sim rejects it
 REQUEST_ID = 2001
 
 # Order matters: the sim returns the values packed in exactly this order.
@@ -53,6 +57,13 @@ FIELDS = [
 ]
 RECORD_FMT = "<5di32s"  # lat, lon, alt, gs, hdg, on_ground, atc_id
 RECORD_SIZE = struct.calcsize(RECORD_FMT)  # 76
+EXTRA_FIELDS = [
+    ("ATC MODEL", None, DATATYPE_STRING32),  # e.g. "A320" or "TT:ATCCOM.AC_MODEL_A320.0.text"
+    ("ATC AIRLINE", None, DATATYPE_STRING64),
+    ("ATC FLIGHT NUMBER", None, DATATYPE_STRING8),
+]
+FULL_FMT = RECORD_FMT + "32s64s8s"
+FULL_SIZE = struct.calcsize(FULL_FMT)  # 180
 
 # SIMCONNECT_RECV (12 bytes) + 7 DWORDs, then the packed data.
 HEADER_FMT = "<3I"
@@ -70,12 +81,22 @@ class AiRecord:
     heading_deg: float
     on_ground: bool
     atc_id: str
+    model: str = ""
+    airline: str = ""
+    flight_number: str = ""
 
 
-def unpack_record(object_id: int, data: bytes) -> AiRecord:
+def _text(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
+
+
+def unpack_record(object_id: int, data: bytes, full: bool = False) -> AiRecord:
+    if full:
+        lat, lon, alt, gs, hdg, ground, raw_id, model, airline, number = struct.unpack_from(FULL_FMT, data, 0)
+        return AiRecord(object_id, lat, lon, alt, gs, hdg, bool(ground), _text(raw_id),
+                        _text(model), _text(airline), _text(number))
     lat, lon, alt, gs, hdg, ground, raw_id = struct.unpack_from(RECORD_FMT, data, 0)
-    atc_id = raw_id.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
-    return AiRecord(object_id, lat, lon, alt, gs, hdg, bool(ground), atc_id)
+    return AiRecord(object_id, lat, lon, alt, gs, hdg, bool(ground), _text(raw_id))
 
 
 def parse_message(msg: bytes) -> tuple[int, dict | None]:
@@ -83,10 +104,11 @@ def parse_message(msg: bytes) -> tuple[int, dict | None]:
     _size, _version, recv_id = struct.unpack_from(HEADER_FMT, msg, 0)
     if recv_id not in (RECV_ID_SIMOBJECT_DATA, RECV_ID_SIMOBJECT_DATA_BYTYPE):
         return recv_id, None
-    request, obj, _define, _flags, entry, outof, _count = struct.unpack_from(OBJ_HEADER_FMT, msg, 12)
-    info = {"request": request, "object_id": obj, "entry": entry, "outof": outof}
-    if outof > 0 and len(msg) >= DATA_OFFSET + RECORD_SIZE:
-        info["record"] = unpack_record(obj, msg[DATA_OFFSET:])
+    request, obj, define, _flags, entry, outof, _count = struct.unpack_from(OBJ_HEADER_FMT, msg, 12)
+    info = {"request": request, "object_id": obj, "entry": entry, "outof": outof, "define": define}
+    full = define == DEFINE_FULL
+    if outof > 0 and len(msg) >= DATA_OFFSET + (FULL_SIZE if full else RECORD_SIZE):
+        info["record"] = unpack_record(obj, msg[DATA_OFFSET:], full)
     return recv_id, info
 
 
@@ -119,12 +141,20 @@ class AiTrafficReader:
             raise RuntimeError(
                 f"SimConnect_Open failed (0x{hr & 0xFFFFFFFF:08x}). Is MSFS running, past the loading screen?"
             )
-        for i, (name, units, dtype) in enumerate(FIELDS):
+        for name, units, dtype in FIELDS:
             hr = self._dll.SimConnect_AddToDataDefinition(
                 self._h, DEFINE_ID, name.encode(), units.encode() if units else None, dtype, 0.0, UNUSED
             )
             if hr != 0:
                 raise RuntimeError(f"AddToDataDefinition failed for {name!r}: 0x{hr & 0xFFFFFFFF:08x}")
+        self._define = DEFINE_FULL
+        for name, units, dtype in FIELDS + EXTRA_FIELDS:
+            hr = self._dll.SimConnect_AddToDataDefinition(
+                self._h, DEFINE_FULL, name.encode(), units.encode() if units else None, dtype, 0.0, UNUSED
+            )
+            if hr != 0:
+                self._define = DEFINE_ID
+                break
 
     def _set_prototypes(self) -> None:
         d = self._dll
@@ -142,9 +172,20 @@ class AiTrafficReader:
             getattr(d, f"SimConnect_{fn}").restype = ctypes.c_long  # HRESULT
 
     def read(self, radius_m: int, timeout_s: float = 1.5) -> list[AiRecord]:
-        """AI aircraft within radius_m of the USER aircraft. May include the user's own aircraft."""
+        """AI aircraft within radius_m of the USER aircraft. May include the user's own aircraft.
+        If the sim rejects the type/airline fields, drop to the basic (verified) layout and retry once."""
+        try:
+            return self._read(radius_m, timeout_s)
+        except RuntimeError:
+            if self._define != DEFINE_FULL:
+                raise
+            self._define = DEFINE_ID
+            print("[traffic: sim rejected type/airline fields, using basic traffic data]", file=sys.stderr)
+            return self._read(radius_m, timeout_s)
+
+    def _read(self, radius_m: int, timeout_s: float) -> list[AiRecord]:
         hr = self._dll.SimConnect_RequestDataOnSimObjectType(
-            self._h, REQUEST_ID, DEFINE_ID, int(radius_m), SIMOBJECT_TYPE_AIRCRAFT
+            self._h, REQUEST_ID, self._define, int(radius_m), SIMOBJECT_TYPE_AIRCRAFT
         )
         if hr != 0:
             raise RuntimeError(f"RequestDataOnSimObjectType failed: 0x{hr & 0xFFFFFFFF:08x}")
@@ -186,4 +227,7 @@ def to_traffic(rec: AiRecord) -> Traffic:
         gs_kt=rec.gs_kt,
         heading_deg=rec.heading_deg,
         on_ground=rec.on_ground,
+        type=rec.model or None,
+        airline=rec.airline or None,
+        flight_number=rec.flight_number or None,
     )

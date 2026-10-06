@@ -81,7 +81,7 @@ def test_handle_full_turn_with_stub():
     cap = Capture()
     history = []
     reply = handle(a, sim, StubLLM(), cap, history, "ready for taxi")
-    assert reply and "Taxi" in reply
+    assert reply == "November one two three Alfa Bravo, Testfield Municipal Ground, runway niner, taxi."  # FAA, code
     assert cap.said == [reply]
     assert history == [("ready for taxi", reply)]
 

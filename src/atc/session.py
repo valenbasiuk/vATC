@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import difflib
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from atc import phrase
 from atc.flightplan import FlightPlan
@@ -33,23 +36,39 @@ class Session:
     standby_chance: float = 0.0  # chance Delivery says "standby" and calls back later (main sets it from --standby)
     clearance_text: str = ""  # exactly what was said, for "say again"
     pending: list[str] = field(default_factory=list)  # clearance items still to be read back after a correction
-    contacted: set[str] = field(default_factory=set)  # facility roles already talked to
+    contacted: set[str] = field(default_factory=set)  # "<ICAO>:<role>" positions already talked to
+    where: str = ""  # ICAO of the facility being talked to this turn (main sets it)
     last_role: str | None = None  # position that made the last ATC transmission (readbacks only count there)
-    surface_wind: tuple[float, float] | None = None  # last wind read low and near the airport (dir, kt)
+    surface_wind: dict[str, tuple[float, float]] = field(default_factory=dict)  # ICAO -> last low, near wind
+    # flight phase, kept by flow.track() from the telemetry watcher
+    was_on_ground: bool | None = None
+    departed_from: str | None = None
+    airborne_at: float | None = None
+    landed: bool = False  # taxi requests are then to a stand
+    landed_at: str | None = None
+    handoffs_done: set[str] = field(default_factory=set)
+    pending_handoff: object | None = None  # flow.Pending
+    awaiting_squawk: float | None = None  # frequency where "squawk XXXX" was given; "radar contact" follows
+    telephony_source: str | None = None  # "given" (--telephony), "table" (airline list), "learned" (pilot's call)
 
     def __post_init__(self) -> None:
-        if self.telephony is None:
-            prefix = re.match(r"[A-Z]{3}(?=\d)", self.callsign.upper())
-            self.telephony = TELEPHONY.get(prefix.group(0)) if prefix else None
+        if self.telephony is not None:
+            self.telephony_source = self.telephony_source or "given"
+            return
+        prefix = re.match(r"[A-Z]{3}(?=\d)", self.callsign.upper())
+        if prefix:
+            self.telephony = TELEPHONY.get(prefix.group(0)) or table_telephony(prefix.group(0))
+            self.telephony_source = "table" if self.telephony else None
 
     @property
     def spoken_callsign(self) -> str:
         return phrase.callsign(self.telephony, self.callsign)
 
     def learn_telephony(self, pilot_text: str) -> None:
-        """'... Martinair 4133 requesting ...' -> telephony 'Martinair' (only if the number matches ours)."""
+        """'... Martinair 4133 requesting ...' -> telephony 'Martinair' (only if the number matches ours).
+        A name from the airline table is only a first guess: what the pilot calls themselves wins, once."""
         num = "".join(c for c in self.callsign if c.isdigit())
-        if self.telephony or not num or not re.match(r"[A-Z]{3}\d", self.callsign.upper()):
+        if self.telephony_source in ("given", "learned") or not num or not re.match(r"[A-Z]{3}\d", self.callsign.upper()):
             return
         compact = re.sub(r"(?<=\d) (?=\d)", "", _normalize(pilot_text))
         for m in re.finditer(rf"(?:\b([a-z]{{3,}}) )?\b([a-z]{{3,}}) {num}\b", compact):
@@ -58,7 +77,10 @@ class Session:
                 continue
             if word in _SPLIT_TAILS and m.group(1) and m.group(1) not in _NOT_TELEPHONY:
                 word = m.group(1) + word
-            self.telephony = word.title()
+            # "Martiner" heard for a table "Martinair": keep the table's spelling
+            if not (self.telephony and difflib.SequenceMatcher(None, word, self.telephony.lower()).ratio() >= 0.75):
+                self.telephony = word.title()
+            self.telephony_source = "learned"
             return
 
     def names_other_flight(self, pilot_text: str) -> bool:
@@ -71,12 +93,43 @@ class Session:
         if re.search(rf"\b{num}\b", compact):
             return False
         names = {t.lower() for t in TELEPHONY.values()} | _KNOWN_TELEPHONY
-        if self.telephony:
-            names.add(self.telephony.lower())
-        return any(m.group(1) in names for m in re.finditer(r"\b([a-z]+) \d{2,4}\b", compact))
+        own = (self.telephony or "").lower()
+        if own:
+            names.add(own)
+        for m in re.finditer(r"\b([a-z]+) (\d{2,5})\b", compact):
+            name, digits = m.groups()
+            if name not in names:
+                continue
+            # In a sim every call is ours: our name with one digit misheard ("4113") is still us.
+            if name == own and len(digits) == len(num) and sum(a != b for a, b in zip(digits, num)) <= 1:
+                continue
+            return True
+        return False
+
+    def _key(self, role: str) -> str:
+        return f"{self.where}:{role}" if self.where else role
+
+    def is_first_contact(self, role: str) -> bool:
+        return self._key(role) not in self.contacted
 
     def first_contact(self, role: str) -> bool:
         """True the first time we answer on this position; marks it as contacted."""
-        first = role not in self.contacted
-        self.contacted.add(role)
+        first = self.is_first_contact(role)
+        self.contacted.add(self._key(role))
         return first
+
+
+_AIRLINES: dict[str, str] | None = None
+
+
+def table_telephony(icao_designator: str, path: Path = Path("data/airlines.dat")) -> str | None:
+    """Radio telephony from the OpenFlights airline list (atc-gen --download fetches it), e.g. ARG -> Argentina."""
+    global _AIRLINES
+    if _AIRLINES is None:
+        _AIRLINES = {}
+        if path.exists():
+            with path.open(encoding="utf-8", errors="replace", newline="") as fh:
+                for row in csv.reader(fh):
+                    if len(row) >= 8 and row[7] == "Y" and len(row[4]) == 3 and row[5] not in ("", "\\N"):
+                        _AIRLINES.setdefault(row[4].upper(), row[5].strip().title())
+    return _AIRLINES.get(icao_designator.upper())

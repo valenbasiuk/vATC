@@ -12,6 +12,7 @@ class PushToTalk:
     def __init__(self, key: str = "f9", sample_rate: int = 16000) -> None:
         self.key = key
         self.sample_rate = sample_rate
+        self.talking = threading.Event()  # set while the key is held: controller-initiated calls wait
 
     def record_once(self):
         """Blocks until the key was pressed and released once. Returns float32 mono array."""
@@ -27,10 +28,12 @@ class PushToTalk:
         def on_press(k):
             if k == target:
                 pressed.set()
+                self.talking.set()
 
         def on_release(k):
             if k == target and pressed.is_set():
                 released.set()
+                self.talking.clear()
                 return False
 
         def callback(indata, frames, time_info, status):

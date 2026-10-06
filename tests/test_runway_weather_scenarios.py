@@ -102,10 +102,11 @@ def test_shipped_scenarios_pass_with_a_good_model():
         assert res.ok, (res.name, [(t.say, t.failures) for t in res.turns])
 
 
-def test_scenarios_catch_a_bad_model():
+def test_bad_model_inventions_never_reach_the_pilot():
+    # The model invents a wind; the fact check rejects it (twice) and the pilot hears "say again" instead.
     bad = _ScriptedLLM(lambda c: "Wind 270 at 8 knots, runway 36, cleared for takeoff.")
     specs = {s["name"]: s for s in load_scenarios(ROOT / "scenarios")}
     res = run_scenario(next(s for n, s in specs.items() if "no wind given" in n), FIX / "airports", bad)
-    assert not res.ok
+    assert res.ok and all("270" not in (t.reply or "") for t in res.turns)
     res = run_scenario(next(s for n, s in specs.items() if "ATIS" in n), FIX / "airports", bad)
     assert res.ok  # silence is enforced by the app before the model is ever called

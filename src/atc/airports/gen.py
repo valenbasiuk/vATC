@@ -28,11 +28,16 @@ FILES = ("airports.csv", "runways.csv", "airport-frequencies.csv")
 # CTAF, UNICOM, RCO, RDO. facility.py decides which of them can reply.
 
 
+AIRLINES_URL = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airlines.dat"
+
+
 def download(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     for name in FILES:
         print(f"downloading {name} ...")
         urllib.request.urlretrieve(BASE_URL + name, data_dir / name)
+    print("downloading airlines.dat (ICAO designator -> radio telephony) ...")
+    urllib.request.urlretrieve(AIRLINES_URL, data_dir / "airlines.dat")
 
 
 def _rows(path: Path):

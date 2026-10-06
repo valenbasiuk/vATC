@@ -203,7 +203,9 @@ def test_other_flight_is_asked_for_its_callsign():
     s = Session(callsign="MAR4133", telephony="Martinair")
     reply = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Ground, Aerolineas 1234, request taxi", session=s)
     assert reply == "Station calling Testa Ground, say again your callsign."
-    assert s.names_other_flight("Martinair 4113 request taxi")
+    assert s.names_other_flight("Austral 2701 request taxi")
+    assert not s.names_other_flight("Martinair 4113 request taxi")  # one digit misheard: still us
+    assert s.names_other_flight("Martinair 2701 request taxi")  # our name, a different flight
     assert not s.names_other_flight("Martinair four one three three, passing 2000 feet")
     assert not s.names_other_flight("request taxi")
 
@@ -225,46 +227,53 @@ def test_wrong_readback_correction_leaves_out_the_station_name():
     sim = _sim(com1_mhz=121.9)
     s = Session(callsign="MAR4133", telephony="Martinair")
     hist = []
-    handle(APT, sim, _Fixed("Martinair four one three three, Testa Ground, taxi to holding point runway three one."),
-           _Quiet(), hist, "Testa Ground, Martinair 4133, request taxi", session=s)
+    first = handle(APT, sim, StubLLM(), _Quiet(), hist, "Testa Ground, Martinair 4133, request taxi", session=s)
+    assert first == "Martinair four one three three, Testa Ground, taxi to holding point runway three one, " \
+                    "QNH one zero one five."
     reply = handle(APT, sim, StubLLM(), _Quiet(), hist, "holding point runway 13, Martinair 4133", session=s)
-    assert reply == "Martinair four one three three, negative, I say again, taxi to holding point runway three one."
+    assert reply == "Martinair four one three three, negative, I say again, taxi to holding point runway three one, " \
+                    "QNH one zero one five."
 
 
 def test_winds_aloft_are_not_used_as_airport_wind():
     sim = _sim(com1_mhz=120.6)
     s = Session(callsign="MAR4133", telephony="Martinair")
-    llm = _Fixed("Martinair four one three three, radar contact.")
-    handle(APT, sim, llm, _Quiet(), [], "Testa Approach, Martinair 4133, on the ground", session=s)
-    assert s.surface_wind == (300.0, 10.0)
+    llm = _Fixed("Martinair four one three three, roger.")
+    handle(APT, sim, llm, _Quiet(), [], "Testa Approach, Martinair 4133, on the ground, request info", session=s)
+    assert s.surface_wind == {"SATS": (300.0, 10.0)}
     sim.update(on_ground=False, alt_agl_ft=15000, alt_msl_ft=15018, wind_dir_deg=250.0, wind_kt=60.0)
-    handle(APT, sim, llm, _Quiet(), [], "Testa Approach, Martinair 4133, level 150", session=s)
+    handle(APT, sim, llm, _Quiet(), [], "Testa Approach, Martinair 4133, level 150, request info", session=s)
     assert "300 degrees at 10 knots" in llm.last[-1]["content"]
 
 
-def test_wrong_squawk_is_flagged_to_departure():
+def test_wrong_squawk_on_check_in_gets_the_code():
     sim = _sim(com1_mhz=120.6, squawk="2000")
     sim.set_airborne(2000, 200)
     s = Session(callsign="MAR4133", plan=PLAN, telephony="Martinair", clearance="confirmed")
-    llm = _Fixed("Martinair four one three three, radar contact.")
-    handle(APT, sim, llm, _Quiet(), [], "Testa Approach, Martinair 4133, passing 2000", session=s)
-    assert f"assigned {PLAN.squawk}" in llm.last[-1]["content"]
+    reply = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Approach, Martinair 4133, passing 2000", session=s)
+    assert reply == f"Martinair four one three three, Testa Approach, squawk {phrase.digits(PLAN.squawk)}."
+    sim.update(squawk=PLAN.squawk)
+    s2 = Session(callsign="MAR4133", plan=PLAN, telephony="Martinair", clearance="confirmed", departed_from="SATS")
+    reply = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Approach, Martinair 4133, passing 2000", session=s2)
+    assert reply == "Martinair four one three three, Testa Approach, radar contact, climb via SID."
 
 
 def test_daily_quota_skips_the_other_free_models():
     from atc.llm.client import DailyQuotaExceeded, OpenAICompatLLM
 
-    llm = OpenAICompatLLM("https://openrouter.ai/api/v1", "k", "a:free,b:free,paid/model")
+    llm = OpenAICompatLLM("https://openrouter.ai/api/v1", "k", "x/a:free,x/b:free,paid/model")
     tried = []
 
-    def fake_call(model, messages):
-        tried.append(model)
-        if model.endswith(":free"):
+    def fake_call(ep, messages):
+        tried.append(ep.model)
+        if ep.model.endswith(":free"):
             raise DailyQuotaExceeded("free-models-per-day")
         return "ok"
 
     llm._call = fake_call
-    assert llm.complete([]) == "ok" and tried == ["a:free", "paid/model"]
+    assert llm.complete([]) == "ok" and tried == ["x/a:free", "paid/model"]
+    tried.clear()
+    assert llm.complete([]) == "ok" and tried == ["paid/model"]  # remembered for the rest of the run
 
 
 def test_traffic_is_described_from_the_pilots_point_of_view():

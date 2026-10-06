@@ -17,21 +17,24 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import phrase
-from atc.airports.schema import load_airport
-from atc.facility import callsign_for, resolve_facility
+from atc import factcheck, flow, phrase
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
+from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
+from atc.flow import handle_flow
 from atc.geo import distance_nm
 from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
 from atc.models import Airport
-from atc.readback import check_readback, is_acknowledgement
+from atc.readback import _normalize, check_readback, is_acknowledgement
 from atc.runway import runway_in_use
 from atc.sequence import context_lines as sequence_context
 from atc.sequence import guard, runway_status
 from atc.session import Session
 from atc.sim.base import SimSource
+from atc.taxi import departure_route, handle_taxi
+from atc.traffic import is_traffic_question, traffic_reply
+from atc.world import World, load_world
 
 TRAFFIC_RADIUS_NM = 15.0
 
@@ -45,34 +48,47 @@ def handle(
     pilot_text: str,
     stt_s: float | None = None,
     session: Session | None = None,
+    world: World | None = None,
 ) -> str | None:
-    """One pilot transmission -> one ATC reply (or None if nobody answers)."""
+    """One pilot transmission -> one ATC reply (or None if nobody answers).
+    With a `world`, the tuned frequency picks the airport (origin, destination, area control...)."""
     own = sim.own()
-    facility = resolve_facility(airport, own.com1_mhz)
-    if facility is None:
+    world = world or World([airport])
+    picked = world.pick(own)
+    if picked is None:
         print(f"[no station on {own.com1_mhz:.3f}]")
         return None
+    airport, facility = picked
     if not facility.can_reply:
         print(f"[{facility.role} on {own.com1_mhz:.3f}: nobody answers here]")
         return None
     if session is None:
         session = Session(callsign=own.callsign)
+    session.where = airport.icao
     own = _surface_wind(own, airport, session)
     session.learn_telephony(pilot_text)
     cs = session.spoken_callsign
     station = callsign_for(airport, facility)
+    plan = session.plan
+    preferred = (plan.planned_runway if plan and plan.origin == airport.icao and own.on_ground
+                 else plan.dest_runway if plan and plan.destination == airport.icao else None)
+
+    def say(reply: str, llm_s: float = 0.0) -> str:
+        history.append((pilot_text, reply))
+        session.last_role = session._key(facility.role)
+        _say_timed(speaker, reply, stt_s, llm_s)
+        return reply
 
     reply = None
     if session.names_other_flight(pilot_text):  # misheard or wrong callsign: never answer it as ours
         reply = f"Station calling {station}, say again your callsign."
-    if reply is None and session.plan is not None:  # IFR clearance is code's job: issue, readback check, correction
-        reply = handle_clearance(session, airport, facility, pilot_text,
-                                 session.dest_name or session.plan.destination_name)
+    if reply is None and plan is not None:  # IFR clearance is code's job: issue, readback check, correction
+        reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
     if reply is None:
         reply = handle_push(session, airport, facility, pilot_text)
     # A readback only answers the position that gave the instruction: after "contact Tower", the first call
     # on Tower is a new call even if it repeats Ground's "holding point runway 31".
-    last_atc = history[-1][1] if history and session.last_role in (None, facility.role) else None
+    last_atc = history[-1][1] if history and session.last_role in (None, session._key(facility.role)) else None
     rb = check_readback(last_atc, pilot_text)
     if reply is None and (
         rb.status == "correct"
@@ -86,37 +102,53 @@ def handle(
         instruction = last_atc.removeprefix(cs).lstrip(" ,").removeprefix(station).lstrip(" ,")
         reply = f"{cs}, negative, I say again, {instruction}"
     if reply is not None:
-        history.append((pilot_text, reply))
-        session.last_role = facility.role
-        _say_timed(speaker, reply, stt_s, 0.0)
-        return reply
+        return say(reply)
 
-    plan = session.plan
-    preferred = plan.planned_runway if plan and plan.origin == airport.icao and own.on_ground else None
+    # Fixed-form calls with facts from code: traffic information, taxi, check-ins, takeoff/landing.
     traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred)
+    if is_traffic_question(_normalize(pilot_text), pilot_text):
+        reply = traffic_reply(cs, own, sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
+    if reply is None:
+        reply = handle_taxi(session, airport, facility, own, pilot_text, world.taxi.get(airport.icao), traffic, rwy)
+    if reply is None:
+        reply = handle_flow(session, world, airport, facility, own, pilot_text, traffic, preferred)
+    if reply is not None:
+        return say(reply)
+
     context = build_context(own, traffic, airport, cs, facility.role, session.first_contact(facility.role),
                             preferred_runway=preferred)
+    if facility.role == "ground" and own.on_ground and rwy is not None:
+        via = departure_route(world.taxi.get(airport.icao), airport, rwy, own)
+        if via and not airport.taxi_routes.get(rwy.ident):
+            context = context.replace(
+                "No taxi route on file: give the taxi clearance without naming any taxiway.",
+                f"TAXI ROUTE to runway {rwy.ident} (computed from the airport map, treat as fact): via {via}")
     plan_lines = context_lines(session, airport, facility)
     if plan and plan.is_ifr and session.clearance == "confirmed" and own.squawk != plan.squawk \
             and facility.role in ("tower", "departure", "approach"):
         plan_lines.append(f"  TRANSPONDER WRONG: the pilot squawks {own.squawk}, assigned {plan.squawk}. "
                           f"Start your reply with '{cs}, squawk {phrase.digits(plan.squawk)}'.")
     status = None
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred)
     if facility.role == "tower" and rwy is not None:  # who may take off / land is code's decision
         status = runway_status(airport, rwy, own, traffic)
         plan_lines += sequence_context(status, own)
     if plan_lines:
         context += "\n" + "\n".join(plan_lines)
-    messages = build_messages(
-        build_system_prompt(airport, facility),
-        context,
-        history,
-        pilot_text,
-    )
+    system = build_system_prompt(airport, facility)
+    messages = build_messages(system, context, history, pilot_text)
     t_llm = time.perf_counter()
     try:
         reply = llm.complete(messages)
+        found = factcheck.problems(reply, [system, context, pilot_text] + [a for _, a in history[-6:]])
+        if found:  # it stated something it wasn't told: one retry with the problem named, then a safe reply
+            print(f"[fact check rejected: {reply} ({', '.join(found)})]")
+            retry = messages + [{"role": "assistant", "content": reply},
+                                {"role": "user", "content": factcheck.correction(found)}]
+            reply = llm.complete(retry)
+            if factcheck.problems(reply, [system, context, pilot_text] + [a for _, a in history[-6:]]):
+                print(f"[fact check rejected again: {reply}]")
+                reply = f"{cs}, say again."
     except Exception as exc:  # network, rate limit, bad model: never crash the session
         print(f"[LLM error, nobody answers: {str(exc)[:200]}]")
         return None
@@ -125,10 +157,7 @@ def handle(
     if safe != reply:
         print(f"[sequence guard replaced: {reply}]")
         reply = safe
-    history.append((pilot_text, reply))
-    session.last_role = facility.role
-    _say_timed(speaker, reply, stt_s, llm_s)
-    return reply
+    return say(reply, llm_s)
 
 
 SURFACE_WIND_AGL_FT = 3000.0
@@ -141,22 +170,33 @@ def _surface_wind(own, airport: Airport, session: Session):
     near = distance_nm(own.lat, own.lon, airport.lat, airport.lon) <= SURFACE_WIND_RADIUS_NM
     if near and (own.on_ground or own.alt_agl_ft <= SURFACE_WIND_AGL_FT):
         if own.wind_dir_deg is not None and own.wind_kt is not None:
-            session.surface_wind = (own.wind_dir_deg, own.wind_kt)
+            session.surface_wind[airport.icao] = (own.wind_dir_deg, own.wind_kt)
         return own
-    if session.surface_wind is not None:
-        return replace(own, wind_dir_deg=session.surface_wind[0], wind_kt=session.surface_wind[1])
+    known = session.surface_wind.get(airport.icao)
+    if known is not None:
+        return replace(own, wind_dir_deg=known[0], wind_kt=known[1])
     return replace(own, wind_dir_deg=None, wind_kt=None)  # winds aloft are not the airport's wind
 
 
 class _Callbacks:
-    """Calls the controller makes on its own: the clearance 10-25 s after "standby". Fired from a timer
-    thread; `lock` keeps it from interleaving with a pilot turn."""
+    """Calls the controller makes on its own, from a background thread:
+    - the clearance 10-25 s after "standby" (timer);
+    - handoffs from telemetry (flow.next_handoff), checked every `tick_s`, said again once if ignored.
+    `lock` keeps them from interleaving with a pilot turn; nothing is said while the PTT key is held."""
 
-    def __init__(self, airport, sim, speaker, history, session, prompt: str = "") -> None:
-        self.airport, self.sim, self.speaker, self.history, self.session = airport, sim, speaker, history, session
+    def __init__(self, world, sim, speaker, history, session, prompt: str = "", ptt=None, tick_s: float = 1.0) -> None:
+        if isinstance(world, Airport):
+            world = World([world])
+        self.world, self.sim, self.speaker, self.history, self.session = world, sim, speaker, history, session
         self.prompt = prompt  # re-printed after a callback so the text REPL still shows "YOU> "
+        self.ptt = ptt
+        self.tick_s = tick_s
         self.lock = threading.Lock()
         self.timer: threading.Timer | None = None
+        self.stop = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._loop, daemon=True, name="atc-watcher").start()
 
     def after_turn(self) -> None:
         if self.session.clearance == "standby" and self.timer is None:
@@ -164,19 +204,53 @@ class _Callbacks:
             self.timer.daemon = True
             self.timer.start()
 
+    def _loop(self) -> None:
+        while not self.stop.wait(self.tick_s):
+            try:
+                self.tick()
+            except Exception as exc:  # noqa: BLE001 - the watcher must never kill the radio
+                print(f"[watcher: {exc}]")
+
+    def tick(self, now: float | None = None) -> str | None:
+        """One watcher step. Returns what the controller said (for tests)."""
+        if self.ptt is not None and self.ptt.talking.is_set():
+            return None
+        with self.lock:
+            now = time.monotonic() if now is None else now
+            own = self.sim.own()
+            flow.track(self.session, self.world, own, now)
+            text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
+            if text is None and self.session.pending_handoff is None:
+                due = flow.next_handoff(self.session, self.world, own)
+                if due is not None:
+                    key, body = due
+                    self.session.handoffs_done.add(key)
+                    self.session.pending_handoff = flow.Pending(key, body, own.com1_mhz, now)
+                    text = f"{self.session.spoken_callsign}, {body}."
+            if text is not None:
+                self._transmit(text, "(controller call)")
+            return text
+
+    def _transmit(self, text: str, pilot_side: str) -> None:
+        picked = self.world.pick(self.sim.own())
+        if picked is not None:
+            self.session.where = picked[0].icao
+            self.session.last_role = self.session._key(picked[1].role)
+        print()
+        self.history.append((pilot_side, text))
+        _say_timed(self.speaker, text, None, 0.0)
+        print(self.prompt, end="", flush=True)
+
     def _fire(self) -> None:
         with self.lock:
             self.timer = None
             plan = self.session.plan
-            facility = resolve_facility(self.airport, self.sim.own().com1_mhz)
-            reply = deliver_after_standby(self.session, self.airport, facility, self.session.dest_name or plan.destination_name)
-            if reply is None:
-                return
-            print()
-            self.history.append(("(pilot standing by)", reply))
-            self.session.last_role = facility.role
-            _say_timed(self.speaker, reply, None, 0.0)
-            print(self.prompt, end="", flush=True)
+            picked = self.world.pick(self.sim.own())
+            airport = picked[0] if picked else self.world.airports[0]
+            facility = picked[1] if picked else None
+            reply = deliver_after_standby(self.session, airport, facility, self.session.dest_name or plan.destination_name)
+            if reply is not None:
+                self._transmit(reply, "(pilot standing by)")
 
 
 def _say_timed(speaker, reply: str, stt_s: float | None, llm_s: float) -> None:
@@ -193,7 +267,7 @@ def _say_timed(speaker, reply: str, stt_s: float | None, llm_s: float) -> None:
     print(f"[timing] {' + '.join(parts)} = {first_audio:.1f}s to first audio")
 
 
-def _repl_command(cmd: str, sim) -> bool:
+def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
     """Returns False to quit."""
     parts = cmd.split()
     name = parts[0]
@@ -201,6 +275,12 @@ def _repl_command(cmd: str, sim) -> bool:
         return False
     if name == "/state":
         print(sim.own())
+    elif name == "/near" and len(parts) in (3, 4) and world is not None and hasattr(sim, "place_on_final"):
+        target = world.get(parts[1])
+        if target is None:
+            print(f"{parts[1]} is not loaded (only the plan's airports and --airport are)")
+        else:
+            sim.place_on_final(target, float(parts[2]), float(parts[3]) if len(parts) == 4 else None)
     elif name == "/freq" and len(parts) == 2 and hasattr(sim, "update"):
         sim.update(com1_mhz=float(parts[1]))
     elif name == "/wind" and len(parts) in (3, 4) and hasattr(sim, "update"):
@@ -220,7 +300,7 @@ def _repl_command(cmd: str, sim) -> bool:
         sim.clear_traffic()
     else:
         print("commands: /state /freq <mhz> /wind <dir> <kt> [qnh_hpa] /air /ground /final <nm> [rwy] /onrwy [rwy] "
-              "/notraffic /quit (fake sim only)")
+              "/notraffic /near <ICAO> <nm> [alt_ft] /quit (fake sim only)")
     return True
 
 
@@ -246,9 +326,14 @@ def main(argv: list[str] | None = None) -> None:
         args.callsign = plan.callsign or args.callsign
         print(f"flight plan: {plan.callsign} {plan.origin}-{plan.destination} {plan.sid or ''} squawk {plan.squawk}")
 
-    airport = load_airport(args.airports_dir / f"{args.airport.upper()}.yaml")
-    if airport.needs_review:
-        print(f"note: {airport.icao}.yaml has needs_review: true (pattern rules may be missing)")
+    world = load_world(args.airport, args.airports_dir, plan)
+    airport = world.airports[0]
+    for a in world.airports:
+        net = world.taxi.get(a.icao)
+        print(f"{a.icao}: {'taxi map loaded' if net else 'no taxi map (tools/fetch_osm_taxi.py ' + a.icao + ')'}"
+              + (", needs_review: true" if a.needs_review else ""))
+    if world.airspaces:
+        print("area control: " + ", ".join(s.icao for s in world.airspaces))
 
     if args.sim:
         from atc.sim.simconnect_source import SimConnectSource
@@ -269,28 +354,29 @@ def main(argv: list[str] | None = None) -> None:
         speaker = PrintTTS()
 
     session = Session(callsign=args.callsign, plan=plan, telephony=args.telephony, standby_chance=args.standby)
-    if plan is not None:
-        dest_file = args.airports_dir / f"{plan.destination}.yaml"
-        if dest_file.exists():  # its spoken_name is how the clearance limit is said ("Rosario")
-            dest = load_airport(dest_file)
-            session.dest_name = dest.spoken_name or dest.name
+    dest = world.get(plan.destination) if plan else None
+    if dest is not None:  # its spoken_name is how the clearance limit is said ("Rosario")
+        session.dest_name = dest.spoken_name or dest.name
 
     llm = make_llm()
+    print(f"LLM: {getattr(llm, 'model', 'stub (no ATC_LLM_MODEL set)')}")
     history: list[tuple[str, str]] = []
     try:
         if args.ptt:
-            _run_ptt(args, airport, sim, llm, speaker, history, session)
+            _run_ptt(args, world, sim, llm, speaker, history, session)
         else:
-            _run_text(airport, sim, llm, speaker, history, session)
+            _run_text(world, sim, llm, speaker, history, session)
     except KeyboardInterrupt:
         pass
     finally:
         sim.close()
 
 
-def _run_text(airport, sim, llm, speaker, history, session) -> None:
+def _run_text(world, sim, llm, speaker, history, session) -> None:
+    airport = world.airports[0]
     print(f"{airport.icao} {airport.name}. Type your radio calls. /quit to exit.")
-    cb = _Callbacks(airport, sim, speaker, history, session, prompt="YOU> ")
+    cb = _Callbacks(world, sim, speaker, history, session, prompt="YOU> ")
+    cb.start()
     while True:
         try:
             line = input("YOU> ").lstrip("\ufeff").strip()  # piped input from PowerShell starts with a BOM
@@ -299,18 +385,23 @@ def _run_text(airport, sim, llm, speaker, history, session) -> None:
         if not line:
             continue
         if line.startswith("/"):
-            if not _repl_command(line, sim):
-                break
+            with cb.lock:
+                if not _repl_command(line, sim, world):
+                    break
             continue
         with cb.lock:
-            handle(airport, sim, llm, speaker, history, line, session=session)
+            handle(airport, sim, llm, speaker, history, line, session=session, world=world)
         cb.after_turn()
 
 
-def _stt_hint(airport: Airport, session: Session) -> str:
-    """Words speech-to-text should expect on this flight, written the way they should come out."""
-    name = airport.spoken_name or airport.name
-    words = [f"{name} Delivery, {name} Ground, {name} Tower."]
+def _stt_words(world: World, session: Session) -> list[str]:
+    """Names speech-to-text should expect on this flight, written the way they should come out."""
+    words = []
+    for a in world.airports:
+        name = a.spoken_name or a.name.split()[0]
+        words.append(f"{name} Delivery, {name} Ground, {name} Tower, {name} Approach.")
+    for s in world.airspaces:
+        words.append(f"{s.spoken_name or s.name} Control.")
     num = "".join(c for c in session.callsign if c.isdigit())
     if session.telephony and num:
         words.append(f"{session.telephony} {num}.")
@@ -319,31 +410,44 @@ def _stt_hint(airport: Airport, session: Session) -> str:
         if plan.sid:
             words.append(f"{phrase.procedure(plan.sid).split()[0]} departure.")
         words.append(f"Cleared to {session.dest_name or plan.destination_name}.")
-    return " ".join(words)
+    return words
 
 
-def _run_ptt(args, airport, sim, llm, speaker, history, session) -> None:
+def _stt_hint(world: World | Airport, session: Session) -> str:
+    return " ".join(_stt_words(world if isinstance(world, World) else World([world]), session))
+
+
+def _hotwords(world: World, session: Session) -> str:
+    names = {session.telephony or ""} | {a.spoken_name or "" for a in world.airports}
+    if session.plan and session.plan.sid:
+        names.add(phrase.procedure(session.plan.sid).split()[0])
+    return " ".join(sorted(n for n in names if n))
+
+
+def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
     from atc.audio.ptt import PushToTalk
     from atc.audio.stt import FasterWhisperSTT
 
+    airport = world.airports[0]
     print(f"loading speech model {args.stt_model} ...")
     stt = FasterWhisperSTT(model_size=args.stt_model)
     ptt = PushToTalk(key=args.ptt_key)
     print(f"{airport.icao} {airport.name}. Hold {args.ptt_key.upper()} to talk. Ctrl+C to exit.")
-    cb = _Callbacks(airport, sim, speaker, history, session)
+    cb = _Callbacks(world, sim, speaker, history, session, ptt=ptt)
+    cb.start()
     while True:
         audio = ptt.record_once()
         if len(audio) < 4800:  # under 0.3 s: a tap, not a call
             continue
         t0 = time.perf_counter()
-        text = stt.transcribe(audio, hint=_stt_hint(airport, session))
+        text = stt.transcribe(audio, hint=_stt_hint(world, session), hotwords=_hotwords(world, session))
         stt_s = time.perf_counter() - t0
         if not text:
             print("[nothing heard]")
             continue
         print(f"YOU> {text}")
         with cb.lock:
-            handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session)
+            handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session, world=world)
         cb.after_turn()
 
 

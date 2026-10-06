@@ -5,8 +5,8 @@ mind if this is ever shared). Install: `pip install piper-tts`. Download a voice
     python -m piper.download_voices en_US-lessac-medium --data-dir voices
 which gives voices/en_US-lessac-medium.onnx (+ .json).
 
-STATUS: written from the project's docs (docs/API_PYTHON.md), NOT run. The voice is loaded once and
-kept in memory, which matters for latency (no process spawn per reply).
+STATUS: synthesis verified on Valen's PC (2026-10-05, Piper 1.8); sentence-by-sentence playback through
+sd.OutputStream not heard yet. The voice is loaded once and kept in memory (no process spawn per reply).
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ class PiperTTS:
         self.last_synth_s: float | None = None
         self.length_scale = length_scale  # < 1.0 speaks faster (controllers talk fast)
 
-    def synthesize(self, text: str):
-        """Returns (float32 mono samples, sample_rate)."""
+    def _chunks(self, text: str):
+        """(float32 samples, rate) per sentence, as Piper produces them."""
         import numpy as np  # type: ignore
 
         kwargs = {}
@@ -54,32 +54,44 @@ class PiperTTS:
             kwargs["syn_config"] = SynthesisConfig(length_scale=self.length_scale)
         except ImportError:  # older/newer layout: fall back to defaults
             pass
-
-        raw = bytearray()
-        rate = 22050
         for chunk in self._voice.synthesize(text, **kwargs):
-            rate = chunk.sample_rate
-            raw += chunk.audio_int16_bytes
-        samples = np.frombuffer(bytes(raw), dtype=np.int16).astype(np.float32) / 32768.0
-        return samples, rate
+            yield np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0, chunk.sample_rate
+
+    def synthesize(self, text: str):
+        """Returns (float32 mono samples, sample_rate) for the whole text."""
+        import numpy as np  # type: ignore
+
+        parts, rate = [], 22050
+        for samples, rate in self._chunks(text):
+            parts.append(samples)
+        return (np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)), rate
 
     def say(self, text: str) -> None:
+        """Stream sentence by sentence: the first sentence plays while the next ones are synthesized."""
+        import numpy as np  # type: ignore
         import sounddevice as sd  # type: ignore
 
         from atc.audio.radio_fx import apply_radio_fx
 
         print(f"ATC> {text}")
         t0 = time.perf_counter()
-        samples, rate = self.synthesize(text)
-        if len(samples) == 0:
-            return
-        if self.radio_fx:
-            samples = apply_radio_fx(samples, rate)
-        self.last_synth_s = time.perf_counter() - t0  # synth + fx = delay before audio starts
-        import numpy as np  # type: ignore
-
-        # Silence padding: the output device often clips the last ~100-300 ms ("takeo..") and the first word.
-        lead = np.zeros(int(rate * self.lead_pad_s), dtype=np.float32)
-        tail = np.zeros(int(rate * self.tail_pad_s), dtype=np.float32)
-        sd.play(np.concatenate([lead, samples, tail]), rate)
-        sd.wait()
+        stream = None
+        try:
+            for samples, rate in self._chunks(text):
+                if len(samples) == 0:
+                    continue
+                if self.radio_fx:
+                    samples = apply_radio_fx(samples, rate)
+                if stream is None:
+                    self.last_synth_s = time.perf_counter() - t0  # delay before audio starts
+                    stream = sd.OutputStream(samplerate=rate, channels=1, dtype="float32")
+                    stream.start()
+                    # Lead silence: the output device often clips the first word.
+                    stream.write(np.zeros(int(rate * self.lead_pad_s), dtype=np.float32))
+                stream.write(samples.astype(np.float32))
+            if stream is not None:
+                stream.write(np.zeros(int(rate * self.tail_pad_s), dtype=np.float32))  # ...and the last ~300 ms
+        finally:
+            if stream is not None:
+                stream.stop()
+                stream.close()

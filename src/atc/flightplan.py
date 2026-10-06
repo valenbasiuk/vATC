@@ -30,6 +30,7 @@ class FlightPlan:
     sid_transition: str | None
     cruise_ft: int | None
     planned_runway: str | None
+    dest_runway: str | None = None  # SimBrief destination plan_rwy: expected arrival runway in calm wind
 
     @property
     def squawk(self) -> str:
@@ -75,4 +76,5 @@ def load_simbrief(path: Path) -> FlightPlan:
         sid_transition=(gen.get("sid_trans") or "").strip() or None,
         cruise_ft=int(cruise) if str(cruise or "").isdigit() else None,
         planned_runway=(org.get("plan_rwy") or "").strip() or None,
+        dest_runway=(dst.get("plan_rwy") or "").strip() or None,
     )

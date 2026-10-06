@@ -1,21 +1,19 @@
-"""Ask every candidate model for the same LLM-owned turn and score the replies.
+"""Ask every candidate model the same LLM-owned turns and score the replies.
 
-The IFR clearance itself is issued by code (atc.clearance), so models are compared on what they still own.
-Scenario: SABE, IFR clearance already read back, pilot calls Ground ready to taxi. SimBrief plan from
-simbrief_last.json, wind/QNH from that day's METAR (030/07, Q1020 -> runway 31 computed by code).
+Clearance, taxi, takeoff/landing, check-ins, handoffs and traffic info are produced by code now, so models
+are compared on what they still own: a VFR inbound call to Tower (SARC) and a free-form question (SABE).
 
-Keys come from env vars; a provider without a key is skipped:
-    GEMINI_API_KEY   NVIDIA_API_KEY   OPENROUTER_API_KEY
+Keys come from env vars (or the Windows user environment); a provider without a key is skipped:
+    GROQ_API_KEY  GEMINI_API_KEY  CEREBRAS_API_KEY  NVIDIA_API_KEY  MISTRAL_API_KEY  OPENROUTER_API_KEY
 
     python tools/compare_models.py
-    python tools/compare_models.py --only openrouter --runs 3
-    python tools/compare_models.py --model openrouter=some/model:free
+    python tools/compare_models.py --only groq --runs 3
+    python tools/compare_models.py --model groq:llama-3.3-70b-versatile
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 import time
@@ -23,60 +21,83 @@ from pathlib import Path
 
 from atc.airports.schema import load_airport
 from atc.audio.tts import PrintTTS
-from atc.clearance import items
-from atc.flightplan import load_simbrief
-from atc.llm.client import OpenAICompatLLM
+from atc.llm.client import PROVIDERS, OpenAICompatLLM, env_key
 from atc.main import handle
-from atc.runway import runway_in_use
 from atc.session import Session
 from atc.sim.fake import FakeSim
 
-PROVIDERS = {
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
-    "nvidia": ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
-    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-}
-
-CANDIDATES = [
-    ("gemini", "gemini-2.5-flash"),
-    ("gemini", "gemini-2.5-flash-lite"),
-    ("nvidia", "meta/llama-3.3-70b-instruct"),
-    ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free"),
-    ("openrouter", "nvidia/nemotron-3.5-lightning:free"),
-    ("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free"),
-    ("openrouter", "google/gemma-4-31b-it:free"),
+CANDIDATES = [  # free tiers as of 2026-10; check each provider's model list if one 404s
+    "groq:llama-3.3-70b-versatile",
+    "groq:openai/gpt-oss-120b",
+    "cerebras:llama-3.3-70b",
+    "gemini:gemini-2.5-flash-lite",
+    "gemini:gemini-2.5-flash",
+    "nvidia:meta/llama-3.3-70b-instruct",
+    "mistral:mistral-small-latest",
+    "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
-
-CALL = "Aeroparque Ground, Martinair {num}, at the gate, ready to taxi"
 WIND, QNH = (30.0, 7.0), 1020.0
 
 
-def score(reply: str | None, rwy: str) -> list[str]:
-    if not reply:
-        return ["no reply"]
+def _vfr_inbound(airports_dir: Path):
+    apt = load_airport(airports_dir / "SARC.yaml")
+    sim = FakeSim(apt, callsign="LVABC")
+    twr = next(f.mhz for f in apt.frequencies if f.kind == "TWR")
+    sim.update(com1_mhz=twr, wind_dir_deg=WIND[0], wind_kt=WIND[1], qnh_hpa=QNH,
+               lat=apt.lat + 0.17, lon=apt.lon, heading_deg=180.0)
+    sim.set_airborne(2300, 100)
+    return apt, sim, Session(callsign="LVABC"), \
+        "Corrientes Tower, LV-ABC, Cessna 172, 10 miles north, 2500 feet, inbound for landing"
+
+
+def _score_vfr(reply: str) -> list[str]:
     low = reply.lower()
     fails = []
-    if not low.startswith("martinair"):
+    if not low.startswith("lima victor alfa bravo charlie"):
+        fails.append("does not start with the spelled callsign")
+    if "zero two" not in low and "runway 02" not in low:
+        fails.append("no runway zero two (computed from wind 030)")
+    if "cleared to land" in low:
+        fails.append("cleared to land from 10 NM out, not on final")
+    if not re.search(r"\b(downwind|base|final|report|join)\b", low):
+        fails.append("no pattern instruction")
+    return fails
+
+
+def _question(airports_dir: Path):
+    apt = load_airport(airports_dir / "SABE.yaml")
+    sim = FakeSim(apt, callsign="MAR4133")
+    sim.update(com1_mhz=121.9, wind_dir_deg=WIND[0], wind_kt=WIND[1], qnh_hpa=QNH)
+    s = Session(callsign="MAR4133", telephony="Martinair")
+    s.where = "SABE"
+    s.contacted.add("SABE:ground")
+    return apt, sim, s, "Aeroparque Ground, Martinair 4133, say the wind and QNH please"
+
+
+def _score_question(reply: str) -> list[str]:
+    low = reply.lower()
+    fails = []
+    if not low.startswith("martinair four one three three"):
         fails.append("does not start with the spoken callsign")
-    if "mar4133" in low.replace(" ", ""):
-        fails.append("said the ICAO callsign instead of the telephony")
-    spoken_rwy = " ".join({"0": "zero", "1": "one", "2": "two", "3": "three"}.get(c, c) for c in rwy)
-    if spoken_rwy not in low and f"runway {rwy}" not in low:
-        fails.append(f"no runway {rwy}")
-    if "holding point" not in low:
-        fails.append("no 'holding point' (ICAO)")
+    if "zero three zero" not in low or "seven" not in low:
+        fails.append("wind not zero three zero degrees seven knots")
     if "one zero two zero" not in low:
         fails.append("no QNH one zero two zero")
-    if re.search(r"\b(alfa|alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|via)\b", low):
-        fails.append("named a taxiway (none on file)")
-    if "standby" in low or "stand by" in low:
-        fails.append("said standby")
     if "aeroparque" in low:
         fails.append("said station name (not first contact)")
-    if re.search(r"\b\d{3}\.\d", reply) or "decimal" in low:
-        fails.append("gave a frequency (not asked)")
-    if any(x in low for x in ("cleared for takeoff", "line up", "squawk")):
-        fails.append("instructions not asked for")
+    return fails
+
+
+CASES = [("VFR inbound SARC", _vfr_inbound, _score_vfr), ("wind/QNH question SABE", _question, _score_question)]
+
+
+def score(reply: str | None, check) -> list[str]:
+    if not reply:
+        return ["no reply"]
+    fails = check(reply)
+    if "standby" in reply.lower():
+        fails.append("said standby")
     if len(reply.split()) > 35:
         fails.append(f"too long ({len(reply.split())} words)")
     return fails
@@ -84,52 +105,40 @@ def score(reply: str | None, rwy: str) -> list[str]:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--plan", type=Path, default=Path("simbrief_last.json"))
     p.add_argument("--airports-dir", type=Path, default=Path("airports"))
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--only", choices=sorted(PROVIDERS))
-    p.add_argument("--model", action="append", default=[], help="provider=model, replaces the built-in list")
+    p.add_argument("--model", action="append", default=[], help="provider:model, replaces the built-in list")
     args = p.parse_args()
 
-    plan = load_simbrief(args.plan)
-    airport = load_airport(args.airports_dir / f"{plan.origin}.yaml")
-    gnd = next(f for f in airport.frequencies if f.kind == "GND")
-    rwy = runway_in_use(airport, *WIND).ident
-    candidates = [tuple(m.split("=", 1)) for m in args.model] or CANDIDATES
+    candidates = args.model or CANDIDATES
     if args.only:
-        candidates = [c for c in candidates if c[0] == args.only]
-
-    call = CALL.format(num="".join(c for c in plan.callsign if c.isdigit()))
-    print(f"plan {plan.callsign} {plan.origin}-{plan.destination}, runway in use {rwy}\nPILOT: {call}\n")
+        candidates = [c for c in candidates if c.startswith(args.only + ":")]
     rows = []
-    for provider, model in candidates:
-        base, key_var = PROVIDERS[provider]
-        key = os.environ.get(key_var, "")
-        if not key:
-            print(f"--- {provider}/{model}: skipped, {key_var} not set\n")
+    for spec in candidates:
+        provider = spec.split(":", 1)[0]
+        if provider not in PROVIDERS or not env_key(PROVIDERS[provider][1]):
+            print(f"--- {spec}: skipped, {PROVIDERS.get(provider, ('', '?'))[1]} not set\n")
             continue
-        llm = OpenAICompatLLM(base, key, model, timeout_s=20, retries=1)
-        passes, times = 0, []
-        for _ in range(args.runs):
-            sim = FakeSim(airport, callsign=plan.callsign)
-            sim.update(com1_mhz=gnd.mhz, wind_dir_deg=WIND[0], wind_kt=WIND[1], qnh_hpa=QNH)
-            session = Session(callsign=plan.callsign, plan=plan, telephony="Martinair", dest_name="Rosario")
-            session.clearance = "confirmed"  # as if Delivery already did its part
-            session.clearance_text = ", ".join(i.spoken for i in items(session, airport, "Rosario"))
-            session.contacted.add("ground")  # pilot already called Ground once
-            t0 = time.perf_counter()
-            reply = handle(airport, sim, llm, _Quiet(), [], call, session=session)
-            dt = time.perf_counter() - t0
-            fails = score(reply, rwy)
-            passes += not fails
-            if reply:
-                times.append(dt)
-            print(f"--- {provider}/{model}  {dt:.1f}s  {'PASS' if not fails else 'FAIL'}")
-            print(f"    ATC: {reply}")
-            for f in fails:
-                print(f"    - {f}")
+        llm = OpenAICompatLLM("", "", spec, timeout_s=20, retries=1, deadline_s=30)
+        passes, total, times = 0, 0, []
+        for name, setup, check in CASES:
+            for _ in range(args.runs):
+                apt, sim, session, call = setup(args.airports_dir)
+                t0 = time.perf_counter()
+                reply = handle(apt, sim, llm, _Quiet(), [], call, session=session)
+                dt = time.perf_counter() - t0
+                fails = score(reply, check)
+                total += 1
+                passes += not fails
+                if reply:
+                    times.append(dt)
+                print(f"--- {spec} [{name}]  {dt:.1f}s  {'PASS' if not fails else 'FAIL'}")
+                print(f"    ATC: {reply}")
+                for f in fails:
+                    print(f"    - {f}")
         avg = sum(times) / len(times) if times else None
-        rows.append((f"{provider}/{model}", passes, args.runs, avg))
+        rows.append((spec, passes, total, avg))
         print()
 
     print("=== summary ===")

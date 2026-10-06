@@ -37,6 +37,9 @@ class Traffic:
     gs_kt: float
     heading_deg: float
     on_ground: bool
+    type: str | None = None  # ICAO type or the sim's "ATC MODEL" string; None = unknown, never guessed
+    airline: str | None = None  # sim "ATC AIRLINE"
+    flight_number: str | None = None  # sim "ATC FLIGHT NUMBER"
 
 
 @dataclass

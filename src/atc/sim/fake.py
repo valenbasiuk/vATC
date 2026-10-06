@@ -81,6 +81,20 @@ class FakeSim:
         lat, lon = threshold(self._airport, rwy)
         self.add_traffic(Traffic(callsign, lat, lon, self._airport.elevation_ft, 0.0, rwy.heading_deg, True))
 
+    def place_on_final(self, airport: Airport, nm: float, alt_ft: float | None = None) -> None:
+        """Put the own aircraft `nm` out on final to `airport`'s runway in use (for rehearsing arrivals)."""
+        from atc.runway import runway_in_use
+        from atc.sequence import threshold
+
+        rwy = runway_in_use(airport, self._own.wind_dir_deg, self._own.wind_kt)
+        tlat, tlon = threshold(airport, rwy)
+        h = math.radians(rwy.heading_deg)
+        alt = alt_ft if alt_ft is not None else airport.elevation_ft + 50 + nm * 318
+        self.update(lat=tlat - nm * math.cos(h) / 60.0,
+                    lon=tlon - nm * math.sin(h) / (60.0 * math.cos(math.radians(tlat))),
+                    alt_msl_ft=alt, alt_agl_ft=alt - airport.elevation_ft, heading_deg=rwy.heading_deg,
+                    on_ground=False, gs_kt=140.0 if nm < 15 else 250.0)
+
     def set_on_ground(self) -> None:
         self.update(
             on_ground=True,

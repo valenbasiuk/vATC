@@ -34,6 +34,23 @@ def level(ft: int) -> str:
     return f"{out.strip()} feet"
 
 
+def wind(direction: float | None, kt: float | None) -> str | None:
+    """(300, 12) -> 'wind three zero zero degrees one two knots'; under 3 kt -> 'wind calm'; unknown -> None."""
+    if direction is None or kt is None:
+        return None
+    if kt <= 3:
+        return "wind calm"
+    d = int(round(direction)) % 360 or 360
+    return f"wind {digits(f'{d:03d}')} degrees {digits(str(int(round(kt))))} knots"
+
+
+def runway(ident: str, faa: bool = False) -> str:
+    """'31' -> 'three one', '09L' -> 'zero niner left' (ICAO); FAA drops the leading zero: 'niner left'."""
+    side = {"L": " left", "R": " right", "C": " center"}.get(ident[-1:].upper(), "")
+    num = "".join(c for c in ident if c.isdigit())
+    return digits(num.lstrip("0") or "0" if faa else num) + side
+
+
 def procedure(name: str) -> str:
     """SID/STAR name: 'ATOVO4B' -> 'ATOVO four bravo' (the fix name is said as a word)."""
     head = name.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")

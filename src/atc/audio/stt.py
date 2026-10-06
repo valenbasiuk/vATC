@@ -10,14 +10,16 @@ class FasterWhisperSTT:
 
         self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    def transcribe(self, audio_f32_16k, hint: str = "") -> str:
+    def transcribe(self, audio_f32_16k, hint: str = "", hotwords: str | None = None) -> str:
         """audio_f32_16k: float32 numpy array, mono, 16 kHz. `hint`: names for this flight (station,
-        telephony, SID, destination), so "Martinair" isn't heard as "Martin Air"."""
+        telephony, SID, destination), so "Martinair" isn't heard as "Martin Air". `hotwords`: the same names as
+        a short list, which faster-whisper weights more strongly than the prompt."""
         segments, _info = self._model.transcribe(
             audio_f32_16k,
             language="en",
             beam_size=1,
             vad_filter=True,
+            hotwords=hotwords or None,
             # Biasing toward aviation vocabulary helps a lot with callsigns and phraseology.
             initial_prompt="Air traffic control radio. Runway, taxi, hold short, cleared for takeoff, "
             "downwind, base, final, squawk, QNH, readback, Cessna, niner, tree, fife. " + hint,

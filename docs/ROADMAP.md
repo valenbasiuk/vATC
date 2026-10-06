@@ -31,8 +31,13 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
      5 kt tailwind); calls from another airline flight were answered as ours ("say again your callsign" now);
      registrations are spelled ("Lima Victor Alfa Bravo Charlie"); winds aloft no longer pick the runway; Departure/
      Approach are told when the squawk is wrong.
-9b. **Taxi routes.** TODO, next most visible gap: Ground can't name taxiways because no data source has them, and the model must not invent them. Option 1 (quick): fill `taxi_routes` per runway in `airports/SABE.yaml` / `SARC.yaml` from the AD charts (format in the YAML comment). Option 2 (realistic, bigger): read taxiways/parking from MSFS via SimConnect facility data (`SimConnect_RequestFacilityData`, TAXI_PATH/TAXI_NAME/TAXI_PARKING) and compute a route in code.
-9c. **Rest of the IFR flight.** TODO: Tower (line up, takeoff clearance, "contact Departure"), Departure/Approach (climb, direct-to, descend, STAR/approach from the plan's `star_ident`), arrival Tower and Ground at the destination. Same rule: code decides the values, model phrases. None of this has been run at SABE yet.
+9b. **Taxi routes.** WORKING (2026-10-05, `taxi.py`, code-owned): graph from OpenStreetMap (`tools/fetch_osm_taxi.py ICAO` -> `airports/osm/ICAO.json`; done for SABE, SAAR, SARC), Dijkstra with a penalty per taxiway change, goal = runway holding point at the departure end (else the taxiway node next to the threshold). Ground: "taxi to holding point runway 31 via Kilo, Alfa, QNH ..."; after landing "taxi to stand 12 via ..." (requested stand, else a free one). Taxiway names are read-back checked. Hand `taxi_routes` in the YAML always win. Coverage: SABE good, checked against Valen's LIDO chart 2026-10-05 (A parallel ~107 m NE of the centerline; B C D E F H I J K L M as on the chart; OSM's stand lead-in "1" is filtered, designators must start with a letter; apron -> 31 "via Kilo, Alfa", -> 13 "via Alfa"); SAAR partial (runway 20 end not connected: clearance without names); SARC no names in OSM. TODO: MSFS's own data via `tools/probe_taxi.py` (UNTESTED; needs the MSFS 2024 SDK SimConnect.dll via `--dll`, the bundled one has no facility API) -> `airports/msfs/ICAO.json`, preferred over OSM; hold short of crossed runways.
+9c. **Rest of the IFR flight.** WORKING in the fake sim (2026-10-05, `flow.py`, `world.py`, all code-owned):
+   - One run covers the flight: origin, destination and alternate are loaded (missing YAMLs generated from `data/`), the tuned frequency picks the airport; area control from `airspace/*.yaml` (`airspace/SAEF.yaml` has NO frequencies yet: fill from AIP ENR 2.1, until then Departure -> Control is skipped).
+   - Telemetry watcher (1 s, in main `_Callbacks`) detects takeoff/landing and hands off: Tower -> Departure (700 ft AGL), Departure -> Control (FL100 / 30 NM), -> destination Approach (40 NM) or Tower (18 NM if no Approach), Approach -> Tower (12 NM), Tower -> Ground (vacated, < 40 kt). Said again once after 20 s if the frequency isn't changed; never while PTT is held.
+   - Check-ins: "radar contact, climb via SID" / arrival "radar contact, expect runway 20, QNH ..."; wrong squawk -> "squawk 2235", then "radar contact" when the code shows.
+   - Tower: takeoff ("wind ..., runway 31, cleared for takeoff" or "hold position, traffic on two miles final") and landing ("cleared to land" on final, "number two, traffic to follow..." or "continue approach, report final").
+   - Fake sim: `/near SAAR 30 6000` puts you on an arrival. TODO: climb/descent clearances (FL, STAR from the plan), direct-to, line up and wait, go-around, holding.
 10. **Session state, rest.** First slice DONE (`session.py`: telephony, clearance state, positions contacted). TODO: assigned runway, pattern position, last instruction per position.
 11. **Runway-in-use logic.** DONE (`runway.py`). TODO: crosswind limits, preferred runways per airport, SABE noise abatement.
 12. **Readback check.** DONE: runway / hold short / holding point / takeoff / landing (`readback.py`) plus the full clearance (`clearance.py`).
@@ -42,7 +47,9 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
 
 ## D. Latency and cost (Phase 5)
 16. **Timing logger.** PARTLY DONE: `[timing] stt + llm + tts` line printed when voice/STT is on. Code-owned replies (clearance, readbacks) take 0 s of LLM time.
-17. **Streaming** LLM output into TTS sentence by sentence. TODO.
+17. **Streaming.** TTS DONE (2026-10-05): Piper plays sentence by sentence (the clearance starts after 1.2 s instead of 4.4 s; playback through `sd.OutputStream` not heard yet). LLM total deadline `ATC_LLM_DEADLINE_S` (default 12 s) across all fallbacks. TODO: LLM token streaming (most replies are code-owned now, so low value).
+17b. **Fact check** DONE (`factcheck.py`): every LLM reply's numbers, aircraft types and taxiway names must appear in what the model was given; else one retry naming the problem, then "<callsign>, say again".
+17c. **Traffic information by code** DONE (`traffic.py`): "traffic, two o'clock, three miles, opposite direction, Airbus three twenty, one thousand feet above" (within 8 NM / 3000 ft). AI type/airline/flight number read from SimConnect (`ATC MODEL`, `ATC AIRLINE`, `ATC FLIGHT NUMBER`; VERIFY with probe_traffic, falls back to the basic layout if rejected).
 18. **Model comparison.** First pass DONE (2026-10-05) with `tools/compare_models.py` (Ground taxi turn at SABE, content checks + timing). Results on OpenRouter free:
     - `nvidia/nemotron-3-super-120b-a12b:free`: 2/2, about 0.9 s.
     - `nvidia/nemotron-3-ultra-550b-a55b:free`: 2/2, 1.2 s, but 12 s on a cold start. Valen uses it as main (commit 70be6f5).
@@ -56,6 +63,11 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
       one-time 10 credit top-up). About 10-20 LLM calls per flight, so 2-4 flights/day. The client now stops on a
       daily-quota 429 instead of retrying every free model.
     - Latency seen: nemotron ultra 0.9-6 s, once 17.5 s (the 10 s timeout is per socket read, not total).
+    - Multi-provider (2026-10-05): `ATC_LLM_MODEL="groq:...,gemini:...,openrouter:..."`, each with its own key
+      (`GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`,
+      `ANTHROPIC_API_KEY`; read from the Windows user environment too). Free quotas stack. With clearance, taxi,
+      takeoff/landing, check-ins, handoffs and traffic in code, a flight needs only a few LLM calls (VFR pattern work,
+      questions). `tools/compare_models.py` now scores those LLM-owned turns; run it once keys exist.
 
 ## E. Coverage (Phase 6) and extras
 19. SABE/SARC manual pass from the AIP charts: taxi routes, real departure frequency (SABE currently uses APP 120.6 as the departure frequency, VERIFY), procedures, reporting points.

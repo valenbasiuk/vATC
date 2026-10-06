@@ -18,6 +18,7 @@ _ROLE = {
     "APP": ("approach", True),
     "DEP": ("departure", True),
     "CLD": ("clearance", True),
+    "CTR": ("control", True),  # area control (airspace/<FIR>.yaml), e.g. "Ezeiza Control"
     "ATIS": ("atis", False),
     "ATF": ("advisory", False),
     "CTAF": ("advisory", False),
@@ -49,6 +50,7 @@ def callsign_for(airport: Airport, facility: Facility) -> str:
         "approach": "Approach",
         "departure": "Departure",
         "clearance": "Delivery",
+        "control": "Control",
     }.get(facility.role, "")
     return f"{short} {suffix}".strip()
 

@@ -1,0 +1,20 @@
+# Area control for the Ezeiza FIR (SAEF). Loaded by atc.world: after departure, Departure hands you to the
+# first CTR frequency here ("contact Ezeiza Control ..."). Leave `frequencies` empty and that handoff is skipped
+# (Departure keeps you until the destination's Approach/Tower takes over).
+#
+# TODO(Valen): fill the real sector frequencies from the AIP Argentina ENR 2.1 (or the VATSIM Argentina sector
+# file). Format:
+# frequencies:
+# - kind: CTR
+#   mhz: 128.000
+#   description: ACC Ezeiza sector 1
+icao: SAEF
+name: Ezeiza FIR
+spoken_name: Ezeiza
+lat: -34.82
+lon: -58.54
+elevation_ft: 0
+country: AR
+towered: true
+frequencies: []
+needs_review: true

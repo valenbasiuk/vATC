@@ -6,6 +6,7 @@ from atc.facility import callsign_for, describe_frequencies
 from atc.geo import bearing_deg, compass_point, distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.runway import runway_in_use
+from atc.traffic import spoken_type
 
 SYSTEM_TEMPLATE = """\
 You are {facility_name}, an air traffic controller in a flight simulator. You are answering a pilot \
@@ -127,15 +128,16 @@ def build_context(
         route = airport.taxi_routes.get(rwy.ident)
         lines.append(f"TAXI ROUTE to runway {rwy.ident} (from the charts, treat as fact): {route}" if route
                      else "No taxi route on file: give the taxi clearance without naming any taxiway.")
-    lines.append("Nearby traffic (aircraft type unknown):")
+    lines.append("Nearby traffic:")
     if not traffic:
         lines.append("  none reported")
     for t in sorted(traffic, key=lambda t: distance_nm(airport.lat, airport.lon, t.lat, t.lon))[:8]:
         td = distance_nm(airport.lat, airport.lon, t.lat, t.lon)
         tb = bearing_deg(airport.lat, airport.lon, t.lat, t.lon)
         state = "on ground" if t.on_ground else f"{t.alt_msl_ft:.0f} ft MSL, {compass_point(t.heading_deg)} bound"
-        lines.append(f"  {t.callsign}: {td:.1f} NM {compass_point(tb)} of airport, {state}, {t.gs_kt:.0f} kt; "
-                     f"from the pilot: {_relative(own, t)}")
+        typ = spoken_type(t.type)
+        lines.append(f"  {t.callsign}: {'type ' + typ if typ else 'type unknown'}, {td:.1f} NM {compass_point(tb)} "
+                     f"of airport, {state}, {t.gs_kt:.0f} kt; from the pilot: {_relative(own, t)}")
     return "\n".join(lines)
 
 
