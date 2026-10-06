@@ -56,7 +56,7 @@ def test_traffic_on_short_final_blocks_takeoff():
     sim.add_on_final(2.0, "ARG1234", "31")
     st = runway_status(APT, R31, sim.own(), sim.traffic(APT.lat, APT.lon, 15))
     assert st.finals and st.finals[0][0] == "ARG1234" and abs(st.finals[0][1] - 2.0) < 0.1
-    assert st.takeoff_blocked() == "traffic on two miles final"
+    assert st.takeoff_blocked() == "traffic on two mile final"
 
 
 def test_traffic_far_out_allows_takeoff():
@@ -98,7 +98,7 @@ def test_landing_behind_closer_traffic_is_number_two():
                alt_agl_ft=me.alt_msl_ft - 18, gs_kt=140)
     st = runway_status(APT, R31, sim.own(), sim.traffic(APT.lat, APT.lon, 15))
     assert abs(st.own_final_nm - 5.0) < 0.1
-    assert st.landing_blocked() == "number two, traffic to follow on two miles final"
+    assert st.landing_blocked() == "number two, traffic to follow on two mile final"
 
 
 def test_landing_ahead_of_traffic_is_allowed():
@@ -119,7 +119,7 @@ def test_guard_replaces_unsafe_takeoff_clearance():
     s = Session(callsign="MAR4133", telephony="Martinair")
     llm = _Fixed("Martinair four one three three, runway three one, cleared for takeoff.")
     reply = handle(APT, sim, llm, _Quiet(), [], "Testa Tower, Martinair 4133, holding point 31, ready", session=s)
-    assert reply == "Martinair four one three three, hold position, traffic on two miles final."
+    assert reply == "Martinair four one three three, hold position, traffic on two mile final."
     assert "NOT ALLOWED" in llm.last[-1]["content"]
 
 

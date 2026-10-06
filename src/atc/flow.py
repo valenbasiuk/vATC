@@ -20,13 +20,15 @@ from atc.clearance import _freq
 from atc.facility import ROLE_WORDS, callsign_for, group, resolve_facility
 from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
+from atc.pattern import is_transit
 from atc.readback import _normalize
 from atc.runway import magnetic, runway_in_use
-from atc.sequence import along_cross, final_distance, on_runway, runway_status
+from atc.sequence import along_cross, final_distance, on_runway, runway_status, wait_for_takeoff
 
 DEP_HANDOFF_AGL_FT = 700.0  # Tower -> Departure once climbing through this
 CONTROL_HANDOFF_FT = 10000.0  # Departure -> Control at this altitude or CONTROL_HANDOFF_NM out
 CONTROL_HANDOFF_NM = 30.0
+TOWER_TO_CONTROL_AGL_FT = 2000.0  # Tower with no Departure on file -> Control at this height (or 5 NM out)
 ARRIVAL_APP_NM = 40.0  # -> destination Approach inside this
 ARRIVAL_TWR_NM = 12.0  # Approach -> Tower inside this (or -> Tower directly when there is no Approach)
 REPEAT_AFTER_S = 20.0  # no frequency change by then: say it again once
@@ -90,7 +92,7 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     # before departure: Ground -> Tower once stopped next to the departure end of the runway in use
     if fac.role == "ground" and own.on_ground and not session.landed and own.gs_kt < 5:
         pref = plan.planned_runway if plan and plan.origin == apt.icao else None
-        rwy = runway_in_use(apt, own.wind_dir_deg, own.wind_kt, pref)
+        rwy = runway_in_use(apt, own.wind_dir_deg, own.wind_kt, pref, use="departure")
         if rwy is not None:
             along, cross = along_cross(apt, rwy, own.lat, own.lon)
             if -0.3 <= along <= 0.4 and 0.03 < cross <= 0.15:
@@ -99,12 +101,15 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         return None
     d_apt = distance_nm(own.lat, own.lon, apt.lat, apt.lon)
     departing = session.departed_from == apt.icao and not on_dest
-    # after takeoff: Tower -> Departure
-    if fac.role == "tower" and departing and own.alt_agl_ft >= DEP_HANDOFF_AGL_FT and d_apt < 15:
-        return due(f"{apt.icao}:departure", _contact(apt, ("DEP", "APP", "ARR")))
-    # Departure -> Control
-    if fac.role in ("departure", "approach") and departing and (
-            own.alt_msl_ft >= CONTROL_HANDOFF_FT or d_apt >= CONTROL_HANDOFF_NM):
+    # after takeoff: Tower -> Departure (not for a VFR flight staying in the circuit or leaving on its own)
+    tower_out = fac.role == "tower" and departing and not session.in_circuit and not session.vfr_departure
+    dep = _contact(apt, ("DEP", "APP", "ARR"))
+    if tower_out and dep is not None and own.alt_agl_ft >= DEP_HANDOFF_AGL_FT and d_apt < 15:
+        return due(f"{apt.icao}:departure", dep)
+    # Departure -> Control; a Tower with no Departure on file (Corrientes) hands over to Control itself
+    if (fac.role in ("departure", "approach") and departing and (
+            own.alt_msl_ft >= CONTROL_HANDOFF_FT or d_apt >= CONTROL_HANDOFF_NM)) or \
+            (tower_out and dep is None and (own.alt_agl_ft >= TOWER_TO_CONTROL_AGL_FT or d_apt >= 5)):
         ctl = world.control(own, apt)
         if ctl is not None:
             a, f = ctl
@@ -123,7 +128,7 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         return None
     # destination Approach -> Tower, once established on final (or close in and low)
     if fac.role == "approach":
-        rwy = runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None)
+        rwy = runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None, use="arrival")
         established = rwy is not None and final_distance(dest, rwy, own) is not None
         if established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000):
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
@@ -302,7 +307,8 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     station = callsign_for(airport, facility)
     arriving = plan is not None and plan.destination == airport.icao
     pref = plan.dest_runway if arriving and plan else preferred
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, pref)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, pref,
+                        use="departure" if own.on_ground and not session.landed else "arrival")
 
     # a plain check-in on a radar position (a check-in with a request or a question goes to the model)
     from atc.enroute import _arrival_radar, checkin_extra
@@ -343,13 +349,15 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
 
     if own.on_ground and "ready" in norm and ("departure" in norm or "takeoff" in norm or "take off" in norm):
         session.first_contact(facility.role)
-        why = st.takeoff_blocked()
-        if why:
-            return f"{pre}, hold position, {why}."
-        return f"{pre}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared for takeoff."
+        clearance = (f"{wind}, " if wind else "") + f"runway {rw}, cleared for takeoff"
+        wait = wait_for_takeoff(st, airport, own)
+        if wait:  # the takeoff clearance follows by itself once the runway is free (takeoff_when_clear)
+            session.takeoff_waiting = (rwy.ident, clearance)
+            return f"{pre}, {wait}."
+        return f"{pre}, {clearance}."
 
     on_final = st.own_final_nm is not None
-    if not own.on_ground and (on_final or (arriving and first)) and \
+    if not own.on_ground and (on_final or (arriving and first)) and not is_transit(norm) and \
             (first or "final" in norm or "landing" in norm or "land" in norm.split()):
         session.first_contact(facility.role)
         why = st.landing_blocked()

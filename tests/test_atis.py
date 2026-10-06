@@ -63,7 +63,7 @@ def test_faa_atis_from_metar():
     assert "Wind three zero zero at one three." in text  # METAR wind (no reading taken at the airport yet)
     assert "Light rain." in text and "Few clouds at eight hundred, ceiling two thousand five hundred broken." in text
     assert "Temperature one seven, dew point one three." in text and "Altimeter two niner niner zero." in text
-    assert "Landing and departing runway two eight" in text
+    assert "Landing runways two eight left and two eight right, departing runways one left and one right." in text
     assert text.endswith(f"Advise on initial contact you have information {letter}.")
 
 

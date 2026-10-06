@@ -1,7 +1,9 @@
 """Radio traffic between ATC and the AI aircraft, from the tracker's events, and the rules for when it may be said.
 
 Each exchange is ATC's instruction plus the AI pilot's readback (in its own Piper voice), only on the frequency
-the user is tuned to (Tower events on Tower, Ground events on Ground). The radio is one channel:
+the user is tuned to (Tower events on Tower, Ground events on Ground, and the radar ones on the Departure/Approach
+frequency: a departure checking in, an arrival cleared for the approach and sent to Tower). The radio is one
+channel:
   - never while the user holds push-to-talk, never on top of another transmission;
   - a gap after every transmission (GAP_S), and a longer quiet window after ATC talks to the user (READBACK_S),
     so the user always gets to answer first;
@@ -38,7 +40,7 @@ class Exchange:
     key: str  # aircraft callsign: one waiting exchange per aircraft
     lines: list[tuple[str, str, int | None]]  # (who, text, piper speaker id or None for the ATC voice)
     created: float
-    role: str  # position that talks: "tower" / "ground"
+    role: str  # position that talks: "tower" / "ground" / the radar frequency's role ("approach", "departure")
     priority: int = 1  # 0 = most urgent (landing/takeoff clearances)
     country: str | None = None  # where the AI aircraft is from (its pilot's accent)
 
@@ -104,7 +106,8 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
         return None
     voice = voice_for(t.callsign)
     w = phrase.wind(magnetic(a, wind[0]), wind[1], faa)
-    rwy = ev.runway or runway_in_use(a, wind[0], wind[1])
+    use = "departure" if ev.kind in ("pushback", "taxi_out", "lineup", "takeoff_roll", "departed") else "arrival"
+    rwy = ev.runway or runway_in_use(a, wind[0], wind[1], use=use)
     rw = phrase.runway(rwy.ident, faa) if rwy is not None else None
     atc = pilot = None
     role, prio = "tower", 1
@@ -149,6 +152,8 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
         role = "ground"
         where = "the ramp" if faa else "the apron"
         atc, pilot = f"{cs}, taxi to {where}", f"Taxi to {where}, {cs}"
+    elif ev.kind in ("dep_checkin", "approach", "app_handoff"):
+        return _radar_exchange(ev, cs, voice, wind)
     if atc is None:
         return None
     pilot = pilot[:1].upper() + pilot[1:]
@@ -156,6 +161,51 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
 
     return Exchange(t.callsign, [("ATC", atc + ".", None), (cs, pilot + ".", voice)], ev.at, role, prio,
                     country_of(t.airline, t.callsign))
+
+
+DEP_CLIMB_FT = 10000  # what Departure clears an AI to on check-in (FAA "one zero thousand", ICAO "flight level 100")
+
+
+def _radar_exchange(ev: Event, cs: str, voice: int, wind) -> Exchange | None:
+    """The Departure / Approach frequency's chatter with an AI aircraft. Code picks every value: the climb, the
+    approach altitude (2000 ft above the field, rounded up to the next thousand), the approach type from the
+    sim's data, the runway in use for arrivals, the Tower frequency."""
+    from atc.facility import callsign_for
+    from atc.navdb import approach_type
+    from atc.voices import country_of
+
+    a, t = ev.airport, ev.traffic
+    faa = a.faa
+    radar = _freq(a, "DEP", "APP", "ARR") if ev.kind == "dep_checkin" else _freq(a, "APP", "ARR", "DEP")
+    fac = resolve_facility(a, radar.mhz) if radar is not None else None
+    if fac is None or not fac.can_reply:
+        return None
+    station = callsign_for(a, fac)
+    if ev.kind == "dep_checkin":
+        station = station.replace("Approach", "Departure")
+        passing = int(round(t.alt_msl_ft / 100.0)) * 100
+        climbing = "" if faa else ", climbing"
+        lines = [(cs, f"{station}, {cs}, passing {phrase.level(passing, a)}{climbing}.", voice),
+                 ("ATC", f"{cs}, {station}, radar contact, {phrase.climb(DEP_CLIMB_FT, a)}.", None),
+                 (cs, f"{phrase.climb(DEP_CLIMB_FT, a).capitalize()}, {cs}.", voice)]
+    elif ev.kind == "approach":
+        rwy = runway_in_use(a, wind[0], wind[1], use="arrival")
+        if rwy is None:
+            return None
+        rw = phrase.runway(rwy.ident, faa)
+        alt = int(-(-(a.elevation_ft + 2000) // 1000) * 1000)
+        app = approach_type(a, rwy.ident)
+        cleared = (f"cleared {app} runway {rw} approach" if faa else f"cleared {app} approach runway {rw}") if app             else f"expect visual approach runway {rw}"
+        atc = f"{cs}, {phrase.descend(alt, a)}, {cleared}"
+        lines = [("ATC", atc + ".", None),
+                 (cs, f"{phrase.descend(alt, a).capitalize()}, {cleared}, {cs}.", voice)]
+    else:  # app_handoff
+        twr = _contact(a, "TWR")
+        if twr is None:
+            return None
+        lines = [("ATC", f"{cs}, contact tower {twr}" + (", good day." if not faa else "."), None),
+                 (cs, f"Tower {twr}, {cs}.", voice)]
+    return Exchange(t.callsign, lines, ev.at, fac.role, 1, country_of(t.airline, t.callsign))
 
 
 def _user_on(airport: Airport, rwy, own: OwnState) -> bool:
@@ -173,7 +223,9 @@ class RadioBus:
     quiet_until: float = 0.0  # the user's turn: after ATC talked to them
 
     def offer(self, ex: Exchange) -> None:
-        self.queue = [q for q in self.queue if q.key != ex.key]  # newer event replaces the waiting one
+        # a newer event replaces the one still waiting for the same aircraft on the same position (a Tower handoff
+        # and the Departure check-in that follows it are on different frequencies: both stay)
+        self.queue = [q for q in self.queue if (q.key, q.role) != (ex.key, ex.role)]
         self.queue.append(ex)
         self.queue.sort(key=lambda q: (q.priority, q.created))
         del self.queue[MAX_QUEUE:]

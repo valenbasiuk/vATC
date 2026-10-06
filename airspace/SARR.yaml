@@ -1,0 +1,21 @@
+# Area control for the Resistencia FIR (SARR). Loaded by atc.world: the nearest airspace file (by the reference
+# point below) is the Control a departure is handed to, so each FIR needs its own file.
+# Covers the north-east: Corrientes (SARC), Resistencia (SARE), Posadas, Iguazu, Formosa.
+# Source: VATSIM Argentina operations manual v1.2.1 (Jan 2025, argentina.vatsur.org), same as SAEF.yaml.
+# Reference point: SARE (Resistencia). Spoken in English as "<name> Control" like Ezeiza (Spanish "Centro"); not checked in the AIP.
+# Only the first frequency is used for handoffs; the others answer too.
+icao: SARR
+name: Resistencia FIR
+spoken_name: Resistencia
+lat: -27.45
+lon: -59.06
+elevation_ft: 0
+country: AR
+towered: true
+trans_alt_ft: 3000
+frequencies:
+- kind: CTR
+  mhz: 124.3
+  description: ACC Resistencia (VATSIM SARR_CTR, "Resistencia Centro")
+  spoken: Resistencia Control
+needs_review: false

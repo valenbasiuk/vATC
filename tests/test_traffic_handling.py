@@ -136,4 +136,37 @@ def test_user_sequenced_behind_a_typed_ai():
     sim._traffic[-1].type = "A320"
     r = handle(sabe, sim, None, _Quiet(), [], "Aeroparque Tower, Martinair 4133, holding point 31, ready for departure",
                session=s, world=world)
-    assert r == "Martinair four one three three, Aeroparque Tower, hold position, Airbus three twenty on two miles final."
+    assert r == "Martinair four one three three, Aeroparque Tower, hold position, Airbus three twenty on two mile final."
+
+
+def test_approach_chatter_for_an_ai_arrival():
+    sabe, _, sim, _, cb = _setup(freq=120.6)  # tuned to Aeroparque Approach (on the apron, listening)
+    sim.update(lat=sabe.lat + 0.004, lon=sabe.lon + 0.004)
+    sim.spawn_arrival("ARG1234", 20.0, "31", 0.0, **INFO)  # comes into range (15 NM) a couple of minutes later
+    said = _run(cb, 520, step=2.0)
+    texts = [[text for _, text in lines] for _, lines in said]
+    # no approach types in the test YAML (the sim's db adds them): a visual approach is expected
+    assert texts[0] == [f"{ARG}, descend to three thousand feet, expect visual approach runway three one.",
+                        f"Descend to three thousand feet, expect visual approach runway three one, {ARG}."]
+    assert texts[1] == [f"{ARG}, contact tower one one eight decimal eight five, good day.",
+                        f"Tower one one eight decimal eight five, {ARG}."]
+    assert not any("cleared to land" in t for x in texts for t in x)  # that is Tower's, not heard here
+
+
+def test_departure_checks_in_with_departure():
+    sabe, _, sim, _, cb = _setup(freq=120.6)
+    sim.update(lat=sabe.lat + 0.004, lon=sabe.lon + 0.004)
+    sim.spawn_departure("ARG1234", "31", 0.0, **INFO)
+    said = _run(cb, 200)
+    assert len(said) == 1
+    pilot, atc, readback = [text for _, text in said[0][1]]
+    assert pilot.startswith(f"Aeroparque Departure, {ARG}, passing two thousand") and pilot.endswith("climbing.")
+    assert atc == f"{ARG}, Aeroparque Departure, radar contact, climb to flight level one zero zero."
+    assert readback == f"Climb to flight level one zero zero, {ARG}."
+
+
+def test_tower_handoff_and_departure_check_in_dont_replace_each_other():
+    bus = RadioBus()
+    bus.offer(Exchange("ARG1", [("ATC", "contact departure", None)], 0.0, "tower"))
+    bus.offer(Exchange("ARG1", [("ARG1", "Departure, ARG1, passing 2000", None)], 1.0, "approach"))
+    assert {q.role for q in bus.queue} == {"tower", "approach"}

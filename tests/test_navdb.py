@@ -59,3 +59,19 @@ def test_corrientes_approach_is_resistencia():
 def test_find_fix_off_route():
     pos = navdb.find_fix("ROS", (-32.9, -60.8))  # Rosario VOR
     assert pos is not None and abs(pos[0] + 32.9) < 0.3
+
+
+def test_ksfo_runway_thresholds_and_crossings_from_the_sim():
+    from atc.sim.fake import FakeSim
+    from atc.taxi import _departure_path, crossings, strips
+
+    ksfo = _apt("KSFO")  # the YAML has no thresholds: the sim's runway ends fill them in
+    assert all(r.lat is not None for r in ksfo.runways)
+    assert len(strips(ksfo)) == 4  # 10L/28R, 10R/28L, 1L/19R, 1R/19L
+    net = navdb.taxi_network("KSFO")
+    sim = FakeSim(ksfo)
+    sim.update(lat=net.nodes[net.stands["107"]][0], lon=net.nodes[net.stands["107"]][1])
+    rwy1l = next(r for r in ksfo.runways if r.ident == "1L")
+    names, nodes = _departure_path(net, ksfo, rwy1l, sim.own())
+    # departing 1L from stand 107 (calm): both 28s are crossed, named like the runway in use's parallel direction
+    assert [c[0] for c in crossings(net, ksfo, nodes, rwy1l)] in (["28R", "28L"], ["10L", "10R"])

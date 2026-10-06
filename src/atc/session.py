@@ -80,6 +80,9 @@ class Session:
     circuit_intention: str | None = None  # "full stop" / "touch and go" / "circuits"
     touched_down: bool = False
     zone_left: bool = False
+    crossings: list = field(default_factory=list)  # taxi.py: runways still to cross (ident, lat, lon)
+    takeoff_waiting: tuple | None = None  # (runway, clearance text) Tower gives when the runway is free
+    vfr_departure: bool = False  # asked for a turn-out / said VFR: "frequency change approved", not Departure
 
     def __post_init__(self) -> None:
         if self.telephony is not None:

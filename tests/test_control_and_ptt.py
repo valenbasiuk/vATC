@@ -37,7 +37,7 @@ def _setup():
 
 def test_departure_hands_off_to_ezeiza_control():
     world, sabe, sim, s = _setup()
-    assert [a.icao for a in world.airspaces] == ["SAEF"]
+    assert "SAEF" in [a.icao for a in world.airspaces]
     sim.update(com1_mhz=120.6, lat=-34.30, lon=-58.80, heading_deg=300)
     sim.set_airborne(11000, 300)
     sim.update(alt_msl_ft=11000)
@@ -108,3 +108,37 @@ def test_world_loads_the_airport_you_are_parked_at():
     assert world.get("KSFO") is world.airports[-1] and "KSFO" in world.taxi
     sim.update(lat=-34.5, lon=-58.4, com1_mhz=118.0)  # nowhere near any airport file: still None, no crash
     assert world.pick(sim.own()) is None
+
+
+SARC_PLAN = FlightPlan(
+    callsign="MAR4133", rules="I", aircraft_type="F100", origin="SARC", destination="SABE",
+    destination_name="Aeroparque", alternate=None, route="DCT", sid=None, sid_transition=None, cruise_ft=20000,
+    planned_runway="02", dest_runway="31",
+)
+
+
+def test_corrientes_departure_goes_to_resistencia_control_not_ezeiza():
+    world = load_world("SARC", ROOT / "airports", SARC_PLAN, use_navdb=False)
+    assert {"SAEF", "SARR", "SACF", "SAMF", "SAVF"} <= {a.icao for a in world.airspaces}
+    sarc = world.get("SARC")
+    sim = FakeSim(sarc, callsign="MAR4133")
+    sim.update(squawk=SARC_PLAN.squawk, com1_mhz=118.3, lat=sarc.lat + 0.05, lon=sarc.lon + 0.02, heading_deg=20)
+    sim.set_airborne(2500, 200)
+    s = Session(callsign="MAR4133", plan=SARC_PLAN, telephony="Martinair", clearance="confirmed",
+                departed_from="SARC")
+    s.contacted.add("SARC:tower")
+    cb = _Callbacks(world, sim, _Quiet(), [], s)
+    assert cb.tick(now=0) == f"{CS}, contact Resistencia Control one two four decimal three, good day."
+    sim.update(com1_mhz=124.3)
+    cb.tick(now=1)
+    r = handle(sarc, sim, None, _Quiet(), cb.history, "Resistencia Control, Martinair 4133, passing 3000 feet",
+               session=s, world=world)
+    assert r.startswith(f"{CS}, Resistencia Control, radar contact")
+
+
+def test_sabe_to_rosario_still_with_ezeiza():
+    world, sabe, sim, s = _setup()
+    sim.update(lat=-33.9, lon=-59.6)  # half way to Rosario
+    assert world.control(sim.own(), sabe)[0].icao == "SAEF"
+    sim.update(lat=-32.95, lon=-60.6)  # 10 NM from Rosario
+    assert world.control(sim.own(), sabe)[0].icao == "SAEF"

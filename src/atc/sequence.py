@@ -109,9 +109,29 @@ class RunwayStatus:
         return None
 
 
+def wait_for_takeoff(st: RunwayStatus, airport: Airport, own: OwnState) -> str | None:
+    """What Tower says instead of a takeoff clearance when the runway isn't available (without the callsign), or
+    None when it is. ICAO, landing traffic on short final and the runway otherwise free: a conditional line-up
+    ("behind the landing Airbus three twenty on two mile final, line up and wait runway three one, behind").
+    FAA has no conditional clearances: "hold short of runway two eight left, traffic on two mile final"."""
+    why = st.takeoff_blocked()
+    if why is None:
+        return None
+    faa = airport.faa
+    rw = phrase.runway(st.runway.ident, faa)
+    lined_up = on_runway(airport, st.runway, own)
+    short = [(c, d) for c, d in st.finals if d <= SHORT_FINAL_NM]
+    if not faa and short and not st.occupied_by and not lined_up:
+        cs, nm = short[0]
+        return f"behind the landing {st._what(cs)} on {_miles(nm)} final, line up and wait runway {rw}, behind"
+    if faa and not lined_up:
+        return f"hold short of runway {rw}, {why}"
+    return f"hold position, {why}"
+
+
 def _miles(nm: float) -> str:
-    n = max(1, round(nm))
-    return f"{phrase.digits(str(n))} mile" if n == 1 else f"{phrase.digits(str(n))} miles"
+    """Before "final" the distance is an adjective: "on two mile final", never "two miles final"."""
+    return f"{phrase.digits(str(max(1, round(nm))))} mile"
 
 
 def _number(n: int) -> str:

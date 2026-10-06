@@ -153,7 +153,7 @@ def test_no_read_back_needed_for_handoffs_and_approvals():
     cs = tuple(CS.split())
     for atc in (f"{CS}, contact Aeroparque Tower one one eight decimal eight five.",
                 f"{CS}, Aeroparque Ground, push and start approved.",
-                f"{CS}, hold position, traffic on two miles final.",
+                f"{CS}, hold position, traffic on two mile final.",
                 f"{CS}, readback correct. When ready for push and start, contact Ground one two one decimal niner."):
         assert not needs_readback(atc) and not readback_missing(atc, "Roger, Martinair 4133", cs), atc
     takeoff = f"{CS}, wind three zero zero degrees one zero knots, runway three one, cleared for takeoff."

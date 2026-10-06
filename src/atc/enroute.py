@@ -61,7 +61,7 @@ def _dest(world, session) -> Airport | None:
 
 def _arrival_runway(dest: Airport, own: OwnState, session) -> Runway | None:
     plan = session.plan
-    return runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None)
+    return runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None, use="arrival")
 
 
 def _qnh(own: OwnState, faa: bool) -> str | None:
@@ -82,7 +82,8 @@ def _arrival_altitude(dest: Airport, session) -> int:
 
 def _center_stage(session, dest: Airport, own: OwnState, role: str | None) -> bool:
     """Area control's part of the descent: high aircraft go to FL100 / 10000 ft first."""
-    return role == "control" and not session.center_descent and own.alt_msl_ft > CENTER_DESCENT_FT + 1000         and _arrival_altitude(dest, session) < CENTER_DESCENT_FT
+    return role == "control" and not session.center_descent and own.alt_msl_ft > CENTER_DESCENT_FT + 1000 \
+        and _arrival_altitude(dest, session) < CENTER_DESCENT_FT
 
 
 def descent_due(session, dest: Airport, own: OwnState, role: str | None) -> bool:
@@ -254,16 +255,14 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
     """Descent, vectors, intercept, landing clearance, vacate: whichever is due now (one per tick), or None."""
     plan = session.plan
     picked = world.pick(own)
-    if plan is None or picked is None or not picked[1].can_reply:
+    if picked is None or not picked[1].can_reply:
         return None
     airport, facility = picked
-    dest = _dest(world, session)
-    if dest is None:
-        return None
     cs = session.spoken_callsign
-    # on the runway after landing: welcome + vacate
+    # on the runway after landing: welcome + vacate (IFR and VFR; a touch and go stays on the runway)
     if facility.role == "tower" and own.on_ground and session.landed and session.landed_at == airport.icao \
-            and own.gs_kt < VACATE_KT and not session.vacate_given:
+            and own.gs_kt < VACATE_KT and not session.vacate_given \
+            and session.circuit_intention not in ("touch and go", "circuits"):
         rwy = next((r for r in airport.runways if on_runway(airport, r, own)
                     and heading_diff(own.heading_deg, r.heading_deg or 0) < 60), None)
         if rwy is not None:
@@ -293,7 +292,8 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
             if backtrack:
                 return f"{cs}, welcome to {name}, backtrack runway {phrase.runway(rwy.ident)}, vacate via {via}."
             return f"{cs}, welcome to {name}, vacate via {via} when able."
-    if own.on_ground:
+    dest = _dest(world, session) if plan is not None else None
+    if own.on_ground or dest is None:
         return None
     rwy = _arrival_runway(dest, own, session)
     # landing clearance on final, from the destination Tower

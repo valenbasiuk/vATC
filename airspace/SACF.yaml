@@ -1,0 +1,29 @@
+# Area control for the Cordoba FIR (SACF). Loaded by atc.world: the nearest airspace file (by the reference
+# point below) is the Control a departure is handed to, so each FIR needs its own file.
+# Covers the centre and north-west: Cordoba, Tucuman, Salta, Jujuy, Santiago del Estero.
+# Source: VATSIM Argentina operations manual v1.2.1 (Jan 2025, argentina.vatsur.org), same as SAEF.yaml.
+# Reference point: SACO (Cordoba). Spoken in English as "<name> Control" like Ezeiza (Spanish "Centro"); not checked in the AIP.
+# Only the first frequency is used for handoffs; the others answer too.
+icao: SACF
+name: Cordoba FIR
+spoken_name: Cordoba
+lat: -31.31
+lon: -64.21
+elevation_ft: 0
+country: AR
+towered: true
+trans_alt_ft: 3000
+frequencies:
+- kind: CTR
+  mhz: 128.8
+  description: ACC Cordoba combined (VATSIM SACF_CTR)
+  spoken: Cordoba Control
+- kind: CTR
+  mhz: 125.1
+  description: ACC Cordoba sector Norte (VATSIM SACF_N_CTR)
+  spoken: Cordoba Control
+- kind: CTR
+  mhz: 126.5
+  description: ACC Cordoba sector Sur (VATSIM SACF_S_CTR)
+  spoken: Cordoba Control
+needs_review: false

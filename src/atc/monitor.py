@@ -75,7 +75,7 @@ def radar_event(session, world, own: OwnState, traffic: list[Traffic], now: floa
 
         plan = session.plan
         rwy = runway_in_use(target, own.wind_dir_deg, own.wind_kt,
-                            plan.dest_runway if plan and plan.destination == target.icao else None)
+                            plan.dest_runway if plan and plan.destination == target.icao else None, use="arrival")
         if rwy is not None:
             st = runway_status(target, rwy, own, traffic)
             if st.own_final_nm is not None and st.own_final_nm <= GO_AROUND_NM and st.occupied_by:
@@ -114,7 +114,8 @@ def handle_pilot(session, world, airport: Airport, facility: Facility, own: OwnS
         if not own.on_ground and facility.role in ("tower", "approach") and airport.runways:
             plan = session.plan
             rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt,
-                                plan.dest_runway if plan and plan.destination == airport.icao else None)
+                                plan.dest_runway if plan and plan.destination == airport.icao else None,
+                                use="arrival")
             if rwy is not None:
                 wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, airport.faa)
                 bits.append(f"runway {phrase.runway(rwy.ident, airport.faa)} available" + (f", {wind}" if wind else ""))
@@ -135,7 +136,7 @@ def handle_pilot(session, world, airport: Airport, facility: Facility, own: OwnS
                     session.handoffs_done.add(f"{airport.icao}:approach_after_go_around")
                     return f"{cs}, roger, follow the published missed approach procedure, {app[1]}."
                 return f"{cs}, roger, follow the published missed approach procedure, expect vectors for another approach."
-            rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt)
+            rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, use="arrival")
             side = (rwy.pattern_direction if rwy and rwy.pattern_direction else "left")
             return f"{cs}, roger, climb to circuit altitude, report {side} downwind" + (
                 f" runway {phrase.runway(rwy.ident, airport.faa)}" if rwy else "") + "."

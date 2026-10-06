@@ -15,6 +15,7 @@ lon: -58.54
 elevation_ft: 0
 country: AR
 towered: true
+trans_alt_ft: 3000
 frequencies:
 - kind: CTR
   mhz: 135.5

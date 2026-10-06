@@ -21,13 +21,13 @@ runways:
   length_ft: 11870.0
   surface: ASP
   pattern_alt_agl_ft: 1000
-  pattern_direction: left
+  pattern_direction: right
 - ident: 10R
   heading_deg: 118.0
   length_ft: 11381.0
   surface: ASP
   pattern_alt_agl_ft: 1000
-  pattern_direction: left
+  pattern_direction: right
 - ident: 28L
   heading_deg: 298.0
   length_ft: 11381.0
@@ -45,13 +45,13 @@ runways:
   length_ft: 7650.0
   surface: ASP
   pattern_alt_agl_ft: 1000
-  pattern_direction: left
+  pattern_direction: right
 - ident: 1R
   heading_deg: 28.0
   length_ft: 8660.0
   surface: ASP
   pattern_alt_agl_ft: 1000
-  pattern_direction: left
+  pattern_direction: right
 - ident: 19L
   heading_deg: 208.0
   length_ft: 8660.0
@@ -97,3 +97,10 @@ frequencies:
   description: UNICOM
 notes: []
 needs_review: true
+# Hand field (2026-10-06): KSFO's two usual flows. West plan (prevailing wind): land 28L/28R, depart 1L/1R.
+# Southeast plan (storms): land 19L/19R, depart 10L/10R. Picked by the headwind on the arrival runways.
+runway_configs:
+- arrival: [28L, 28R]
+  departure: [1L, 1R]
+- arrival: [19L, 19R]
+  departure: [10L, 10R]

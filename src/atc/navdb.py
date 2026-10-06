@@ -102,6 +102,20 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
                 approaches[str(rwy).zfill(2)].append(typ)
     if approaches and not airport.approaches:
         airport.approaches = approaches
+    # Runway thresholds the YAML lacks (KSFO had none): without them every runway sits on the airport reference
+    # point, and "on final", "on the runway", vacate and taxi crossings can't tell parallel runways apart.
+    if any(r.lat is None or r.lon is None for r in airport.runways):
+        ends = {str(n).lstrip("0"): (la, lo, ln) for ln, _, _, pair in _runway_rows(con, aid)
+                for n, _, la, lo in pair if n and la is not None}
+        filled = 0
+        for r in airport.runways:
+            end = ends.get(r.ident.lstrip("0"))
+            if (r.lat is None or r.lon is None) and end is not None:
+                r.lat, r.lon = round(end[0], 6), round(end[1], 6)
+                r.length_ft = r.length_ft or end[2]
+                filled += 1
+        if filled:
+            added.append(f"{filled} runway thresholds")
     if airport.trans_alt_ft is None:
         row = con.execute("select transition_altitude from airport where airport_id=?", (aid,)).fetchone()
         if row and row[0]:
@@ -168,6 +182,7 @@ def country_from_region(region: str | None) -> str:
 def build_airport(icao: str, con: sqlite3.Connection | None = None) -> Airport | None:
     """An airport file made only from the sim's own data, for airports OurAirports doesn't have (add-ons,
     fictional fields). Frequencies, magvar and approaches are added by `enrich` when it is loaded."""
+    from atc.airports.gen import default_pattern
     from atc.models import Runway
 
     con = con or connect()
@@ -185,7 +200,7 @@ def build_airport(icao: str, con: sqlite3.Connection | None = None) -> Airport |
             runways.append(Runway(ident=ename, heading_deg=round(hdg, 1) if hdg is not None else None,
                                   length_ft=length, surface=surface, lat=elat, lon=elon,
                                   pattern_alt_agl_ft=int(patt) if patt else (1000 if country == "US" else None),
-                                  pattern_direction="left" if country == "US" else None))
+                                  pattern_direction=default_pattern(ename, country == "US")))
     return Airport(icao=ident, name=name or ident, lat=lat, lon=lon, elevation_ft=float(elev or 0.0),
                    country=country, towered=bool(twr), runways=runways,
                    notes=["Made from the sim's scenery (Little Navmap db): check names and pattern rules."],

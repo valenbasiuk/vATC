@@ -1,7 +1,8 @@
 """Ask every candidate model the same LLM-owned turns and score the replies.
 
 Clearance, taxi, takeoff/landing, check-ins, handoffs and traffic info are produced by code now, so models
-are compared on what they still own: a VFR inbound call to Tower (SARC) and a free-form question (SABE).
+are compared on what they still own: a VFR zone transit at Tower (SARC; the circuit itself is code since
+2026-10-06) and a free-form question (SABE).
 
 Keys come from env vars (or the Windows user environment); a provider without a key is skipped:
     GROQ_API_KEY  GEMINI_API_KEY  CEREBRAS_API_KEY  NVIDIA_API_KEY  MISTRAL_API_KEY  OPENROUTER_API_KEY
@@ -42,15 +43,15 @@ CANDIDATES = [  # answering on free keys 2026-10-05 (tools/list_models.py shows 
 WIND, QNH = (30.0, 7.0), 1020.0
 
 
-def _vfr_inbound(airports_dir: Path):
+def _vfr_transit(airports_dir: Path):
     apt = load_airport(airports_dir / "SARC.yaml")
     sim = FakeSim(apt, callsign="LVABC")
     twr = next(f.mhz for f in apt.frequencies if f.kind == "TWR")
     sim.update(com1_mhz=twr, wind_dir_deg=WIND[0], wind_kt=WIND[1], qnh_hpa=QNH,
-               lat=apt.lat + 0.17, lon=apt.lon, heading_deg=180.0)
+               lat=apt.lat - 0.17, lon=apt.lon, heading_deg=0.0)
     sim.set_airborne(2300, 100)
     return apt, sim, Session(callsign="LVABC"), \
-        "Corrientes Tower, LV-ABC, Cessna 172, 10 miles north, 2500 feet, inbound for landing"
+        "Corrientes Tower, LV-ABC, Cessna 172, 10 miles south, 2500 feet, request to transit the zone northbound"
 
 
 def _score_vfr(reply: str) -> list[str]:
@@ -58,12 +59,15 @@ def _score_vfr(reply: str) -> list[str]:
     fails = []
     if not low.startswith("lima victor alfa bravo charlie"):
         fails.append("does not start with the spelled callsign")
-    if "zero two" not in low and "runway 02" not in low:
-        fails.append("no runway zero two (computed from wind 030)")
-    if "cleared to land" in low:
-        fails.append("cleared to land from 10 NM out, not on final")
-    if not re.search(r"\b(downwind|base|final|report|join)\b", low):
-        fails.append("no pattern instruction")
+    if re.search(r"cleared to land|cleared for takeoff|downwind|base", low):
+        fails.append("treated the transit as a landing")
+    if "one zero two zero" not in low:
+        fails.append("no QNH one zero two zero")
+    if "report" not in low:
+        fails.append("no reporting instruction")
+    rwys = re.findall(r"runway ((?:zero|one|two|three)(?: (?:zero|one|two|three|four|five|six|seven|eight|niner))?)", low)
+    if any(r != "zero two" for r in rwys):
+        fails.append("named a runway other than zero two (computed from wind 030)")
     return fails
 
 
@@ -92,7 +96,7 @@ def _score_question(reply: str) -> list[str]:
     return fails
 
 
-CASES = [("VFR inbound SARC", _vfr_inbound, _score_vfr), ("wind/QNH question SABE", _question, _score_question)]
+CASES = [("VFR zone transit SARC", _vfr_transit, _score_vfr), ("wind/QNH question SABE", _question, _score_question)]
 
 
 def score(reply: str | None, check) -> list[str]:

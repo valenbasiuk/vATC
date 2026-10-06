@@ -63,7 +63,7 @@ def test_ksfo_ground_uses_group_form_and_faa_taxi():
     s = Session(callsign="UAL436")
     r = handle(ksfo, sim, None, _Quiet(), [], "San Francisco Ground, United 436, at the gate, request taxi",
                session=s, world=world)
-    assert r.startswith("United four thirty-six, San Francisco Ground, runway two eight")
+    assert r.startswith("United four thirty-six, San Francisco Ground, runway one left")  # west plan: depart 1L
     assert ", taxi" in r and "altimeter two niner niner two" in r
 
 
@@ -77,11 +77,28 @@ def test_faa_clearance_says_then_as_filed_and_altitudes():
     s = Session(callsign="UAL436", plan=plan)
     r = handle(ksfo, sim, None, _Quiet(), [], "San Francisco Clearance, United 436, request IFR clearance",
                session=s, world=world)
-    assert "then as filed" in r and "expect one one thousand" in r and "point" in r
+    assert "then as filed" in r and "point" in r
+    assert "maintain five thousand, expect one one thousand, ten minutes after departure" in r  # no SID: FAA 5000
     r2 = handle(ksfo, sim, None, _Quiet(), [(None, r)],
                 f"cleared to San Francisco, then as filed, expect one one thousand, departure 120.9, squawk "
                 f"{' '.join(plan.squawk)}, United 436", session=s, world=world)
-    assert "readback correct" in r2
+    assert r2.startswith("United four thirty-six, negative, I say again, maintain five thousand")  # the one to fly
+    r3 = handle(ksfo, sim, None, _Quiet(), [(None, r), (None, r2)], "maintain 5000, United 436",
+                session=s, world=world)
+    assert "readback correct" in r3
+    assert s.cleared_level_ft == 5000 and s.cleared_dir == "up"  # the radar watches it after takeoff
+
+
+def test_faa_clearance_with_a_sid_climbs_via_sid():
+    plan = FlightPlan(callsign="UAL436", rules="I", aircraft_type="B738", origin="KSFO", destination="KLAX",
+                      destination_name="Los Angeles", alternate=None, route="TRUKN2 DCT", sid="TRUKN2",
+                      sid_transition=None, cruise_ft=33000, planned_runway="01L")
+    world, ksfo = _ksfo_world(plan)
+    sim = FakeSim(ksfo, callsign="UAL436")
+    sim.update(com1_mhz=118.2)
+    r = handle(ksfo, sim, None, _Quiet(), [], "San Francisco Clearance, United 436, request IFR clearance",
+               session=Session(callsign="UAL436", plan=plan), world=world)
+    assert "climb via SID, expect flight level three three zero" in r and "maintain" not in r
 
 
 def test_spawned_at_ksfo_with_an_argentine_plan_loads_ksfo():

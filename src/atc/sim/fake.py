@@ -64,7 +64,7 @@ class FakeSim:
         from atc.sequence import threshold
 
         rwy = next((r for r in self._airport.runways if r.ident == runway), None) or runway_in_use(
-            self._airport, self._own.wind_dir_deg, self._own.wind_kt)
+            self._airport, self._own.wind_dir_deg, self._own.wind_kt, use="arrival")
         tlat, tlon = threshold(self._airport, rwy)
         h = math.radians(rwy.heading_deg)
         lat = tlat - nm * math.cos(h) / 60.0
@@ -78,7 +78,7 @@ class FakeSim:
         from atc.sequence import threshold
 
         rwy = next((r for r in self._airport.runways if r.ident == runway), None) or runway_in_use(
-            self._airport, self._own.wind_dir_deg, self._own.wind_kt)
+            self._airport, self._own.wind_dir_deg, self._own.wind_kt, use="departure")
         lat, lon = threshold(self._airport, rwy)
         self.add_traffic(Traffic(callsign, lat, lon, self._airport.elevation_ft, 0.0, rwy.heading_deg, True))
 
@@ -87,7 +87,7 @@ class FakeSim:
         from atc.runway import runway_in_use
         from atc.sequence import threshold
 
-        rwy = runway_in_use(airport, self._own.wind_dir_deg, self._own.wind_kt)
+        rwy = runway_in_use(airport, self._own.wind_dir_deg, self._own.wind_kt, use="arrival")
         tlat, tlon = threshold(airport, rwy)
         h = math.radians(rwy.heading_deg)
         alt = alt_ft if alt_ft is not None else airport.elevation_ft + 50 + nm * 318
@@ -96,19 +96,43 @@ class FakeSim:
                     alt_msl_ft=alt, alt_agl_ft=alt - airport.elevation_ft, heading_deg=rwy.heading_deg,
                     on_ground=False, gs_kt=140.0 if nm < 15 else 250.0)
 
+    def place_on_leg(self, airport: Airport, leg: str, nm: float | None = None) -> None:
+        """Own aircraft in the VFR circuit of the runway in use, at pattern altitude, on the pattern side:
+        'downwind' (abeam midfield), 'base', 'final' (`nm` out, default 2), 'upwind', or 'out' (8 NM away)."""
+        from atc.runway import runway_in_use
+        from atc.sequence import threshold
+
+        rwy = runway_in_use(airport, self._own.wind_dir_deg, self._own.wind_kt, use="arrival")
+        tlat, tlon = threshold(airport, rwy)
+        h = math.radians(rwy.heading_deg)
+        side = 1.0 if rwy.pattern_direction == "right" else -1.0  # + = right of the landing direction
+        mid = (rwy.length_ft or 6000.0) / 2 / 6076.1
+        along, cross, turn, agl = {
+            "downwind": (mid, 1.0 * side, 180.0, rwy.pattern_alt_agl_ft or 1000),
+            "base": (-1.5, 0.8 * side, -90.0 * side, 700.0),
+            "final": (-(nm or 2.0), 0.0, 0.0, 50 + (nm or 2.0) * 318),
+            "upwind": (mid * 2 + 0.5, 0.0, 0.0, 500.0),
+            "out": (mid, 8.0 * side, 90.0 * side, 1500.0),
+        }[leg]
+        e = along * math.sin(h) + cross * math.cos(h)
+        n = along * math.cos(h) - cross * math.sin(h)
+        self.update(lat=tlat + n / 60.0, lon=tlon + e / (60.0 * math.cos(math.radians(tlat))),
+                    heading_deg=(rwy.heading_deg + turn) % 360, alt_agl_ft=agl, alt_msl_ft=airport.elevation_ft + agl,
+                    on_ground=False, gs_kt=90.0)
+
     # --- scripted AI traffic that moves (REPL /aidep /aiarr, tests): departs or arrives on its own ---
     def spawn_departure(self, callsign: str, runway: str | None = None, start: float = 0.0, **info) -> None:
-        self._scripts.append(("dep", callsign, self._rwy(runway), start, info))
+        self._scripts.append(("dep", callsign, self._rwy(runway, "departure"), start, info))
 
     def spawn_arrival(self, callsign: str, nm: float = 6.0, runway: str | None = None, start: float = 0.0,
                       **info) -> None:
-        self._scripts.append(("arr", callsign, self._rwy(runway), start, dict(info, nm=nm)))
+        self._scripts.append(("arr", callsign, self._rwy(runway, "arrival"), start, dict(info, nm=nm)))
 
-    def _rwy(self, ident):
+    def _rwy(self, ident, use=None):
         from atc.runway import runway_in_use
 
         return next((r for r in self._airport.runways if r.ident == ident), None) or runway_in_use(
-            self._airport, self._own.wind_dir_deg, self._own.wind_kt)
+            self._airport, self._own.wind_dir_deg, self._own.wind_kt, use=use)
 
     def step(self, now: float) -> None:
         """Move the scripted AI aircraft to where they are at time `now` (seconds, any clock)."""

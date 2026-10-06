@@ -138,45 +138,59 @@ def load_network(airports_dir: Path, icao: str, use_navdb: bool = True) -> TaxiN
 
 def route(net: TaxiNetwork, start: int, goals: set[int]) -> list[str | None] | None:
     """Dijkstra over (node, taxiway name) so a change of taxiway costs extra. Returns the names in order."""
-    if start in goals:
-        return []
-    heap: list[tuple[float, int, int, str | None, tuple]] = [(0.0, 0, start, None, ())]
-    seen: set[tuple[int, str | None]] = set()
+    found = route_path(net, start, goals)
+    return found[0] if found else None
+
+
+def route_path(net: TaxiNetwork, start: int, goals: set[int]) -> tuple[list[str | None], list[int]] | None:
+    """route(), plus the graph nodes the aircraft passes, in order (for the runways it crosses)."""
+    heap: list = [(0.0, 0, start, None, (), None)]
+    parent: dict = {}  # state -> the state it was reached from, on its cheapest path
     tie = 0
     while heap:
-        cost, _, node, name, names = heapq.heappop(heap)
-        if node in goals:
-            return list(names)
-        if (node, name) in seen:
+        cost, _, node, name, names, prev = heapq.heappop(heap)
+        state = (node, name)  # (graph node, taxiway being followed)
+        if state in parent:
             continue
-        seen.add((node, name))
+        parent[state] = prev
+        if node in goals:
+            nodes = []
+            while state is not None:
+                nodes.append(state[0])
+                state = parent[state]
+            return list(names), nodes[::-1]
         for to, m, ename in net.edges.get(node, ()):
             change = ename is not None and name is not None and ename != name
             nxt_name = ename if ename is not None else name
             nxt_names = names if (ename is None or (names and names[-1] == ename)) else names + (ename,)
+            if (to, nxt_name) in parent:
+                continue
             tie += 1
-            heapq.heappush(heap, (cost + m + (NAME_CHANGE_PENALTY_M if change else 0.0), tie, to, nxt_name, nxt_names))
+            heapq.heappush(heap, (cost + m + (NAME_CHANGE_PENALTY_M if change else 0.0), tie, to, nxt_name, nxt_names,
+                                  state))
     return None
 
 
-def _holding_points(net: TaxiNetwork, airport: Airport, rwy: Runway) -> set[int]:
-    """Runway holding point(s) at the departure end of `rwy`; falls back to any holding point near it."""
+def _holding_points(net: TaxiNetwork, airport: Airport, rwy: Runway, side: float | None = None) -> set[int]:
+    """Runway holding point(s) at the departure end of `rwy`; falls back to any holding point near it.
+    `side` (signed NM off the centerline of where the aircraft starts): holding points on that side of the runway
+    first, so the route doesn't cross the departure runway to reach a holding point on the far side."""
     length = (rwy.length_ft or 0.0) / 6076.1
     cands = []
     for node, kind in net.holds:
-        along, cross = along_cross(airport, rwy, *net.nodes[node])
-        if -0.3 <= along <= min(0.5, length / 2) and cross <= 0.15:
-            cands.append((kind != "runway", abs(along), node))
+        along, cross = _signed(airport, rwy, *net.nodes[node])
+        if -0.3 <= along <= min(0.5, length / 2) and abs(cross) <= 0.15:
+            cands.append((side is not None and cross * side < 0, kind != "runway", abs(along), node))
     if not cands:  # no holding point mapped: the taxiway node next to the runway closest to the threshold
         near = []
         for node, (lat, lon) in net.nodes.items():
-            along, cross = along_cross(airport, rwy, lat, lon)
-            if -0.3 <= along <= min(0.5, length / 2) and 0.03 < cross <= 0.15:
-                near.append((abs(along) + cross, node))
-        return {min(near)[1]} if near else set()
+            along, cross = _signed(airport, rwy, lat, lon)
+            if -0.3 <= along <= min(0.5, length / 2) and 0.03 < abs(cross) <= 0.15:
+                near.append((side is not None and cross * side < 0, abs(along) + abs(cross), node))
+        return {min(near)[2]} if near else set()
     cands.sort()
     best = cands[0]
-    return {n for k, a, n in cands if (k, round(a, 2)) == (best[0], round(best[1], 2))} or {best[2]}
+    return {n for far, k, a, n in cands if (far, k, round(a, 2)) == (best[0], best[1], round(best[2], 2))} or {best[3]}
 
 
 def spoken_route(names: list[str | None]) -> str:
@@ -203,12 +217,87 @@ def departure_route(net: TaxiNetwork | None, airport: Airport, rwy: Runway, own:
         return hand.removeprefix("via ").strip()
     if net is None:
         return None
-    goals = _holding_points(net, airport, rwy)
-    start = net.nearest(own.lat, own.lon)
-    if not goals or start is None:
+    found = _departure_path(net, airport, rwy, own)
+    return spoken_route(found[0]) if found and found[0] else None
+
+
+def _departure_path(net: TaxiNetwork | None, airport: Airport, rwy: Runway, own: OwnState):
+    if net is None:
         return None
-    names = route(net, start, goals)
-    return spoken_route(names) if names else None
+    start = net.nearest(own.lat, own.lon)
+    if start is None:
+        return None
+    goals = _holding_points(net, airport, rwy, side=_signed(airport, rwy, *net.nodes[start])[1])
+    return route_path(net, start, goals) if goals else None
+
+
+ON_RUNWAY_NM = 0.015  # both ends of a segment this close to a centerline: taxiing along the runway, not across
+
+
+def _signed(airport: Airport, rwy: Runway, lat: float, lon: float) -> tuple[float, float]:
+    """(NM along `rwy` from its threshold, NM right of its centerline: negative = left)."""
+    import math
+
+    from atc.geo import offset_nm
+    from atc.sequence import threshold
+
+    tlat, tlon = threshold(airport, rwy)
+    e, n = offset_nm(tlat, tlon, lat, lon)
+    h = math.radians(rwy.heading_deg or 0.0)
+    return e * math.sin(h) + n * math.cos(h), e * math.cos(h) - n * math.sin(h)
+
+
+def strips(airport: Airport) -> list[list[Runway]]:
+    """Physical runways: each end with its reciprocal (28R with 10L), from the threshold positions. Ends without a
+    threshold or length on file are left out (their geometry is a guess)."""
+    from atc.geo import heading_diff
+
+    ends = [r for r in airport.runways if r.lat is not None and r.lon is not None and r.heading_deg is not None
+            and r.length_ft]
+    out: list[list[Runway]] = []
+    for r in ends:
+        if any(r in s for s in out):
+            continue
+        twin = next((o for o in ends if o is not r and not any(o in s for s in out)
+                     and heading_diff(o.heading_deg, r.heading_deg) > 170
+                     and abs(_signed(airport, r, o.lat, o.lon)[1]) < 0.03), None)
+        out.append([r, twin] if twin else [r])
+    return out
+
+
+def crossings(net: TaxiNetwork, airport: Airport, nodes: list[int], in_use: Runway | None,
+              wind: tuple[float | None, float | None] = (None, None)) -> list[tuple[str, float, float]]:
+    """Runways a taxi path crosses, in order: (ident as ATC says it, lat, lon of the crossing). Of the two ends
+    of a crossed runway, the one with the best headwind is named, in calm wind the one parallel to the runway in
+    use (KSFO departing 1L: "hold short of runway two eight right")."""
+    from atc.geo import heading_diff
+    from atc.runway import headwind_kt
+
+    out: list[tuple[str, float, float]] = []
+    done: set[int] = set()
+    all_strips = strips(airport)
+    for a, b in zip(nodes, nodes[1:]):
+        (lat1, lon1), (lat2, lon2) = net.nodes[a], net.nodes[b]
+        for i, strip in enumerate(all_strips):
+            r = strip[0]
+            a1, c1 = _signed(airport, r, lat1, lon1)
+            a2, c2 = _signed(airport, r, lat2, lon2)
+            c1, c2 = c1 or 1e-9, c2 or 1e-9
+            if i in done or c1 * c2 > 0 or max(abs(c1), abs(c2)) < ON_RUNWAY_NM:
+                continue
+            t = c1 / (c1 - c2)
+            if not -0.01 <= a1 + t * (a2 - a1) <= r.length_ft / 6076.1 + 0.01:
+                continue
+            done.add(i)
+            wdir, wkt = wind
+            if wdir is not None and wkt:
+                say = max(strip, key=lambda x: headwind_kt(wdir, wkt, x.heading_deg))
+            elif in_use is not None and in_use.heading_deg is not None:
+                say = min(strip, key=lambda x: heading_diff(x.heading_deg, in_use.heading_deg))
+            else:
+                say = strip[0]
+            out.append((say.ident, lat1 + t * (lat2 - lat1), lon1 + t * (lon2 - lon1)))
+    return out
 
 
 def free_stand(net: TaxiNetwork, traffic: list[Traffic], wanted: str | None) -> str | None:
@@ -323,9 +412,42 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
         return None
     via = departure_route(net, airport, rwy, own)
     rw = phrase.runway(rwy.ident, faa)
+    # runways on the way: hold short of the first one; the pilot calls holding short and Ground clears the crossing
+    found = None if airport.taxi_routes.get(rwy.ident) else _departure_path(net, airport, rwy, own)
+    session.crossings = crossings(net, airport, found[1], rwy, (own.wind_dir_deg, own.wind_kt)) if found else []
+    hold = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
     if faa:
-        return f"{cs}{station}, runway {rw}, taxi" + (f" via {via}" if via else "") + f"{qnh}."
-    return f"{cs}{station}, taxi to holding point runway {rw}" + (f" via {via}" if via else "") + f"{qnh}."
+        return f"{cs}{station}, runway {rw}, taxi" + (f" via {via}" if via else "") + f"{hold}{qnh}."
+    return f"{cs}{station}, taxi to holding point runway {rw}" + (f" via {via}" if via else "") + f"{hold}{qnh}."
+
+
+CROSSING_NEAR_NM = 0.25  # holding short of a crossing: this close to where the route crosses that runway
+_HOLDING_SHORT = re.compile(r"\b(?:holding short|hold short|short of|request(?:ing)? (?:to )?cross|ready to cross)\b")
+
+
+def handle_crossing(session, airport: Airport, facility, own: OwnState, pilot_text: str,
+                    traffic: list[Traffic]) -> str | None:
+    """'Holding short of runway two eight right': Ground clears the crossing when that runway is free (nobody on
+    it, nobody on short final to either end), else keeps them holding with the reason. Position decides, not words
+    alone, so the readback of 'hold short of runway 28R' in the taxi clearance is not taken for it."""
+    from atc.readback import _normalize
+    from atc.sequence import runway_status
+
+    if facility.role not in ("ground", "tower") or not own.on_ground or not session.crossings:
+        return None
+    norm = _normalize(pilot_text)
+    ident, lat, lon = session.crossings[0]
+    if not _HOLDING_SHORT.search(norm) or own.gs_kt > 5 or distance_nm(own.lat, own.lon, lat, lon) > CROSSING_NEAR_NM:
+        return None
+    faa = airport.faa
+    cs = session.spoken_callsign
+    for r in next((s for s in strips(airport) if any(e.ident == ident for e in s)), []):  # both directions
+        why = runway_status(airport, r, own, traffic).takeoff_blocked()
+        if why:
+            return f"{cs}, hold short of runway {phrase.runway(ident, faa)}, {why}."
+    session.crossings.pop(0)
+    nxt = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
+    return f"{cs}, cross runway {phrase.runway(ident, faa)}{nxt}."
 
 
 def wanted_stand(pilot_text: str) -> str | None:

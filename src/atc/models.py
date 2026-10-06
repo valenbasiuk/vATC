@@ -93,6 +93,13 @@ class Airport:
     # Transition altitude (feet). Levels above it are flight levels: US 18000, Argentina 3000, UK 6000...
     # None = unknown (then flight levels from 10000 ft, the old rule). Filled from the sim's data (navdb.enrich).
     trans_alt_ft: int | None = None
+    # Hand field: the initial altitude of an IFR clearance without a SID ("maintain five thousand"). None = the
+    # FAA default (5000 ft) in the US; elsewhere the clearance gives only the SID / expected level as before.
+    initial_alt_ft: int | None = None
+    # Hand field: separate arrival and departure runways, one entry per wind configuration, e.g. KSFO
+    # [{"arrival": ["28L", "28R"], "departure": ["1L", "1R"]}, {"arrival": ["19L", "19R"], "departure": ["10L", "10R"]}].
+    # Empty = one runway for everything (the best headwind), like SABE.
+    runway_configs: list[dict] = field(default_factory=list)
 
     @property
     def faa(self) -> bool:

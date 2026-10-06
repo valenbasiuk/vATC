@@ -125,7 +125,8 @@ def build_context(
         lines.append("This is your first contact with this pilot: say your station name once." if first_contact
                      else "Not first contact: do not say your station name.")
     lines += _weather_lines(own, airport, preferred_runway)
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
+                        use="departure" if own.on_ground else "arrival")
     if role == "ground" and rwy is not None and own.on_ground:
         route = airport.taxi_routes.get(rwy.ident)
         lines.append(f"TAXI ROUTE to runway {rwy.ident} (from the charts, treat as fact): {route}" if route
@@ -171,7 +172,8 @@ def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None
             out.append(f"QNH: {own.qnh_hpa:.0f} hectopascals")
     else:
         out.append('Altimeter/QNH: NOT AVAILABLE (if asked, reply "altimeter not available"; never state one)')
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
+                        use="departure" if own.on_ground else "arrival")
     if rwy is not None:
         out.append(f"Runway in use (computed from wind, treat as fact): {rwy.ident}")
     return out

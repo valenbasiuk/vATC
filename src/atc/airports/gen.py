@@ -31,6 +31,14 @@ FILES = ("airports.csv", "runways.csv", "airport-frequencies.csv")
 AIRLINES_URL = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airlines.dat"
 
 
+
+def default_pattern(ident: str, is_us: bool) -> str | None:
+    """US default traffic pattern: left, except the right one of parallel runways ("28R") flies right traffic so
+    the two patterns stay apart. Elsewhere it is left empty on purpose (hand field)."""
+    if not is_us:
+        return None
+    return "right" if ident.upper().endswith("R") else "left"
+
 def download(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     for name in FILES:
@@ -102,7 +110,7 @@ def build_airport(icao: str, data_dir: Path) -> Airport:
                     surface=r.get("surface") or None,
                     # Safe default only for the US. Everywhere else: left empty on purpose.
                     pattern_alt_agl_ft=1000 if is_us else None,
-                    pattern_direction="left" if is_us else None,
+                    pattern_direction=default_pattern(end_ident, is_us),
                     lat=_float(r.get(f"{end}_latitude_deg", "")),
                     lon=_float(r.get(f"{end}_longitude_deg", "")),
                 )

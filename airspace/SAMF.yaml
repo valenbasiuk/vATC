@@ -1,0 +1,21 @@
+# Area control for the Mendoza FIR (SAMF). Loaded by atc.world: the nearest airspace file (by the reference
+# point below) is the Control a departure is handed to, so each FIR needs its own file.
+# Covers the west: Mendoza, San Juan, San Rafael, San Luis.
+# Source: VATSIM Argentina operations manual v1.2.1 (Jan 2025, argentina.vatsur.org), same as SAEF.yaml.
+# Reference point: SAME (Mendoza). Spoken in English as "<name> Control" like Ezeiza (Spanish "Centro"); not checked in the AIP.
+# Only the first frequency is used for handoffs; the others answer too.
+icao: SAMF
+name: Mendoza FIR
+spoken_name: Mendoza
+lat: -32.83
+lon: -68.79
+elevation_ft: 0
+country: AR
+towered: true
+trans_alt_ft: 3000
+frequencies:
+- kind: CTR
+  mhz: 126.6
+  description: ACC Mendoza (VATSIM SAMF_CTR)
+  spoken: Mendoza Control
+needs_review: false

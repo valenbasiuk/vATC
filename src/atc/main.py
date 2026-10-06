@@ -7,6 +7,7 @@
 REPL commands (fake sim only):  /state  /freq 118.1  /wind 270 8 1013  /air  /ground
                                 /final 3 [31] (AI arrival on 3 NM final)  /onrwy [31]  /notraffic  /quit
                                 /aidep [31] (AI that departs)  /aiarr 8 [31] (AI that lands from 8 NM out)
+                                /leg downwind|base|final [nm]|upwind|out (own aircraft in the VFR circuit)
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import atis, enroute, factcheck, flow, monitor, phrase, weather
+from atc import atis, enroute, factcheck, flow, monitor, pattern, phrase, weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -35,7 +36,7 @@ from atc.sequence import guard, runway_status
 from atc.session import Session
 from atc.sim.base import SimSource
 from atc.chatter import RadioBus, exchange_for
-from atc.taxi import departure_route, handle_taxi
+from atc.taxi import departure_route, handle_crossing, handle_taxi
 from atc.tracker import TrafficTracker
 from atc.traffic import is_traffic_question, traffic_reply
 from atc.world import World, load_world
@@ -83,7 +84,9 @@ def handle(
 
     # first call on a position with an old ATIS letter: "information Charlie is now current, QNH ..."
     atis_note = atis.check_letter(session.atis, airport, own, _normalize(pilot_text),
-                                  session.surface_wind.get(airport.icao), preferred)         if session.is_first_contact(facility.role) and facility.role in ("clearance", "ground", "tower", "approach")         else None
+                                  session.surface_wind.get(airport.icao), preferred) \
+        if session.is_first_contact(facility.role) and facility.role in ("clearance", "ground", "tower", "approach") \
+        else None
 
     def say(reply: str, llm_s: float = 0.0) -> str:
         if atis_note and "now current" not in reply:
@@ -108,6 +111,11 @@ def handle(
         reply = handle_push(session, airport, facility, pilot_text)
     if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
         reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
+    traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
+    if reply is None:  # VFR circuit, before the readback check ("left downwind 31" repeats Tower's own words)
+        reply = pattern.handle(session, airport, facility, own, pilot_text, traffic, preferred)
+    if reply is None:  # "holding short of runway 28R": cross it or keep holding (also before the readback check)
+        reply = handle_crossing(session, airport, facility, own, pilot_text, traffic)
     # A readback only answers the position that gave the instruction: after "contact Tower", the first call
     # on Tower is a new call even if it repeats Ground's "holding point runway 31".
     last_atc = history[-1][1] if history and session.last_role in (None, session._key(facility.role)) else None
@@ -141,8 +149,8 @@ def handle(
         return say(reply)
 
     # Fixed-form calls with facts from code: traffic information, taxi, check-ins, takeoff/landing.
-    traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred)
+    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred,
+                        use="departure" if own.on_ground and not session.landed else "arrival")
     if is_traffic_question(_normalize(pilot_text), pilot_text):
         reply = traffic_reply(cs, own, sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
     if reply is None:
@@ -162,7 +170,8 @@ def handle(
             context = context.replace(
                 "No taxi route on file: give the taxi clearance without naming any taxiway.",
                 f"TAXI ROUTE to runway {rwy.ident} (computed from the airport map, treat as fact): via {via}")
-    plan_lines = context_lines(session, airport, facility) + monitor.context_lines(session)
+    plan_lines = context_lines(session, airport, facility) + monitor.context_lines(session) + \
+        pattern.context_lines(session) + pattern.transit_lines(pilot_text)
     if plan and plan.is_ifr and session.clearance == "confirmed" and own.squawk != plan.squawk \
             and facility.role in ("tower", "departure", "approach"):
         plan_lines.append(f"  TRANSPONDER WRONG: the pilot squawks {own.squawk}, assigned {plan.squawk}. "
@@ -307,6 +316,9 @@ class _Callbacks:
             if text is None and self.session.pending_handoff is None:  # level bust, 7700, go-around
                 text = monitor.radar_event(self.session, self.world, own,
                                            self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM), now)
+            if text is None and self.session.pending_handoff is None:  # VFR circuit: downwind again, zone left
+                text = pattern.watcher_event(self.session, self.world, own,
+                                             self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
             if text is None and self.session.pending_handoff is None:
                 # descent at top of descent, vectors, intercept, landing clearance, vacate
                 text = enroute.arrival_event(self.session, self.world, own,
@@ -383,7 +395,8 @@ class _Callbacks:
         bank = getattr(self.speaker, "bank", None)
         for who, text, voice in ex.lines:
             if bank is not None:  # the controller of that position, and the AI pilot with its country's accent
-                voice = bank.controller(apt.icao, ex.role, apt.country) if who == "ATC" else                     bank.pilot(ex.key, ex.country) or voice
+                voice = bank.controller(apt.icao, ex.role, apt.country) if who == "ATC" else \
+                    bank.pilot(ex.key, ex.country) or voice
             say_as = getattr(self.speaker, "say_as", None)
             if say_as is not None:
                 say_as(text, who=who, voice=voice)
@@ -457,6 +470,10 @@ def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
             print(f"{parts[1]} is not loaded (only the plan's airports and --airport are)")
         else:
             sim.place_on_final(target, float(parts[2]), float(parts[3]) if len(parts) == 4 else None)
+    elif name == "/leg" and len(parts) in (2, 3) and parts[1] in ("downwind", "base", "final", "upwind", "out") \
+            and hasattr(sim, "place_on_leg"):  # VFR circuit of the airport you're at
+        apt = (world.nearest(sim.own()) if world is not None else None) or sim._airport
+        sim.place_on_leg(apt, parts[1], float(parts[2]) if len(parts) == 3 else None)
     elif name == "/freq" and len(parts) == 2 and hasattr(sim, "update"):
         sim.update(com1_mhz=float(parts[1]))
     elif name == "/wind" and len(parts) in (3, 4) and hasattr(sim, "update"):
@@ -488,7 +505,8 @@ def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
                               **info)
     else:
         print("commands: /state /freq <mhz> /wind <dir> <kt> [qnh_hpa] /air /ground /final <nm> [rwy] /onrwy [rwy] "
-              "/aidep [rwy] /aiarr [nm] [rwy] /notraffic /near <ICAO> <nm> [alt_ft] /quit (fake sim only)")
+              "/aidep [rwy] /aiarr [nm] [rwy] /notraffic /near <ICAO> <nm> [alt_ft] /leg <downwind|base|final|upwind|out> "
+              "/quit (fake sim only)")
     return True
 
 

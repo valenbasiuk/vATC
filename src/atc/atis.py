@@ -19,7 +19,7 @@ import zlib
 from atc import phrase, weather
 from atc.geo import distance_nm
 from atc.models import Airport, OwnState
-from atc.runway import magnetic, runway_in_use
+from atc.runway import magnetic, runway_in_use, runways_in_use
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 LOCAL_NM = 15.0  # the sim's QNH/temperature are the airport's when the aircraft is this close
@@ -157,7 +157,7 @@ def facts(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | N
     else:
         wdir = wkt = None
     qnh = own.qnh_hpa if local and own.qnh_hpa is not None else (metar.qnh_hpa if metar else own.qnh_hpa)
-    rwy = runway_in_use(airport, wdir, wkt, preferred)
+    rwy = runway_in_use(airport, wdir, wkt, preferred, use="arrival")
     return wdir, wkt, qnh, rwy, metar, local
 
 
@@ -176,6 +176,11 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
 
     name = airport.spoken_name or spoken_name(airport.name) or airport.name
     rw = phrase.runway(rwy.ident, faa) if rwy else None
+    # separate landing and departure runways (YAML runway_configs: KSFO lands 28L/28R, departs 1L/1R)
+    arr, dep = (runways_in_use(airport, wdir, wkt, use) for use in ("arrival", "departure"))
+    split = bool(arr and dep) and {r.ident for r in arr} != {r.ident for r in dep}
+    landing = " and ".join(phrase.runway(r.ident, faa) for r in arr) if split else None
+    departing = " and ".join(phrase.runway(r.ident, faa) for r in dep) if split else None
     app = approach_type(airport, rwy.ident) if rwy else None
     wind = phrase.wind(magnetic(airport, wdir), wkt, faa) if wkt is not None else None
     if wind and metar and metar.gust_kt and surface_wind is None:
@@ -204,12 +209,16 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
         if rw:
             if app:
                 s.append(f"{app} runway {rw} approach in use.")
-            s.append(f"Landing and departing runway {rw}.")
+            s.append(f"Landing runway{'s' if len(arr) > 1 else ''} {landing}, departing runway"
+                     f"{'s' if len(dep) > 1 else ''} {departing}." if split else f"Landing and departing runway {rw}.")
         s.append(f"Advise on initial contact you have information {word}.")
     else:
         s.append(f"{name} information {word}, time {phrase.digits(_zulu(own, metar))}.")
         if rw:
-            s.append((f"{app} approach, runway in use {rw}." if app else f"Runway in use {rw}."))
+            if split:
+                s.append((f"{app} approach. " if app else "") + f"Landing runway {landing}, departure runway {departing}.")
+            else:
+                s.append((f"{app} approach, runway in use {rw}." if app else f"Runway in use {rw}."))
         if wind:
             s.append(f"{wind[:1].upper()}{wind[1:]}.")
         if metar and metar.cavok:

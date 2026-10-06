@@ -14,11 +14,13 @@ def airport_to_dict(a: Airport) -> dict:
     d = asdict(a)
     # Keep the file readable: drop empty optional values from runways.
     d["runways"] = [{k: v for k, v in r.items() if v is not None} | {"ident": r["ident"]} for r in d["runways"]]
-    for key in ("spoken_name", "mag_var_deg", "trans_alt_ft"):  # optional, hand-added; don't write a null that hides a later edit
+    for key in ("spoken_name", "mag_var_deg", "trans_alt_ft", "initial_alt_ft"):  # optional, hand-added; don't write a null that hides a later edit
         if d.get(key) is None:
             d.pop(key, None)
     if not d.get("approaches"):
         d.pop("approaches", None)
+    if not d.get("runway_configs"):
+        d.pop("runway_configs", None)
     d["frequencies"] = [{k: v for k, v in f.items() if not (k == "spoken" and v is None)} for f in d["frequencies"]]
     return d
 
@@ -57,6 +59,9 @@ def load_airport(path: Path) -> Airport:
         mag_var_deg=float(raw["mag_var_deg"]) if raw.get("mag_var_deg") is not None else None,
         approaches={str(k).zfill(2): list(v) for k, v in (raw.get("approaches") or {}).items()},
         trans_alt_ft=int(raw["trans_alt_ft"]) if raw.get("trans_alt_ft") else None,
+        initial_alt_ft=int(raw["initial_alt_ft"]) if raw.get("initial_alt_ft") else None,
+        runway_configs=[{k: [str(i).zfill(2) if str(i).isdigit() else str(i) for i in v] for k, v in c.items()}
+                        for c in (raw.get("runway_configs") or [])],
     )
 
 

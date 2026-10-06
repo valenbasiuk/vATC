@@ -67,11 +67,17 @@ def _runway(text: str) -> str | None:
 
 
 def _bare_runway(text: str, want: str) -> bool:
-    """The runway said as a bare number: 'three one via alfa' reads back runway 31 (no side letters)."""
-    if not want[:2].isdigit() or len(want) != 2:
+    """The runway said as a bare number: 'three one via alfa' reads back runway 31, 'downwind 28R' or
+    'two eight right' runway 28r (the side must match: '28L' is not 28r, and '28L' is not plain 28)."""
+    if not want[:2].isdigit() or len(want) not in (2, 3):
         return False
     compact = join_digits(text)
-    return re.search(rf"\b0?{int(want)}\b" if want.startswith("0") else rf"\b{want}\b", compact) is not None
+    num = rf"0?{int(want[:2])}" if want.startswith("0") else want[:2]
+    if len(want) == 3:
+        word = {v: k for k, v in _SIDE.items() if k != "centre"}[want[2]]
+        return re.search(rf"\b{num} ?(?:{want[2]}|{word}|centre)\b" if want[2] == "c" else
+                         rf"\b{num} ?(?:{want[2]}|{word})\b", compact) is not None
+    return re.search(rf"\b{num}\b", compact) is not None
 
 
 def _requests(pilot_norm: str, atc_norm: str) -> bool:

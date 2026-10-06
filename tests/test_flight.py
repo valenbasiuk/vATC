@@ -160,7 +160,7 @@ def test_takeoff_held_for_traffic_on_final_by_code():
     sim = _tower_sim()
     sim.add_on_final(2.0, "ARG1234", "31")
     r = handle(ORIGIN, sim, None, _Quiet(), [], "Testa Tower, Martinair 4133, ready for departure", session=_session())
-    assert r == f"{CS}, Testa Tower, hold position, traffic on two miles final."
+    assert r == f"{CS}, Testa Tower, hold position, traffic on two mile final."
 
 
 def test_landing_clearance_on_final_and_number_two_behind_traffic():
@@ -172,7 +172,7 @@ def test_landing_clearance_on_final_and_number_two_behind_traffic():
     assert r == f"{CS}, Destino Tower, wind one niner zero degrees eight knots, runway two zero, cleared to land."
     sim.add_on_final(2.0, "LV-ABC", "20")
     r = handle(DEST, sim, None, _Quiet(), [], "Destino Tower, Martinair 4133, established ILS 20", session=_session(), world=w)
-    assert r == f"{CS}, Destino Tower, number two, traffic to follow on two miles final, continue approach."
+    assert r == f"{CS}, Destino Tower, number two, traffic to follow on two mile final, continue approach."
 
 
 # --- handoffs from telemetry ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ def test_radar_contact_follows_once_the_squawk_is_set():
 def test_holding_position_is_an_acknowledgement():
     from atc.readback import is_acknowledgement
 
-    assert is_acknowledgement(f"{CS}, hold position, traffic on two miles final.", "Holding position, Martinair 4133",
+    assert is_acknowledgement(f"{CS}, hold position, traffic on two mile final.", "Holding position, Martinair 4133",
                               tuple(CS.split()))
 
 

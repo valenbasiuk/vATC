@@ -76,19 +76,42 @@ def items(session: Session, airport: Airport, dest_name: str) -> list[Item]:
         pat = rf"{base[:4].lower()}\w*\s*{num_pat}" + (rf"\s*(?:{letter.lower()}|{nato})\b" if letter else "")
         out.append(Item("SID", spoken, pat))
     out.append(Item("route", "then as filed" if faa else "flight planned route", "", required=False))
-    if plan.cruise_ft:
+    initial = initial_altitude(session, airport)
+    if initial is not None and (not plan.cruise_ft or plan.cruise_ft <= initial):
+        # FAA, no SID, filed at or below the initial altitude: "maintain seven thousand", nothing to expect
+        out.append(Item("level", f"maintain {phrase.level(plan.cruise_ft or initial, airport)}",
+                        _level_pattern(plan.cruise_ft or initial, airport)))
+    elif plan.cruise_ft:
         ft = plan.cruise_ft
-        # read back as "flight level 200" / "FL200", or (below the transition altitude) "11000" / "one one thousand"
-        pat = rf"\b{ft // 100}\b" if phrase.is_flight_level(ft, airport) else \
-            rf"\b{ft}\b" + (rf"|\b{ft // 1000} thousand\b" if ft % 1000 == 0 else "")
-        how = "climb via SID, " if plan.sid else ""
-        out.append(Item("level", f"{how}expect {phrase.level(ft, airport)}, ten minutes after departure", pat))
+        how = "climb via SID, " if plan.sid else f"maintain {phrase.level(initial, airport)}, " if initial else ""
+        # the readback must have the altitude to climb to: the initial one when there is one, else the filed level
+        out.append(Item("level", f"{how}expect {phrase.level(ft, airport)}, ten minutes after departure",
+                        _level_pattern(initial or ft, airport)))
     dep = _freq(airport, "DEP", "APP", "ARR")
     if dep:
         fd = f"{dep.mhz:.3f}".replace(".", "").rstrip("0")
         out.append(Item("departure frequency", f"departure frequency {phrase.frequency(dep.mhz, faa)}", rf"\b{fd}0*\b"))
     out.append(Item("squawk", f"squawk {phrase.digits(plan.squawk)}", rf"\b{plan.squawk}\b"))
     return out
+
+
+FAA_INITIAL_ALT_FT = 5000
+
+
+def initial_altitude(session: Session, airport: Airport) -> int | None:
+    """Altitude to maintain after departure when there is no SID to climb via: the airport's hand field, else the
+    FAA default in the US. None: the clearance gives the SID ("climb via SID") or only the filed level (ICAO)."""
+    if session.plan is None or session.plan.sid:
+        return None
+    return airport.initial_alt_ft or (FAA_INITIAL_ALT_FT if airport.faa else None)
+
+
+def _level_pattern(ft: int, airport: Airport) -> str:
+    """A level as read back: "flight level 200" / "FL200", or below the transition altitude "11000" /
+    "one one thousand" / "five thousand"."""
+    if phrase.is_flight_level(ft, airport):
+        return rf"\b{ft // 100}\b"
+    return rf"\b{ft}\b" + (rf"|\b{ft // 1000} thousand\b" if ft % 1000 == 0 else "")
 
 
 _ACK = re.compile(r"\b(roger|wilco|copied|copy|thanks|thank you)\b")
@@ -148,6 +171,9 @@ def handle_clearance(
             return f"{cs}, negative, I say again, {', '.join(i.spoken for i in missing)}."
         session.clearance = "confirmed"
         session.pending = []
+        initial = initial_altitude(session, airport)
+        if initial is not None:  # "maintain five thousand": a level the radar watches until Departure climbs them
+            session.assign_level(min(initial, plan.cruise_ft or initial), airport.elevation_ft)
         gnd = _freq(airport, "GND", "RMP") if who == "clearance" else None
         if gnd and airport.faa:  # US: "readback correct, contact ground point eight when ready"
             short = phrase.frequency(gnd.mhz, True)
