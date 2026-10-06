@@ -60,8 +60,7 @@ def test_directs_only_to_fixes_ahead_on_the_route():
 
     assert call("Martinair 4133 requesting direct ATOVO") == f"{CS}, proceed direct ATOVO."
     assert call("Martinair 4133 requesting direct EZE19") == f"{CS}, EZE one niner is behind you, continue as filed."
-    assert call("Martinair 4133 requesting direct DORVO") == \
-        f"{CS}, unable direct DORVO, not on your route, continue as filed."
+    assert call("Martinair 4133 requesting direct DORVO") == f"{CS}, unable direct DORVO, continue as filed."
 
 
 def test_check_in_climbs_to_the_filed_level_and_higher_is_given():

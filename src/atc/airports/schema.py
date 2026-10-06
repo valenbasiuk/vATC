@@ -17,6 +17,8 @@ def airport_to_dict(a: Airport) -> dict:
     for key in ("spoken_name", "mag_var_deg"):  # optional, hand-added; don't write a null that hides a later edit
         if d.get(key) is None:
             d.pop(key, None)
+    if not d.get("approaches"):
+        d.pop("approaches", None)
     d["frequencies"] = [{k: v for k, v in f.items() if not (k == "spoken" and v is None)} for f in d["frequencies"]]
     return d
 
@@ -53,6 +55,7 @@ def load_airport(path: Path) -> Airport:
         spoken_name=raw.get("spoken_name") or None,
         taxi_routes={str(k).zfill(2) if str(k).isdigit() else str(k): str(v) for k, v in (raw.get("taxi_routes") or {}).items()},
         mag_var_deg=float(raw["mag_var_deg"]) if raw.get("mag_var_deg") is not None else None,
+        approaches={str(k).zfill(2): list(v) for k, v in (raw.get("approaches") or {}).items()},
     )
 
 

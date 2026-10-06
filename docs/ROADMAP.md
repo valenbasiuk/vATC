@@ -31,6 +31,15 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
      5 kt tailwind); calls from another airline flight were answered as ours ("say again your callsign" now);
      registrations are spelled ("Lima Victor Alfa Bravo Charlie"); winds aloft no longer pick the runway; Departure/
      Approach are told when the squawk is wrong.
+9a. **Airport data from the sim** DONE (2026-10-05, `navdb.py`): Little Navmap's MSFS 2024 scenery database
+    (%APPDATA%/ABarthel/little_navmap_db/little_navmap_msfs24.sqlite, read-only; ATC_LNM_DB to override) gives the
+    taxi network (named segments, holding points, stands: Rosario has only A and B, OSM's G was wrong), missing
+    frequencies (Rosario Ground 121.85), magnetic variation, approach types per runway (Rosario 20 ILS, 02 RNAV) and
+    waypoint positions (directs off the route). Added at load time; the YAMLs are never modified and hand values win.
+    Sources checked: ChartFox needs a requested API token and serves AIP PDFs (no geometry); MSFS's in-sim LIDO charts
+    have no API; the official AIP (ais.anac.gob.ar) is free (SABE AD 2.18 confirms TWR 118.85, GND 121.9, APP 120.6,
+    CLR 129.3, ATIS 127.6; area control call sign "Ezeiza Control"). Ezeiza ACC VHF sector frequencies (ENR 2.1) not
+    found yet; Little Navmap's Navigraph db is AIRAC 1801 (2018), too old to trust.
 9b. **Taxi routes.** WORKING (2026-10-05, `taxi.py`, code-owned): graph from OpenStreetMap (`tools/fetch_osm_taxi.py ICAO` -> `airports/osm/ICAO.json`; done for SABE, SAAR, SARC), Dijkstra with a penalty per taxiway change, goal = runway holding point at the departure end (else the taxiway node next to the threshold). Ground: "taxi to holding point runway 31 via Kilo, Alfa, QNH ..."; after landing "taxi to stand 12 via ..." (requested stand, else a free one). Taxiway names are read-back checked. Hand `taxi_routes` in the YAML always win. Coverage: SABE good, checked against Valen's LIDO chart 2026-10-05 (A parallel ~107 m NE of the centerline; B C D E F H I J K L M as on the chart; OSM's stand lead-in "1" is filtered, designators must start with a letter; apron -> 31 "via Kilo, Alfa", -> 13 "via Alfa"); SAAR partial (runway 20 end not connected: clearance without names); SARC no names in OSM. TODO: MSFS's own data via `tools/probe_taxi.py` (UNTESTED; needs the MSFS 2024 SDK SimConnect.dll via `--dll`, the bundled one has no facility API) -> `airports/msfs/ICAO.json`, preferred over OSM; hold short of crossed runways.
 9c. **Rest of the IFR flight.** WORKING in the fake sim (2026-10-05, `flow.py`, `world.py`, all code-owned):
    - One run covers the flight: origin, destination and alternate are loaded (missing YAMLs generated from `data/`), the tuned frequency picks the airport; area control from `airspace/*.yaml` (`airspace/SAEF.yaml` has NO frequencies yet: fill from AIP ENR 2.1, until then Departure -> Control is skipped).
@@ -64,6 +73,17 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
     "read back the clearance"; "roger"/"wilco" to taxi, runway, takeoff/landing, hold short, QNH, squawk, climb/descend/
     heading -> "read back", and the next call is checked against that instruction (`session.readback_due`). QNH and
     squawk are now readback items. Handoffs, approvals and "hold position" need none.
+13a. **AI traffic on the frequency** WORKING in the fake sim (2026-10-05, `tracker.py`, `chatter.py`,
+    tests/test_traffic_handling.py). Viability: MSFS AI follows the sim's own ATC and can't be commanded, so we
+    observe it and narrate: the tracker turns each AI's telemetry into events (taxi out, line up, takeoff roll,
+    departed, final, vacated, taxi in) and Tower/Ground say the matching instruction + the AI's readback in its own
+    Piper voice (libritts: 904 speakers). Radio bus: one channel, never while PTT is held, 4 s gap after any
+    transmission, 10 s for the user's readback after ATC talks to them, stale (>15 s) dropped, newer instruction
+    replaces an older one for the same aircraft. An AI on final is held ("continue approach, traffic on the
+    runway") and cleared to land once the runway is free. Fake sim: `/aidep [rwy]`, `/aiarr [nm] [rwy]`.
+    Next: verify with real AI (event timing vs what MSFS AI really does; AI callsigns from ATC AIRLINE/FLIGHT
+    NUMBER); Approach/Departure chatter; conditional clearances for the user ("behind the landing A320, line up and
+    wait behind"); ground conflicts (give way); VFR pattern positions (13).
 13. **Traffic sequencing (VFR focus).** FIRST SLICE DONE (2026-10-05 audit, `sequence.py`, tests/test_sequence.py): code computes who is on the runway and on final for the runway in use (thresholds from OurAirports, now in the YAMLs), tells Tower whether takeoff/landing clearance is ALLOWED, and a guard replaces any "cleared for takeoff/to land" the model still gives ("hold position, traffic on two miles final" / "number two, traffic to follow..."). Rules: arrival inside 3 NM or anyone on the runway blocks takeoff; anyone closer on final or on the runway blocks landing. Fake sim: `/final 3 [rwy]`, `/onrwy`, `/notraffic`. TODO: pattern positions (downwind/base), departures still climbing out, line up and wait, go-arounds, verify with real AI traffic (own aircraft is now filtered by SimConnect object id, VERIFY).
 14. **ATIS.** TODO: generate ATIS text, speak it on the ATIS frequency, check the information letter the pilot reports. Currently ATIS frequencies are silent.
 15. **Replay test set.** Harness DONE (6 scenarios, `silence_ok` / `expect_silence` supported). TODO: add SABE departure, pattern, go-around and traffic-conflict scenarios.

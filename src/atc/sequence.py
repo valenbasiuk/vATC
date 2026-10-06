@@ -77,14 +77,18 @@ class RunwayStatus:
     occupied_by: list[str] = field(default_factory=list)
     finals: list[tuple[str, float]] = field(default_factory=list)  # other traffic, nearest first
     own_final_nm: float | None = None
+    types: dict[str, str] = field(default_factory=dict)  # callsign -> spoken type, when the sim gives one
+
+    def _what(self, callsign: str) -> str:
+        return self.types.get(callsign) or "traffic"
 
     def takeoff_blocked(self) -> str | None:
         """Why the pilot may not take off now (spoken traffic info), or None."""
         if self.occupied_by:
-            return "traffic on the runway"
-        short = [d for _, d in self.finals if d <= SHORT_FINAL_NM]
+            return f"{self._what(self.occupied_by[0])} on the runway"
+        short = [(c, d) for c, d in self.finals if d <= SHORT_FINAL_NM]
         if short:
-            return f"traffic on {_miles(short[0])} final"
+            return f"{self._what(short[0][0])} on {_miles(short[0][1])} final"
         return None
 
     def ahead_on_final(self) -> list[tuple[str, float]]:
@@ -96,9 +100,12 @@ class RunwayStatus:
         """Why the pilot may not be cleared to land now, or None."""
         ahead = self.ahead_on_final()
         if ahead:
-            return f"number {_number(len(ahead) + 1)}, traffic to follow on {_miles(ahead[-1][1])} final"
+            cs, nm = ahead[-1]
+            typ = self.types.get(cs)
+            follow = f"follow the {typ}" if typ else "traffic to follow"
+            return f"number {_number(len(ahead) + 1)}, {follow} on {_miles(nm)} final"
         if self.occupied_by:
-            return "traffic on the runway"
+            return f"{self._what(self.occupied_by[0])} on the runway"
         return None
 
 
@@ -112,8 +119,13 @@ def _number(n: int) -> str:
 
 
 def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Traffic]) -> RunwayStatus:
+    from atc.traffic import spoken_type
+
     st = RunwayStatus(runway=rwy, own_final_nm=final_distance(airport, rwy, own))
     for t in traffic:
+        typ = spoken_type(getattr(t, "type", None))
+        if typ:
+            st.types[t.callsign] = typ
         if on_runway(airport, rwy, t):
             st.occupied_by.append(t.callsign)
             continue

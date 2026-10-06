@@ -85,6 +85,8 @@ class Airport:
     # Magnetic variation from the AD chart, east positive ("VAR 10° W" -> -10). None = unknown: winds are then
     # said in true degrees, as the sim gives them.
     mag_var_deg: float | None = None
+    # runway ident -> approach types in the sim's navdata, e.g. {"20": ["ILS", "RNAV"], "02": ["RNAV", "VORDME"]}
+    approaches: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass

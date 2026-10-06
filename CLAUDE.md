@@ -69,6 +69,10 @@ src/atc/flow.py          takeoff/landing detection, handoffs, check-ins, takeoff
 src/atc/taxi.py          taxi graph (OSM / MSFS json) -> route -> taxi clearance (code-owned)
 src/atc/traffic.py       traffic information from the pilot's view (code-owned), aircraft type names
 src/atc/factcheck.py     rejects LLM replies stating numbers/types/taxiways not in their input
+src/atc/enroute.py       radar work: directs, climb, descent at TOD, vectors, approach clearance, landing, vacate
+src/atc/navdb.py         Little Navmap MSFS 2024 db (read-only): taxi map, frequencies, magvar, approaches, fixes
+src/atc/tracker.py       AI traffic -> events (taxi out, line up, takeoff roll, departed, final, vacated, taxi in)
+src/atc/chatter.py       ATC <-> AI exchanges for those events + RadioBus (turn-taking, gaps, stale, PTT)
 src/atc/flightplan.py    SimBrief OFP json -> FlightPlan, squawk assigned by code (stable per callsign)
 src/atc/session.py       per-flight state: telephony ("Martinair", learned from the pilot's call), clearance
                          state none -> standby -> issued -> confirmed, pending correction items, positions contacted

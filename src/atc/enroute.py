@@ -86,8 +86,18 @@ def descent_text(session, dest: Airport, own: OwnState) -> str:
     if q:
         bits.append(q)
     if rwy is not None:
-        bits.append(f"expect vectors runway {phrase.runway(rwy.ident, dest.country == 'US')}")
+        bits.append(f"expect vectors {_approach(dest, rwy)}")
     return ", ".join(bits) + "."
+
+
+def _approach(dest: Airport, rwy: Runway) -> str:
+    """'ILS approach runway two zero' / 'RNAV approach runway zero two' (from the sim's navdata), else
+    'runway zero two' when the approach types are unknown."""
+    from atc.navdb import approach_type
+
+    rw = f"runway {phrase.runway(rwy.ident, dest.country == 'US')}"
+    kind = approach_type(dest, rwy.ident)
+    return f"{kind} approach {rw}" if kind else rw
 
 
 def _past_tod(session, dest: Airport, own: OwnState) -> bool:
@@ -122,23 +132,25 @@ def vectors_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
     plat, plon = _point(dest, rwy, -INTERCEPT_POINT_NM, side)
     _, hdg = _heading_words(bearing_deg(own.lat, own.lon, plat, plon), dest)
     session.vectors_given = True
-    return f"{session.spoken_callsign}, fly heading {hdg}, vectors runway {phrase.runway(rwy.ident, dest.country == 'US')}."
+    return f"{session.spoken_callsign}, fly heading {hdg}, vectors {_approach(dest, rwy)}."
 
 
 def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
     """Turn onto a 30-degree intercept (or straight in if already lined up) and the approach clearance."""
     _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
-    rw = phrase.runway(rwy.ident, dest.country == "US")
+    app = _approach(dest, rwy)
+    cleared = f"cleared {app}" if app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer")) else \
+        f"cleared approach {app}"
     alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)))
     session.intercept_given = True
     cs = session.spoken_callsign
     if abs(cross) < 0.5 and heading_diff(own.heading_deg, rwy.heading_deg) <= 20:
-        return f"{cs}, cleared approach runway {rw}, report established."
+        return f"{cs}, {cleared}, report established."
     true_int = (rwy.heading_deg - 30) % 360 if cross > 0 else (rwy.heading_deg + 30) % 360
     hval, hdg = _heading_words(true_int, dest)
     own_mag = magnetic(dest, own.heading_deg) % 360
     turn = "left" if ((hval - own_mag) % 360) > 180 else "right"
-    return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, cleared approach runway {rw}."
+    return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, {cleared}."
 
 
 def _due_for_intercept(dest: Airport, rwy: Runway, own: OwnState) -> bool:
@@ -174,7 +186,16 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         spoken = spoken_fix(ident)
         idx = next((i for i, f in enumerate(plan.fixes) if f.ident == ident), None)
         if idx is None:
-            return f"{cs}, unable direct {spoken}, not on your route, continue as filed."
+            # off the filed route: approve it if the sim's navdata knows the fix and it takes you closer to the
+            # destination (a controller shortcutting you), else continue as filed
+            from atc.navdb import find_fix
+
+            pos = find_fix(ident, (own.lat, own.lon))
+            if pos is not None and dest is not None and distance_nm(*pos, dest.lat, dest.lon) < \
+                    distance_nm(own.lat, own.lon, dest.lat, dest.lon) - 5:
+                session.direct_to = ident
+                return f"{cs}, proceed direct {spoken}."
+            return f"{cs}, unable direct {spoken}, continue as filed."
         if idx < next_fix_index(plan, own):
             return f"{cs}, {spoken} is behind you, continue as filed."
         session.direct_to = ident

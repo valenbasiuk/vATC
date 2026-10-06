@@ -6,6 +6,7 @@
 
 REPL commands (fake sim only):  /state  /freq 118.1  /wind 270 8 1013  /air  /ground
                                 /final 3 [31] (AI arrival on 3 NM final)  /onrwy [31]  /notraffic  /quit
+                                /aidep [31] (AI that departs)  /aiarr 8 [31] (AI that lands from 8 NM out)
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ from atc.sequence import context_lines as sequence_context
 from atc.sequence import guard, runway_status
 from atc.session import Session
 from atc.sim.base import SimSource
+from atc.chatter import RadioBus, exchange_for
 from atc.taxi import departure_route, handle_taxi
+from atc.tracker import TrafficTracker
 from atc.traffic import is_traffic_question, traffic_reply
 from atc.world import World, load_world
 
@@ -233,11 +236,16 @@ class _Callbacks:
         self.lock = threading.Lock()
         self.timer: threading.Timer | None = None
         self.stop = threading.Event()
+        self.bus = RadioBus()  # one frequency: chatter waits for gaps and for the user's turn
+        self.trackers: dict[str, TrafficTracker] = {}
+        self.last_chatter: list[tuple[str, str]] = []  # (who, text) of the last exchange, for tests
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="atc-watcher").start()
 
-    def after_turn(self) -> None:
+    def after_turn(self, replied: bool = True) -> None:
+        """After every pilot call: a gap on the frequency, and the user's turn if ATC answered them."""
+        self.bus.heard(time.monotonic(), to_user=replied)
         if self.session.clearance == "standby" and self.timer is None:
             self.timer = threading.Timer(random.uniform(10.0, 25.0), self._fire)
             self.timer.daemon = True
@@ -256,6 +264,8 @@ class _Callbacks:
             return None
         with self.lock:
             now = time.monotonic() if now is None else now
+            if hasattr(self.sim, "step"):  # fake sim: move the scripted AI traffic
+                self.sim.step(now)
             own = self.sim.own()
             flow.track(self.session, self.world, own, now)
             text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
@@ -272,7 +282,42 @@ class _Callbacks:
                                              self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
             if text is not None:
                 self._transmit(text, "(controller call)")
-            return text
+                self.bus.heard(now, to_user=True)
+                return text
+            self._chatter(own, now)
+            return None
+
+    def _chatter(self, own, now: float) -> None:
+        """Radio traffic with the AI aircraft at the airport we're at: track them, queue what ATC would say,
+        and say it when the frequency is free and it is not the user's turn."""
+        apt = self.world.nearest(own)
+        if distance_nm(own.lat, own.lon, apt.lat, apt.lon) > 25:
+            return
+        traffic = self.sim.traffic(apt.lat, apt.lon, TRAFFIC_RADIUS_NM)
+        tracker = self.trackers.setdefault(apt.icao, TrafficTracker(apt))
+        wind = self.session.surface_wind.get(apt.icao) or (own.wind_dir_deg, own.wind_kt)
+        for ev in tracker.update(traffic, now):
+            ex = exchange_for(ev, own, traffic, wind, self.world.taxi.get(apt.icao))
+            if ex is not None:
+                self.bus.offer(ex)
+        picked = self.world.pick(own)
+        role = picked[1].role if picked and picked[0].icao == apt.icao and picked[1].can_reply else None
+        ex = self.bus.next_due(now, role)
+        if ex is None:
+            return
+        if "cleared to land" in ex.lines[0][1] and ex.key in tracker.tracks:
+            tracker.tracks[ex.key].cleared = True  # said now: stop offering it again
+        print()
+        self.last_chatter = []
+        for who, text, voice in ex.lines:
+            say_as = getattr(self.speaker, "say_as", None)
+            if say_as is not None:
+                say_as(text, who=who, voice=voice)
+            else:
+                self.speaker.say(text)
+            self.last_chatter.append((who, text))
+        print(self.prompt, end="", flush=True)
+        self.bus.heard(now)
 
     def _transmit(self, text: str, pilot_side: str) -> None:
         picked = self.world.pick(self.sim.own())
@@ -341,9 +386,21 @@ def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
         sim.add_on_runway(f"AI{len(sim.traffic(0, 0, 1e9)) + 1:03d}", parts[1] if len(parts) == 2 else None)
     elif name == "/notraffic" and hasattr(sim, "clear_traffic"):
         sim.clear_traffic()
+        sim._scripts.clear()
+    elif name in ("/aidep", "/aiarr") and hasattr(sim, "spawn_departure"):
+        # moving AI traffic: "/aidep [rwy]" departs from the holding point, "/aiarr [nm] [rwy]" lands
+        n = len(sim._scripts) + len(sim.traffic(0, 0, 1e9)) + 1
+        info = dict(airline="Aerolineas Argentinas", flight_number=str(1200 + n * 11), type="A320")
+        args = parts[1:]
+        if name == "/aidep":
+            sim.spawn_departure(f"ARG{1200 + n * 11}", args[0] if args else None, time.monotonic(), **info)
+        else:
+            nm = float(args[0]) if args else 8.0  # first seen outside 6 NM, so it gets its "cleared to land"
+            sim.spawn_arrival(f"ARG{1200 + n * 11}", nm, args[1] if len(args) > 1 else None, time.monotonic(),
+                              **info)
     else:
         print("commands: /state /freq <mhz> /wind <dir> <kt> [qnh_hpa] /air /ground /final <nm> [rwy] /onrwy [rwy] "
-              "/notraffic /near <ICAO> <nm> [alt_ft] /quit (fake sim only)")
+              "/aidep [rwy] /aiarr [nm] [rwy] /notraffic /near <ICAO> <nm> [alt_ft] /quit (fake sim only)")
     return True
 
 
@@ -373,7 +430,7 @@ def main(argv: list[str] | None = None) -> None:
     airport = world.airports[0]
     for a in world.airports:
         net = world.taxi.get(a.icao)
-        print(f"{a.icao}: {'taxi map loaded' if net else 'no taxi map (tools/fetch_osm_taxi.py ' + a.icao + ')'}"
+        print(f"{a.icao}: {'taxi map from ' + net.source if net else 'no taxi map (tools/fetch_osm_taxi.py ' + a.icao + ')'}"
               + (", needs_review: true" if a.needs_review else ""))
     if world.airspaces:
         print("area control: " + ", ".join(s.icao for s in world.airspaces))
@@ -386,6 +443,10 @@ def main(argv: list[str] | None = None) -> None:
         from atc.sim.fake import FakeSim
 
         sim = FakeSim(airport, callsign=args.callsign)
+        stand = _a_stand(world, airport)
+        if stand is not None:  # start on a stand, not at the reference point (often on the runway)
+            sim.update(lat=stand[1][0], lon=stand[1][1])
+            print(f"fake sim: parked on stand {stand[0]}")
 
     if args.voice:
         from atc.audio.tts import PiperTTS
@@ -438,8 +499,26 @@ def _run_text(world, sim, llm, speaker, history, session) -> None:
                     break
             continue
         with cb.lock:
-            handle(airport, sim, llm, speaker, history, line, session=session, world=world)
-        cb.after_turn()
+            reply = handle(airport, sim, llm, speaker, history, line, session=session, world=world)
+        cb.after_turn(replied=reply is not None)
+
+
+def _a_stand(world: World, airport: Airport):
+    """(stand ref, (lat, lon)) of a stand off the runways, nearest the airport reference point; None without a map."""
+    from atc.sequence import along_cross
+
+    net = world.taxi.get(airport.icao)
+    if net is None or not net.stands:
+        return None
+    best = None
+    for ref, node in net.stands.items():
+        lat, lon = net.nodes[node]
+        if any(along_cross(airport, r, lat, lon)[1] < 0.08 for r in airport.runways):
+            continue
+        d = distance_nm(lat, lon, airport.lat, airport.lon)
+        if best is None or d < best[0]:
+            best = (d, ref, (lat, lon))
+    return (best[1], best[2]) if best else None
 
 
 def _stt_words(world: World, session: Session) -> list[str]:
@@ -495,8 +574,8 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
             continue
         print(f"YOU> {text}")
         with cb.lock:
-            handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session, world=world)
-        cb.after_turn()
+            reply = handle(airport, sim, llm, speaker, history, text, stt_s=stt_s, session=session, world=world)
+        cb.after_turn(replied=reply is not None)
 
 
 if __name__ == "__main__":

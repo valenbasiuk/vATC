@@ -55,7 +55,7 @@ class World:
 
 
 def load_world(primary: str, airports_dir: Path, plan=None, airspace_dir: Path | None = None,
-               data_dir: Path = Path("data")) -> World:
+               data_dir: Path = Path("data"), use_navdb: bool = True) -> World:
     codes = [primary.upper()]
     if plan is not None:
         codes += [c for c in (plan.origin, plan.destination, plan.alternate) if c]
@@ -71,7 +71,14 @@ def load_world(primary: str, airports_dir: Path, plan=None, airspace_dir: Path |
             except Exception as exc:  # noqa: BLE001
                 print(f"[no airport file for {code}: {exc}]", file=sys.stderr)
         if path.exists():
-            airports.append(load_airport(path))
+            apt = load_airport(path)
+            if use_navdb:
+                from atc import navdb
+
+                added = navdb.enrich(apt)
+                if added:
+                    print(f"{apt.icao}: from the sim scenery: {', '.join(added)}")
+            airports.append(apt)
         elif code == primary.upper():
             raise FileNotFoundError(path)
     spaces = []
@@ -81,4 +88,4 @@ def load_world(primary: str, airports_dir: Path, plan=None, airspace_dir: Path |
             a = load_airport(f)
             if a.frequencies:
                 spaces.append(a)
-    return World(airports, spaces, {a.icao: load_network(airports_dir, a.icao) for a in airports})
+    return World(airports, spaces, {a.icao: load_network(airports_dir, a.icao, use_navdb) for a in airports})

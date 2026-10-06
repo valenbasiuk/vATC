@@ -24,6 +24,10 @@ class PrintTTS:
     def say(self, text: str) -> None:
         print(f"ATC> {text}")
 
+    def say_as(self, text: str, who: str = "ATC", voice: int | None = None) -> None:
+        """Radio traffic: ATC to an AI aircraft, or that aircraft's readback."""
+        print(f"{'ATC' if who == 'ATC' else who}> {text}")
+
 
 class PiperTTS:
     def __init__(
@@ -43,16 +47,17 @@ class PiperTTS:
         self.last_synth_s: float | None = None
         self.length_scale = length_scale  # < 1.0 speaks faster (controllers talk fast)
 
-    def _chunks(self, text: str):
-        """(float32 samples, rate) per sentence, as Piper produces them."""
+    def _chunks(self, text: str, voice: int | None = None):
+        """(float32 samples, rate) per sentence, as Piper produces them. `voice`: speaker id (multi-speaker
+        models like libritts: 904 voices); None = the model's default, used for ATC."""
         import numpy as np  # type: ignore
 
         kwargs = {}
         try:
             from piper import SynthesisConfig  # type: ignore
 
-            kwargs["syn_config"] = SynthesisConfig(length_scale=self.length_scale)
-        except ImportError:  # older/newer layout: fall back to defaults
+            kwargs["syn_config"] = SynthesisConfig(length_scale=self.length_scale, speaker_id=voice)
+        except (ImportError, TypeError):  # older/newer layout: fall back to defaults
             pass
         for chunk in self._voice.synthesize(text, **kwargs):
             yield np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0, chunk.sample_rate
@@ -67,17 +72,20 @@ class PiperTTS:
         return (np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)), rate
 
     def say(self, text: str) -> None:
+        self.say_as(text)
+
+    def say_as(self, text: str, who: str = "ATC", voice: int | None = None) -> None:
         """Stream sentence by sentence: the first sentence plays while the next ones are synthesized."""
         import numpy as np  # type: ignore
         import sounddevice as sd  # type: ignore
 
         from atc.audio.radio_fx import apply_radio_fx
 
-        print(f"ATC> {text}")
+        print(f"{who}> {text}")
         t0 = time.perf_counter()
         stream = None
         try:
-            for samples, rate in self._chunks(text):
+            for samples, rate in self._chunks(text, voice):
                 if len(samples) == 0:
                     continue
                 if self.radio_fx:

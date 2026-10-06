@@ -31,6 +31,7 @@ class TaxiNetwork:
     edges: dict[int, list[tuple[int, float, str | None]]] = field(default_factory=dict)  # id -> [(to, m, name)]
     holds: list[tuple[int, str]] = field(default_factory=list)  # (node id, type) runway/ILS/intermediate
     stands: dict[str, int] = field(default_factory=dict)  # stand ref -> nearest graph node
+    source: str = ""  # where the map came from (shown at startup)
 
     def nearest(self, lat: float, lon: float, among=None) -> int | None:
         ids = among if among is not None else self.edges.keys()
@@ -112,18 +113,26 @@ def load_msfs(path: Path) -> TaxiNetwork:
     return net
 
 
-def load_network(airports_dir: Path, icao: str) -> TaxiNetwork | None:
-    """MSFS's own taxi data if probed (matches the scenery), else OpenStreetMap, else None."""
-    for sub, loader in (("msfs", load_msfs), ("osm", load_osm)):
-        path = Path(airports_dir) / sub / f"{icao.upper()}.json"
-        if path.exists():
-            try:
-                net = loader(path)
-            except (KeyError, ValueError, TypeError) as exc:
-                print(f"[taxi map {path} unreadable: {exc}]")
-                continue
-            if net.edges:
-                return net
+def load_network(airports_dir: Path, icao: str, use_navdb: bool = True) -> TaxiNetwork | None:
+    """The sim's own taxiways first (probe_taxi json, then Little Navmap's scenery database), else OpenStreetMap
+    (OSM can be wrong: it had a taxiway G at Rosario), else None. `source` on the result says which."""
+    path = Path(airports_dir) / "msfs" / f"{icao.upper()}.json"
+    candidates = [("msfs probe", lambda: load_msfs(path) if path.exists() else None)]
+    if use_navdb:
+        from atc import navdb
+
+        candidates.append(("sim scenery (Little Navmap db)", lambda: navdb.taxi_network(icao)))
+    osm = Path(airports_dir) / "osm" / f"{icao.upper()}.json"
+    candidates.append(("OpenStreetMap", lambda: load_osm(osm) if osm.exists() else None))
+    for source, load in candidates:
+        try:
+            net = load()
+        except (KeyError, ValueError, TypeError) as exc:
+            print(f"[taxi map from {source} unreadable: {exc}]")
+            continue
+        if net is not None and net.edges:
+            net.source = source
+            return net
     return None
 
 
