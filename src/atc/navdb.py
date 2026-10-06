@@ -78,14 +78,13 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
         if kind is None or not raw:
             continue
         mhz = round(raw / 1_000_000.0 if raw > 1_000_000 else raw / 1000.0, 3)
-        if any(abs(f.mhz - mhz) < 0.005 for f in airport.frequencies):
+        same = next((f for f in airport.frequencies if abs(f.mhz - mhz) < 0.005), None)
+        if same is not None:
+            if same.spoken is None:  # KSFO's 128.325 "NORCAL" in the sim: "NorCal Approach", not "San Francisco ..."
+                same.spoken = _spoken(airport, same.kind, name, own_name)
             continue
-        spoken = None
-        words = [w for w in (name or "").split() if w.upper() not in ("INTL", "INTERNATIONAL", "AIRPORT", "AERO")]
-        if words and kind in _SUFFIX and words[0].lower() not in (own_name, airport.icao.lower()) \
-                and words[0].lower() != airport.name.split()[0].lower():
-            spoken = f"{' '.join(words).title()} {_SUFFIX[kind]}"  # SARC's approach is "Resistencia Approach"
-        airport.frequencies.append(Frequency(kind, mhz, f"{name or ''} (sim)".strip(), spoken))
+        airport.frequencies.append(Frequency(kind, mhz, f"{name or ''} (sim)".strip(),
+                                             _spoken(airport, kind, name, own_name)))
         added.append(f"{kind} {mhz:.3f}")
     if airport.mag_var_deg is None:
         row = con.execute("select mag_var from airport where airport_id=?", (aid,)).fetchone()
@@ -100,7 +99,125 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
                 approaches[str(rwy).zfill(2)].append(typ)
     if approaches and not airport.approaches:
         airport.approaches = approaches
+    if airport.trans_alt_ft is None:
+        row = con.execute("select transition_altitude from airport where airport_id=?", (aid,)).fetchone()
+        if row and row[0]:
+            airport.trans_alt_ft = int(row[0])
+            added.append(f"transition altitude {airport.trans_alt_ft}")
     return added
+
+
+# --- which airport is here ---------------------------------------------------------------------------
+
+def _box(lat: float, lon: float, nm: float) -> tuple[float, float, float, float]:
+    import math
+
+    dlat = nm / 60.0
+    dlon = nm / (60.0 * max(0.1, math.cos(math.radians(lat))))
+    return lat - dlat, lat + dlat, lon - dlon, lon + dlon
+
+
+def airports_near(lat: float, lon: float, within_nm: float, con: sqlite3.Connection | None = None,
+                  ) -> list[tuple[float, str]]:
+    """(distance NM, ident) of the sim's airports with a runway near a point, nearest first (no heliports)."""
+    con = con or connect()
+    if con is None:
+        return []
+    s, n, w, e = _box(lat, lon, within_nm)
+    rows = con.execute("""select ident, laty, lonx, left_lonx, top_laty, right_lonx, bottom_laty, longest_runway_length
+                          from airport where laty between ? and ? and lonx between ? and ?
+                          and is_closed = 0 and num_runways > 0""", (s, n, w, e)).fetchall()
+    ranked = []
+    for ident, la, lo, left, top, right, bottom, longest in rows:
+        d = distance_nm(lat, lon, la, lo)
+        inside = left is not None and left <= lon <= right and bottom <= lat <= top
+        # inside an airport's area beats distance (a Coast Guard strip next to KSFO's terminal); the bigger
+        # airport wins when areas overlap
+        ranked.append((not inside, -(longest or 0) if inside else d, d, ident))
+    ranked.sort()
+    return [(d, ident) for _, _, d, ident in ranked if d <= within_nm]
+
+
+def airport_on_frequency(lat: float, lon: float, mhz: float, within_nm: float,
+                         con: sqlite3.Connection | None = None) -> str | None:
+    """Ident of the nearest airport within `within_nm` that has a station on `mhz` (the pilot tuned it)."""
+    con = con or connect()
+    if con is None:
+        return None
+    s, n, w, e = _box(lat, lon, within_nm)
+    hz, khz = int(round(mhz * 1_000_000)), int(round(mhz * 1000))
+    rows = con.execute("""select distinct a.ident, a.laty, a.lonx from com c join airport a on a.airport_id = c.airport_id
+                          where a.laty between ? and ? and a.lonx between ? and ?
+                          and (c.frequency between ? and ? or c.frequency between ? and ?)""",
+                       (s, n, w, e, hz - 5000, hz + 5000, khz - 5, khz + 5)).fetchall()
+    best = min(((distance_nm(lat, lon, la, lo), ident) for ident, la, lo in rows), default=None)
+    return best[1] if best and best[0] <= within_nm else None
+
+
+def country_from_region(region: str | None) -> str:
+    """ICAO region code -> ISO country, only where it changes phraseology (US = FAA)."""
+    r = (region or "").upper()
+    if r.startswith("K") or r in ("PA", "PH", "PG", "PO", "PP", "TJ"):
+        return "US"
+    return {"SA": "AR"}.get(r, "")
+
+
+def build_airport(icao: str, con: sqlite3.Connection | None = None) -> Airport | None:
+    """An airport file made only from the sim's own data, for airports OurAirports doesn't have (add-ons,
+    fictional fields). Frequencies, magvar and approaches are added by `enrich` when it is loaded."""
+    from atc.models import Runway
+
+    con = con or connect()
+    if con is None:
+        return None
+    row = con.execute("""select airport_id, ident, name, region, altitude, laty, lonx, has_tower_object, tower_frequency
+                         from airport where ident = ?""", (icao.upper(),)).fetchone()
+    if row is None:
+        return None
+    aid, ident, name, region, elev, lat, lon, tower_obj, twr = row
+    country = country_from_region(region)
+    runways = []
+    for length, surface, patt, ends in _runway_rows(con, aid):
+        for ename, hdg, elat, elon in ends:
+            runways.append(Runway(ident=ename, heading_deg=round(hdg, 1) if hdg is not None else None,
+                                  length_ft=length, surface=surface, lat=elat, lon=elon,
+                                  pattern_alt_agl_ft=int(patt) if patt else (1000 if country == "US" else None),
+                                  pattern_direction="left" if country == "US" else None))
+    return Airport(icao=ident, name=name or ident, lat=lat, lon=lon, elevation_ft=float(elev or 0.0),
+                   country=country, towered=bool(twr), runways=runways,
+                   notes=["Made from the sim's scenery (Little Navmap db): check names and pattern rules."],
+                   needs_review=True)
+
+
+def _runway_rows(con, aid: int):
+    q = """select r.length, r.surface, r.pattern_altitude,
+                  pe.name, pe.heading, pe.laty, pe.lonx, se.name, se.heading, se.laty, se.lonx
+           from runway r join runway_end pe on pe.runway_end_id = r.primary_end_id
+                         join runway_end se on se.runway_end_id = r.secondary_end_id
+           where r.airport_id = ?"""
+    for length, surface, patt, pn, ph, pla, plo, sn, sh, sla, slo in con.execute(q, (aid,)):
+        if surface in ("W",):  # water runways: not for this ATC
+            continue
+        yield length, surface, patt, [(pn, ph, pla, plo), (sn, sh, sla, slo)]
+
+
+def _spoken(airport: Airport, kind: str, name: str | None, own_name: str) -> str | None:
+    """Station name from the sim's com name when it isn't '<this airport> <role>': 'Resistencia Approach' at SARC,
+    'NorCal Departure' at KSFO, 'Oakland Center'. None = callsign_for's '<airport> <role>'."""
+    words = [w for w in (name or "").split() if w.upper() not in ("INTL", "INTERNATIONAL", "AIRPORT", "AERO")]
+    if not words:
+        return None
+    if kind == "CTR":  # "OAKLAND SAN FRANCISCO BAY" -> "Oakland Center" (ICAO: "... Control")
+        return f"{_title(words[0])} {'Center' if airport.faa else 'Control'}"
+    first = words[0].lower()
+    if kind in _SUFFIX and first not in (own_name, airport.icao.lower(), airport.name.split()[0].lower()):
+        return f"{_title(' '.join(words))} {_SUFFIX[kind]}"
+    return None
+
+
+def _title(s: str) -> str:
+    """'NORCAL' -> 'NorCal', other names title-cased ('RESISTENCIA' -> 'Resistencia')."""
+    return {"NORCAL": "NorCal", "SOCAL": "SoCal"}.get(s.upper(), s.title())
 
 
 _APPROACH_WORDS = {"ILS": "ILS", "LOC": "localizer", "RNAV": "RNAV", "GPS": "RNAV", "VORDME": "VOR DME",
@@ -109,7 +226,8 @@ _APPROACH_WORDS = {"ILS": "ILS", "LOC": "localizer", "RNAV": "RNAV", "GPS": "RNA
 
 def approach_type(airport: Airport, runway: str) -> str | None:
     """Best approach to that runway as a controller says it: 'ILS', else 'RNAV', 'VOR DME', ... None = unknown."""
-    kinds = airport.approaches.get(runway.zfill(2)) or airport.approaches.get(runway) or []
+    want_key = runway.upper().lstrip("0")  # OurAirports says "1L", the sim "01L"
+    kinds = next((v for k, v in airport.approaches.items() if k.upper().lstrip("0") == want_key), [])
     for want in ("ILS", "RNAV", "GPS", "LOC", "VORDME", "VOR", "NDBDME", "NDB"):
         if want in kinds:
             return _APPROACH_WORDS[want]

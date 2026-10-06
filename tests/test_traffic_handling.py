@@ -105,7 +105,7 @@ def test_user_gets_their_turn_first():
     sim.spawn_departure("ARG1234", "31", 0.0, **INFO)
     cb.bus.heard(5.5, to_user=True)  # ATC just talked to the user: their readback comes first
     said = _run(cb, 30)
-    assert said and said[0][0] >= 15.5  # nothing during the readback window
+    assert said and said[0][0] >= 11.5  # nothing during the 6 s readback window
 
 
 def test_bus_rules():

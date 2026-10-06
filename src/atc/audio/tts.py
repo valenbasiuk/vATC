@@ -30,6 +30,8 @@ class PrintTTS:
 
 
 class PiperTTS:
+    audio = True  # real sound: loops (ATIS) may repeat without flooding a console
+
     def __init__(
         self,
         model_path: Path,
@@ -37,9 +39,11 @@ class PiperTTS:
         length_scale: float = 1.0,
         lead_pad_s: float = 0.15,
         tail_pad_s: float = 0.5,
+        device=None,
     ) -> None:
         from piper import PiperVoice  # type: ignore
 
+        self.device = device  # sounddevice output (index or name part); None = Windows default
         self._voice = PiperVoice.load(str(model_path))
         self.radio_fx = radio_fx
         self.lead_pad_s = lead_pad_s
@@ -92,7 +96,7 @@ class PiperTTS:
                     samples = apply_radio_fx(samples, rate)
                 if stream is None:
                     self.last_synth_s = time.perf_counter() - t0  # delay before audio starts
-                    stream = sd.OutputStream(samplerate=rate, channels=1, dtype="float32")
+                    stream = sd.OutputStream(samplerate=rate, channels=1, dtype="float32", device=self.device)
                     stream.start()
                     # Lead silence: the output device often clips the first word.
                     stream.write(np.zeros(int(rate * self.lead_pad_s), dtype=np.float32))

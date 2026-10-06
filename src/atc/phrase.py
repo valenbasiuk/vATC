@@ -23,24 +23,50 @@ def frequency(mhz: float, faa: bool = False) -> str:
     return f"{digits(whole)} {'point' if faa else 'decimal'} {digits(frac)}"
 
 
-def level(ft: int) -> str:
-    """20000 -> 'flight level two zero zero'; 3000 -> 'three thousand feet'; 2500 -> 'two thousand five hundred feet'."""
-    if ft >= 10000:
+def is_flight_level(ft: int, airport=None) -> bool:
+    """Above the transition altitude levels are flight levels: US from FL180, Argentina above 3000 ft, UK 6000...
+    Without a known transition altitude: from 10000 ft (FAA: 18000)."""
+    faa = bool(getattr(airport, "faa", False))
+    ta = getattr(airport, "trans_alt_ft", None)
+    if faa:
+        return ft >= (ta or 18000)
+    return ft > ta if ta else ft >= 10000
+
+
+def level(ft: int, airport=None) -> str:
+    """20000 -> 'flight level two zero zero'; 3000 -> 'three thousand feet'; 2500 -> 'two thousand five hundred feet'.
+    `airport` (its transition altitude, FAA or not) decides FL vs feet: FAA 11000 -> 'one one thousand'
+    (FAA altitudes are said without 'feet')."""
+    if is_flight_level(ft, airport):
         return "flight level " + digits(str(ft // 100))
-    th, hu = divmod(ft, 1000)
+    th, hu = divmod(int(ft), 1000)
     out = f"{digits(str(th))} thousand" if th else ""
     if hu:
         out += f" {digits(str(hu // 100))} hundred"
-    return f"{out.strip()} feet"
+    return out.strip() if getattr(airport, "faa", False) else f"{out.strip()} feet"
 
 
-def wind(direction: float | None, kt: float | None) -> str | None:
-    """(300, 12) -> 'wind three zero zero degrees one two knots'; under 3 kt -> 'wind calm'; unknown -> None."""
+def climb(ft: int, airport=None) -> str:
+    """ICAO 'climb to flight level two zero zero' / FAA 'climb and maintain one one thousand'."""
+    return f"climb and maintain {level(ft, airport)}" if getattr(airport, "faa", False) else \
+        f"climb to {level(ft, airport)}"
+
+
+def descend(ft: int, airport=None) -> str:
+    return f"descend and maintain {level(ft, airport)}" if getattr(airport, "faa", False) else \
+        f"descend to {level(ft, airport)}"
+
+
+def wind(direction: float | None, kt: float | None, faa: bool = False) -> str | None:
+    """(300, 12) -> ICAO 'wind three zero zero degrees one two knots', FAA 'wind three zero zero at one two';
+    under 3 kt -> 'wind calm'; unknown -> None."""
     if direction is None or kt is None:
         return None
     if kt <= 3:
         return "wind calm"
     d = int(round(direction)) % 360 or 360
+    if faa:
+        return f"wind {digits(f'{d:03d}')} at {digits(str(int(round(kt))))}"
     return f"wind {digits(f'{d:03d}')} degrees {digits(str(int(round(kt))))} knots"
 
 
@@ -63,13 +89,46 @@ def procedure(name: str) -> str:
     return " ".join(p for p in parts if p)
 
 
-def callsign(telephony: str | None, icao_callsign: str) -> str:
+def callsign(telephony: str | None, icao_callsign: str, faa: bool = False) -> str:
     """('Martinair', 'MAR4133') -> 'Martinair four one three three'. Without telephony, spell it:
-    'LV-ABC' -> 'Lima Victor Alfa Bravo Charlie', 'N123AB' -> 'November one two three Alfa Bravo'."""
+    'LV-ABC' -> 'Lima Victor Alfa Bravo Charlie', 'N123AB' -> 'November one two three Alfa Bravo'.
+    FAA (7110.65 2-4-20): airline flight numbers in group form, 'United four thirty-six'."""
     num = "".join(c for c in icao_callsign if c.isdigit())
     if telephony and num:
-        return f"{telephony} {digits(num)}"
+        return f"{telephony} {group_number(num) if faa else digits(num)}"
     return spell(icao_callsign)
+
+
+_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+         "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty", 6: "sixty", 7: "seventy", 8: "eighty", 9: "ninety"}
+
+
+def _pair(n: int) -> str:
+    if n < 20:
+        return _ONES[n]
+    t, o = divmod(n, 10)
+    return _TENS[t] + (f"-{_ONES[o]}" if o else "")
+
+
+def group_number(num: str) -> str:
+    """Flight number in group form: '5' five, '52' fifty-two, '436' four thirty-six, '4133' forty-one thirty-three,
+    '100' one hundred, '1200' twelve hundred, '205' two zero five, '1005' ten zero five."""
+    num = num.lstrip("0") or "0"
+    n = int(num)
+    if len(num) <= 2:
+        return _pair(n)
+    if len(num) == 3:
+        head, tail = int(num[0]), int(num[1:])
+        if tail == 0:
+            return f"{_ONES[head]} hundred"
+        return f"{_ONES[head]} {_pair(tail) if tail >= 10 else 'zero ' + _ONES[tail]}"
+    if len(num) == 4:
+        head, tail = int(num[:2]), int(num[2:])
+        if tail == 0:
+            return f"{_pair(head)} hundred" if head % 10 else f"{_ONES[head // 10]} thousand"
+        return f"{_pair(head)} {_pair(tail) if tail >= 10 else 'zero ' + _ONES[tail]}"
+    return digits(num)
 
 
 def spell(text: str) -> str:

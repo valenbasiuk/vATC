@@ -72,11 +72,14 @@ def items(session: Session, airport: Airport, dest_name: str) -> list[Item]:
         num_pat = f"(?:{num}|{_DIGIT_SOUNDALIKES[num]})" if num in _DIGIT_SOUNDALIKES else num
         pat = rf"{base[:4].lower()}\w*\s*{num_pat}" + (rf"\s*(?:{letter.lower()}|{nato})\b" if letter else "")
         out.append(Item("SID", spoken, pat))
-    out.append(Item("route", "flight planned route", "", required=False))
+    out.append(Item("route", "then as filed" if faa else "flight planned route", "", required=False))
     if plan.cruise_ft:
-        lvl = plan.cruise_ft // 100 if plan.cruise_ft >= 10000 else plan.cruise_ft
+        ft = plan.cruise_ft
+        # read back as "flight level 200" / "FL200", or (below the transition altitude) "11000" / "one one thousand"
+        pat = rf"\b{ft // 100}\b" if phrase.is_flight_level(ft, airport) else \
+            rf"\b{ft}\b" + (rf"|\b{ft // 1000} thousand\b" if ft % 1000 == 0 else "")
         how = "climb via SID, " if plan.sid else ""
-        out.append(Item("level", f"{how}expect {phrase.level(plan.cruise_ft)}, ten minutes after departure", rf"\b{lvl}\b"))
+        out.append(Item("level", f"{how}expect {phrase.level(ft, airport)}, ten minutes after departure", pat))
     dep = _freq(airport, "DEP", "APP", "ARR")
     if dep:
         fd = f"{dep.mhz:.3f}".replace(".", "").rstrip("0")

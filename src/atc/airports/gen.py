@@ -52,6 +52,27 @@ def _float(v: str) -> float | None:
         return None
 
 
+_GENERIC = {"international", "intl", "airport", "aeropuerto", "aerodrome", "aeródromo", "aerodromo", "airfield",
+            "regional", "municipal", "metropolitan", "county", "field", "air", "base", "national", "de", "del",
+            "internacional", "aeroparque", "liberty", "intercontinental"}
+
+
+def spoken_name(name: str, municipality: str = "") -> str | None:
+    """How controllers name the airport on the radio, guessed (hand-edit `spoken_name` if wrong):
+    'London Heathrow Airport' (London) -> 'Heathrow', 'San Francisco International Airport' -> 'San Francisco',
+    'Metropolitan Oakland International Airport' (Oakland) -> 'Oakland', 'Chicago O'Hare ...' -> "O'Hare"."""
+    import re
+
+    words = [w for w in re.split(r"[\s/–-]+", name) if w and w.lower().strip(".,()") not in _GENERIC]
+    city = municipality.strip()
+    if city and city.lower() in " ".join(words).lower():
+        rest = [w for w in words if w.lower() not in city.lower().split()]
+        return rest[0] if len(rest) == 1 and not rest[0][0].isdigit() else city
+    if len(words) > 2 and any(len(w.strip(".")) == 1 for w in words):  # 'John F Kennedy' -> 'Kennedy'
+        return words[-1]
+    return " ".join(words) or None
+
+
 def build_airport(icao: str, data_dir: Path) -> Airport:
     icao = icao.upper()
     row = next(
@@ -117,6 +138,7 @@ def build_airport(icao: str, data_dir: Path) -> Airport:
         frequencies=freqs,
         notes=notes,
         needs_review=True,
+        spoken_name=spoken_name(row["name"], row.get("municipality", "")),
     )
 
 

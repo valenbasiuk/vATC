@@ -103,7 +103,7 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     # Departure -> Control
     if fac.role in ("departure", "approach") and departing and (
             own.alt_msl_ft >= CONTROL_HANDOFF_FT or d_apt >= CONTROL_HANDOFF_NM):
-        ctl = world.control()
+        ctl = world.control(own, apt)
         if ctl is not None:
             a, f = ctl
             return due(f"{apt.icao}:control",
@@ -203,10 +203,11 @@ def _addressee(session, pilot_text: str) -> list[str]:
     return []
 
 
-def _station(world, airport: Airport, grp: str, words: list[str]) -> tuple[Airport, Facility] | None:
+def _station(world, airport: Airport, grp: str, words: list[str], own: OwnState | None = None,
+             ) -> tuple[Airport, Facility] | None:
     """The position of group `grp` at the airport named in `words` (else this one); area control from the world."""
     if grp == "control":
-        return world.control()
+        return world.control(own, airport)
     named = next((a for a in world.airports if (a.spoken_name or a.name.split()[0]).lower() in words), airport)
     kinds = ("DEP", "APP", "ARR") if grp == "radar" and "departure" in words else _KINDS[grp]
     f = _freq(named, *kinds)
@@ -229,7 +230,7 @@ def wrong_station(session, world, airport: Airport, facility: Facility, own: Own
     here = group(facility.role)
     if not named or here is None or named[-1] == here:
         return None
-    tgt = _station(world, airport, named[-1], addr)
+    tgt = _station(world, airport, named[-1], addr, own)
     if tgt is not None and abs(tgt[1].freq.mhz - own.com1_mhz) >= 0.005:
         return f"{cs}, this is {station}, contact {_contact_text(*tgt)}."
     return f"{cs}, this is {station}, check frequency."
@@ -250,7 +251,7 @@ def frequency_request(session, world, airport: Airport, facility: Facility, own:
     rest = _compact_call(pilot_text).split()[len(addr):]
     asked = [ROLE_WORDS[w] for w in rest if w in ROLE_WORDS]
     if asked:
-        tgt = _station(world, airport, asked[-1], rest)
+        tgt = _station(world, airport, asked[-1], rest, own)
         if tgt is None:  # e.g. Center with no area control file: nobody to send them to
             return f"{cs}, remain this frequency." if not own.on_ground else f"{cs}, unable, frequency not available."
         if "change" in norm or not own.on_ground:
@@ -262,7 +263,7 @@ def frequency_request(session, world, airport: Airport, facility: Facility, own:
         if facility.role == "tower":
             tgt = _station(world, airport, "radar", [])
         elif facility.role in ("departure", "approach") and session.departed_from == airport.icao:
-            tgt = world.control()
+            tgt = world.control(own, airport)
         plan = session.plan
         dest = world.get(plan.destination) if plan else None
         if tgt is None and dest is not None and dest.icao != airport.icao \
@@ -319,7 +320,8 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
         elif departing and facility.role in ("departure", "approach") and plan.cruise_ft:
             # ICAO 2018: "climb via SID to <level>"; no Control on file, so Departure clears the filed level
             session.cleared_level_ft = plan.cruise_ft
-            bits.append(("climb via SID to " if plan.sid else "climb ") + phrase.level(plan.cruise_ft))
+            bits.append(f"climb via SID to {phrase.level(plan.cruise_ft, airport)}" if plan.sid and not faa
+                        else phrase.climb(plan.cruise_ft, airport))
         elif departing and plan.sid and facility.role in ("departure", "approach"):
             bits.append("climb via SID")
         return ", ".join(bits) + "."
@@ -329,7 +331,7 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     st = runway_status(airport, rwy, own, traffic)
     pre = f"{cs}, {station}" if first else cs
     rw = phrase.runway(rwy.ident, faa)
-    wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt)
+    wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, faa)
 
     if own.on_ground and "ready" in norm and ("departure" in norm or "takeoff" in norm or "take off" in norm):
         session.first_contact(facility.role)

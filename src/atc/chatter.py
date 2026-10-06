@@ -27,7 +27,7 @@ from atc.sequence import runway_status
 from atc.tracker import Event
 
 GAP_S = 4.0
-READBACK_S = 10.0
+READBACK_S = 6.0  # after ATC talks to the user, chatter waits this long for their answer (Valen: 6 s)
 STALE_S = 15.0
 MAX_QUEUE = 4
 NUM_VOICES = 904  # en_US-libritts-high speakers
@@ -57,16 +57,16 @@ def _airline_telephony(path: str = "data/airlines.dat") -> dict[str, str]:
     return out
 
 
-def ai_callsign(t: Traffic) -> str:
+def ai_callsign(t: Traffic, faa: bool = False) -> str:
     """How ATC calls an AI aircraft: 'Argentina one two three four' (airline + flight number), else the
     registration spelled ('Lima Victor Golf Tango Uniform')."""
     table = _airline_telephony()
     if t.airline and t.flight_number and t.flight_number.isdigit():
         tel = table.get(t.airline.strip().lower()) or t.airline.split()[0].title()
-        return f"{tel} {phrase.digits(t.flight_number)}"
+        return phrase.callsign(tel, t.flight_number, faa)
     m = re.fullmatch(r"([A-Z]{3})(\d{1,4})", (t.callsign or "").upper().replace("-", ""))
     if m and m.group(1) in table:
-        return f"{table[m.group(1)]} {phrase.digits(m.group(2))}"
+        return phrase.callsign(table[m.group(1)], m.group(2), faa)
     return phrase.spell(t.callsign or "")
 
 
@@ -85,12 +85,12 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
     """ATC's instruction + the AI's readback for one event, or None if nothing would be said.
     `net`: the airport's taxi map, so an AI taxiing out gets its real route ("via Kilo, Alfa")."""
     a, t = ev.airport, ev.traffic
-    cs = ai_callsign(t)
+    faa = a.faa
+    cs = ai_callsign(t, faa)
     if not cs:
         return None
     voice = voice_for(t.callsign)
-    faa = a.country == "US"
-    w = phrase.wind(magnetic(a, wind[0]), wind[1])
+    w = phrase.wind(magnetic(a, wind[0]), wind[1], faa)
     rwy = ev.runway or runway_in_use(a, wind[0], wind[1])
     rw = phrase.runway(rwy.ident, faa) if rwy is not None else None
     atc = pilot = None

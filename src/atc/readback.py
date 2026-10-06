@@ -167,9 +167,10 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
     lvl = re.search(r"\b(climb|descend|maintain)\b[a-z ]*?\bflight level (\d{2,3})\b", join_digits(t))
     if lvl:
         items["level"] = lvl.group(2)
-    ft = re.search(r"\b(?:climb|descend|maintain)\b[a-z ]*?\b(\d{3,5}) feet\b", _units(t))
+    # "descend to 3000 feet" (ICAO) or "climb and maintain one one thousand" (FAA, no "feet")
+    ft = re.search(r"\b(?:climb|descend|maintain)\b[a-z ]*?\b(?:(\d{3,5}) feet|(\d{4,5}))\b", _units(t))
     if ft:
-        items["altitude"] = ft.group(1)
+        items["altitude"] = ft.group(1) or ft.group(2)
     hdg = re.search(r"\bheading (\d{3})\b", join_digits(t))
     if hdg:
         items["heading"] = hdg.group(1)

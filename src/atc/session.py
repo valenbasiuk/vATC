@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from atc import phrase
+from atc.atis import AtisState
 from atc.flightplan import FlightPlan
 from atc.readback import _normalize, join_digits
 
@@ -63,6 +64,8 @@ class Session:
     acked_atc: str | None = None  # last ATC instruction already read back / acknowledged: not checked again
     # "<ICAO>:<role>" -> instruction ATC asked to have read back ("read back"): the next call is checked against it
     readback_due: dict[str, str] = field(default_factory=dict)
+    faa: bool = False  # talking to a US position this turn: group-form callsign ("United four thirty-six")
+    atis: AtisState = field(default_factory=AtisState)  # current ATIS letter per airport
 
     def __post_init__(self) -> None:
         if self.telephony is not None:
@@ -76,7 +79,7 @@ class Session:
 
     @property
     def spoken_callsign(self) -> str:
-        return phrase.callsign(self.telephony, self.callsign)
+        return phrase.callsign(self.telephony, self.callsign, self.faa)
 
     def learn_telephony(self, pilot_text: str) -> None:
         """'... Martinair 4133 requesting ...' -> telephony 'Martinair' (only if the number matches ours).
@@ -164,6 +167,36 @@ def remember_telephony(designator: str, name: str | None) -> None:
             LEARNED_PATH.write_text(json.dumps(known, indent=1, sort_keys=True), encoding="utf-8")
     except (OSError, ValueError):
         pass  # remembering is a convenience; never break the radio over it
+
+
+def callsign_from_sim(ident: dict | None) -> tuple[str | None, str | None]:
+    """(ICAO callsign, telephony) from the sim's ATC settings of the user's aircraft. MSFS gives the airline as
+    its radio name ("Speedbird", "United") plus a flight number; without those, the tail number is the callsign.
+    (None, None) if the sim gave nothing usable."""
+    if not ident:
+        return None, None
+    airline = (ident.get("airline") or "").strip()
+    number = (ident.get("flight_number") or "").strip()
+    if airline and number.isdigit():
+        code = airline_designator(airline)
+        return f"{code or re.sub(r'[^A-Z]', '', airline.upper())[:3]}{number}", airline.title()
+    tail = re.sub(r"[^A-Z0-9-]", "", (ident.get("atc_id") or "").upper())
+    return (tail or None), None
+
+
+def airline_designator(name_or_telephony: str, path: Path = Path("data/airlines.dat")) -> str | None:
+    """'Speedbird' / 'British Airways' -> 'BAW' (OpenFlights list), else a well-known one from TELEPHONY."""
+    want = name_or_telephony.strip().lower()
+    for code, tel in TELEPHONY.items():
+        if tel.lower() == want:
+            return code
+    if path.exists():
+        with path.open(encoding="utf-8", errors="replace", newline="") as fh:
+            for row in csv.reader(fh):
+                if len(row) >= 8 and len(row[4]) == 3 and row[4].isalpha() and row[7] == "Y" \
+                        and want in (row[1].strip().lower(), row[5].strip().lower()):
+                    return row[4].upper()
+    return None
 
 
 _AIRLINES: dict[str, str] | None = None

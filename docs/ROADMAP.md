@@ -12,7 +12,9 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
 ## B. Voice (Phase 3)
 5. **Piper.** WORKING: voice chosen, `voices/en_US-libritts-high.onnx` (commit ff34249).
 6. **STT.** PARTLY CHECKED (2026-10-05, Piper -> radio filter -> faster-whisper small.en round trip, no mic): ~2.6 s per call on CPU (over budget with LLM + TTS; try base.en), digits fine, names bad ("Martin Air", "Air park", "Atovil for Bravo"). Fixed in code: STT hint with station/telephony/SID/destination, split telephony joined, SID digit soundalikes, any first call on Delivery = clearance request. Still TODO / not reported yet: `FasterWhisperSTT` on CPU, `small.en` vs `base.en`. Done when a spoken call becomes correct text in about 1 s. Watch callsign and number accuracy: the clearance readback check is done by code on the transcript, so STT errors become "negative, I say again".
-7. **PTT + radio filter.** TODO / not reported yet: `--ptt` exists; check key handling, squelch click, filter. Done when you can say a call and hear a radio-sounding reply.
+7. **PTT + radio filter.** Keyboard key (one global hook, works with MSFS focused) and now joystick/yoke buttons
+   (WinMM, `--ptt-joy`, `tools/probe_ptt.py`: on Valen's PC two controllers, device 2 has buttons 19/32 latched);
+   `--mic` / `--audio-out` device selection. Still TODO / not reported yet: `--ptt` exists; check key handling, squelch click, filter. Done when you can say a call and hear a radio-sounding reply.
 
 ## C. Make the ATC good (Phase 4+), the part that decides if it's worth using
 8. **Weather.** DONE in code: wind/QNH from the sim, stated only when known. TODO: METAR as alternative source, magnetic vs true (OPEN_QUESTIONS #10).
@@ -38,8 +40,10 @@ Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
     waypoint positions (directs off the route). Added at load time; the YAMLs are never modified and hand values win.
     Sources checked: ChartFox needs a requested API token and serves AIP PDFs (no geometry); MSFS's in-sim LIDO charts
     have no API; the official AIP (ais.anac.gob.ar) is free (SABE AD 2.18 confirms TWR 118.85, GND 121.9, APP 120.6,
-    CLR 129.3, ATIS 127.6; area control call sign "Ezeiza Control"). Ezeiza ACC VHF sector frequencies (ENR 2.1) not
-    found yet; Little Navmap's Navigraph db is AIRAC 1801 (2018), too old to trust.
+    CLR 129.3, ATIS 127.6; area control call sign "Ezeiza Control"). Ezeiza Control: 135.5 (Valen; VATSIM Argentina
+    manual v1.2.1: SAEF_N_CTR 135.500 Centro Norte, SAEF_CTR 134.500 combined, SAEF_S_CTR 125.200 Sur) in
+    airspace/SAEF.yaml; Departure -> Control -> Rosario handoffs now run. Little Navmap's Navigraph db is AIRAC 1801
+    (2018), too old to trust.
 9b. **Taxi routes.** WORKING (2026-10-05, `taxi.py`, code-owned): graph from OpenStreetMap (`tools/fetch_osm_taxi.py ICAO` -> `airports/osm/ICAO.json`; done for SABE, SAAR, SARC), Dijkstra with a penalty per taxiway change, goal = runway holding point at the departure end (else the taxiway node next to the threshold). Ground: "taxi to holding point runway 31 via Kilo, Alfa, QNH ..."; after landing "taxi to stand 12 via ..." (requested stand, else a free one). Taxiway names are read-back checked. Hand `taxi_routes` in the YAML always win. Coverage: SABE good, checked against Valen's LIDO chart 2026-10-05 (A parallel ~107 m NE of the centerline; B C D E F H I J K L M as on the chart; OSM's stand lead-in "1" is filtered, designators must start with a letter; apron -> 31 "via Kilo, Alfa", -> 13 "via Alfa"); SAAR partial (runway 20 end not connected: clearance without names); SARC no names in OSM. TODO: MSFS's own data via `tools/probe_taxi.py` (UNTESTED; needs the MSFS 2024 SDK SimConnect.dll via `--dll`, the bundled one has no facility API) -> `airports/msfs/ICAO.json`, preferred over OSM; hold short of crossed runways.
 9c. **Rest of the IFR flight.** WORKING in the fake sim (2026-10-05, `flow.py`, `world.py`, all code-owned):
    - One run covers the flight: origin, destination and alternate are loaded (missing YAMLs generated from `data/`), the tuned frequency picks the airport; area control from `airspace/*.yaml` (`airspace/SAEF.yaml` has NO frequencies yet: fill from AIP ENR 2.1, until then Departure -> Control is skipped).

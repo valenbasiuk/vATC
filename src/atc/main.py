@@ -19,7 +19,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import enroute, factcheck, flow, phrase
+from atc import atis, enroute, factcheck, flow, phrase, weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -41,6 +41,9 @@ from atc.traffic import is_traffic_question, traffic_reply
 from atc.world import World, load_world
 
 TRAFFIC_RADIUS_NM = 15.0
+ATIS_PAUSE_S = 3.0  # between two loops of the ATIS broadcast
+ATIS_TEXT_PAUSE_S = 60.0  # text mode: print it once a minute, not in a loop
+ATIS_VOICE = 12  # libritts speaker for the ATIS, not the controller's voice
 
 
 def handle(
@@ -69,6 +72,7 @@ def handle(
     if session is None:
         session = Session(callsign=own.callsign)
     session.where = airport.icao
+    session.faa = airport.faa
     own = _surface_wind(own, airport, session)
     session.learn_telephony(pilot_text)
     cs = session.spoken_callsign
@@ -77,7 +81,13 @@ def handle(
     preferred = (plan.planned_runway if plan and plan.origin == airport.icao and own.on_ground
                  else plan.dest_runway if plan and plan.destination == airport.icao else None)
 
+    # first call on a position with an old ATIS letter: "information Charlie is now current, QNH ..."
+    atis_note = atis.check_letter(session.atis, airport, own, _normalize(pilot_text),
+                                  session.surface_wind.get(airport.icao), preferred)         if session.is_first_contact(facility.role) and facility.role in ("clearance", "ground", "tower", "approach")         else None
+
     def say(reply: str, llm_s: float = 0.0) -> str:
+        if atis_note and "now current" not in reply:
+            reply = reply.rstrip(".") + f". {atis_note[:1].upper()}{atis_note[1:]}."
         history.append((pilot_text, reply))
         session.last_role = session._key(facility.role)
         _say_timed(speaker, reply, stt_s, llm_s)
@@ -217,6 +227,9 @@ def _surface_wind(own, airport: Airport, session: Session):
     known = session.surface_wind.get(airport.icao)
     if known is not None:
         return replace(own, wind_dir_deg=known[0], wind_kt=known[1])
+    metar = weather.get(airport.icao)  # arriving: the airport's real surface wind (what live weather shows)
+    if metar is not None and metar.wind_kt is not None:
+        return replace(own, wind_dir_deg=metar.wind_dir_deg, wind_kt=metar.wind_kt)
     return replace(own, wind_dir_deg=None, wind_kt=None)  # winds aloft are not the airport's wind
 
 
@@ -239,6 +252,7 @@ class _Callbacks:
         self.bus = RadioBus()  # one frequency: chatter waits for gaps and for the user's turn
         self.trackers: dict[str, TrafficTracker] = {}
         self.last_chatter: list[tuple[str, str]] = []  # (who, text) of the last exchange, for tests
+        self.atis_play: dict | None = None  # the ATIS being broadcast: airport, sentences, position
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="atc-watcher").start()
@@ -267,6 +281,9 @@ class _Callbacks:
             if hasattr(self.sim, "step"):  # fake sim: move the scripted AI traffic
                 self.sim.step(now)
             own = self.sim.own()
+            here = self.world.pick(own)
+            if here is not None:
+                self.session.faa = here[0].faa  # FAA or ICAO callsign form for what the controller says now
             flow.track(self.session, self.world, own, now)
             text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
             if text is None and self.session.pending_handoff is None:
@@ -284,15 +301,54 @@ class _Callbacks:
                 self._transmit(text, "(controller call)")
                 self.bus.heard(now, to_user=True)
                 return text
-            self._chatter(own, now)
+            if not self._chatter(own, now):
+                self._atis(own, now)
             return None
 
-    def _chatter(self, own, now: float) -> None:
+    def _atis(self, own, now: float) -> str | None:
+        """One sentence of the ATIS per tick while COM1 (or a COM2 that is heard) is on an ATIS frequency, so
+        pilot calls and controller calls on COM1 still get through between sentences."""
+        found = None
+        for mhz in (own.com1_mhz, own.com2_mhz):
+            if mhz is None:
+                continue
+            for a in self.world.airports:
+                if any(f.kind in ("ATIS", "AWOS", "ASOS") and abs(f.mhz - mhz) < 0.005 for f in a.frequencies):
+                    found = a
+                    break
+            if found:
+                break
+        if found is None:
+            self.atis_play = None
+            return None
+        p = self.atis_play
+        if p is None or p["icao"] != found.icao:
+            p = self.atis_play = {"icao": found.icao, "lines": [], "i": 0, "next": now}
+        if now < p["next"]:
+            return None
+        if p["i"] >= len(p["lines"]):  # (re)start the broadcast: the letter may have changed meanwhile
+            plan = self.session.plan
+            pref = plan.planned_runway if plan and plan.origin == found.icao and own.on_ground else \
+                plan.dest_runway if plan and plan.destination == found.icao else None
+            _, p["lines"] = atis.build(self.session.atis, found, own, self.session.surface_wind.get(found.icao), pref)
+            p["i"] = 0
+        line = p["lines"][p["i"]]
+        p["i"] += 1
+        if p["i"] >= len(p["lines"]):  # pause before it starts over (long in text mode: no audio to loop)
+            p["next"] = now + (ATIS_PAUSE_S if getattr(self.speaker, "audio", False) else ATIS_TEXT_PAUSE_S)
+        say_as = getattr(self.speaker, "say_as", None)
+        if say_as is not None:
+            say_as(line, who="ATIS", voice=ATIS_VOICE)
+        else:
+            self.speaker.say(line)
+        return line
+
+    def _chatter(self, own, now: float) -> bool:
         """Radio traffic with the AI aircraft at the airport we're at: track them, queue what ATC would say,
         and say it when the frequency is free and it is not the user's turn."""
         apt = self.world.nearest(own)
-        if distance_nm(own.lat, own.lon, apt.lat, apt.lon) > 25:
-            return
+        if apt is None or distance_nm(own.lat, own.lon, apt.lat, apt.lon) > 25:
+            return False
         traffic = self.sim.traffic(apt.lat, apt.lon, TRAFFIC_RADIUS_NM)
         tracker = self.trackers.setdefault(apt.icao, TrafficTracker(apt))
         wind = self.session.surface_wind.get(apt.icao) or (own.wind_dir_deg, own.wind_kt)
@@ -304,7 +360,7 @@ class _Callbacks:
         role = picked[1].role if picked and picked[0].icao == apt.icao and picked[1].can_reply else None
         ex = self.bus.next_due(now, role)
         if ex is None:
-            return
+            return False
         if "cleared to land" in ex.lines[0][1] and ex.key in tracker.tracks:
             tracker.tracks[ex.key].cleared = True  # said now: stop offering it again
         print()
@@ -318,6 +374,7 @@ class _Callbacks:
             self.last_chatter.append((who, text))
         print(self.prompt, end="", flush=True)
         self.bus.heard(now)
+        return True
 
     def _transmit(self, text: str, pilot_side: str) -> None:
         picked = self.world.pick(self.sim.own())
@@ -406,14 +463,18 @@ def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="atc")
-    p.add_argument("--airport", required=True, help="ICAO code; file is airports/<ICAO>.yaml")
+    p.add_argument("--airport", help="ICAO code; file is airports/<ICAO>.yaml (with --sim: default = where you are)")
     p.add_argument("--airports-dir", type=Path, default=Path("airports"))
     p.add_argument("--sim", action="store_true", help="use real MSFS (default: fake sim)")
     p.add_argument("--voice", type=Path, help="Piper .onnx voice file; omit for text only")
     p.add_argument("--ptt", action="store_true", help="push-to-talk input (hold the key, speak, release)")
-    p.add_argument("--ptt-key", default="f9")
+    p.add_argument("--ptt-key", default="f9", help='keyboard key ("f9", "f10", "v"...; "none" = joystick only)')
+    p.add_argument("--ptt-joy", type=int, help="joystick/yoke button number for push-to-talk (tools/probe_ptt.py)")
+    p.add_argument("--ptt-joy-device", type=int, help="which game controller (default: any)")
+    p.add_argument("--mic", help="microphone: sounddevice index or part of its name (default: Windows default)")
+    p.add_argument("--audio-out", help="speakers/headset for ATC: index or part of the name (default: Windows)")
     p.add_argument("--stt-model", default="small.en", help="faster-whisper model (try base.en if too slow)")
-    p.add_argument("--callsign", default="N123AB")
+    p.add_argument("--callsign", help="ICAO callsign (default: SimBrief plan, else the sim's ATC settings, else N123AB)")
     p.add_argument("--telephony", help='airline radio name, e.g. "Martinair" (else learned from your first call)')
     p.add_argument("--dll", help="path to SimConnect.dll (MSFS 2024 SDK) if the bundled one fails")
     p.add_argument("--simbrief", type=Path, help="SimBrief OFP json (tools/probe_simbrief.py saves simbrief_last.json)")
@@ -426,7 +487,32 @@ def main(argv: list[str] | None = None) -> None:
         args.callsign = plan.callsign or args.callsign
         print(f"flight plan: {plan.callsign} {plan.origin}-{plan.destination} {plan.sid or ''} squawk {plan.squawk}")
 
-    world = load_world(args.airport, args.airports_dir, plan)
+    sim: SimSource | None = None
+    if args.sim:
+        from atc.sim.simconnect_source import SimConnectSource
+
+        sim = SimConnectSource(callsign=args.callsign or "N123AB", library_path=args.dll)
+        if args.callsign is None:  # no plan, no --callsign: what the sim's ATC calls the aircraft
+            from atc.session import callsign_from_sim
+
+            cs, tel = callsign_from_sim(sim.identity())
+            if cs:
+                args.callsign, args.telephony = cs, args.telephony or tel
+                sim._callsign = cs
+                print(f"callsign from the sim: {cs}" + (f" ({tel})" if tel else ""))
+    args.callsign = args.callsign or "N123AB"
+
+    primary = args.airport or (plan.origin if plan else None)
+    if primary is None and sim is None:
+        raise SystemExit("--airport is needed with the fake sim (with --sim the airport you are at is found)")
+    world = load_world(primary, args.airports_dir, plan)
+    if sim is not None and (args.airport is None or not world.airports):
+        here = world.discover(sim.own())  # spawned somewhere: that airport first (written to airports/ if new)
+        if here is not None:
+            world.airports.remove(here)
+            world.airports.insert(0, here)
+    if not world.airports:
+        raise SystemExit("Can't tell which airport you're at (sim not on the ground at an airport?). Use --airport.")
     airport = world.airports[0]
     for a in world.airports:
         net = world.taxi.get(a.icao)
@@ -435,11 +521,7 @@ def main(argv: list[str] | None = None) -> None:
     if world.airspaces:
         print("area control: " + ", ".join(s.icao for s in world.airspaces))
 
-    if args.sim:
-        from atc.sim.simconnect_source import SimConnectSource
-
-        sim: SimSource = SimConnectSource(callsign=args.callsign, library_path=args.dll)
-    else:
+    if sim is None:
         from atc.sim.fake import FakeSim
 
         sim = FakeSim(airport, callsign=args.callsign)
@@ -451,7 +533,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.voice:
         from atc.audio.tts import PiperTTS
 
-        speaker = PiperTTS(args.voice)
+        speaker = PiperTTS(args.voice, device=_device(args.audio_out))
     else:
         from atc.audio.tts import PrintTTS
 
@@ -501,6 +583,13 @@ def _run_text(world, sim, llm, speaker, history, session) -> None:
         with cb.lock:
             reply = handle(airport, sim, llm, speaker, history, line, session=session, world=world)
         cb.after_turn(replied=reply is not None)
+
+
+def _device(spec: str | None):
+    """--mic / --audio-out: an index ("3") or part of the device name ("Headset"), as sounddevice takes it."""
+    if spec is None:
+        return None
+    return int(spec) if spec.isdigit() else spec
 
 
 def _a_stand(world: World, airport: Airport):
@@ -558,8 +647,9 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
     airport = world.airports[0]
     print(f"loading speech model {args.stt_model} ...")
     stt = FasterWhisperSTT(model_size=args.stt_model)
-    ptt = PushToTalk(key=args.ptt_key)
-    print(f"{airport.icao} {airport.name}. Hold {args.ptt_key.upper()} to talk. Ctrl+C to exit.")
+    ptt = PushToTalk(key=args.ptt_key, joy_button=args.ptt_joy, joy_device=args.ptt_joy_device,
+                     mic=_device(args.mic))
+    print(f"{airport.icao} {airport.name}. Hold {ptt.describe()} to talk. Ctrl+C to exit.")
     cb = _Callbacks(world, sim, speaker, history, session, ptt=ptt)
     cb.start()
     while True:

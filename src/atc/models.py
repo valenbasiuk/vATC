@@ -24,6 +24,9 @@ class OwnState:
     wind_dir_deg: float | None = None  # direction wind blows FROM, true
     wind_kt: float | None = None
     qnh_hpa: float | None = None
+    temp_c: float | None = None  # outside air temperature at the aircraft
+    com2_mhz: float | None = None  # only when COM2 is heard (receive on): the ATIS is often listened to there
+    zulu_s: float | None = None  # sim clock, seconds since 00:00 UTC
 
 
 @dataclass
@@ -87,6 +90,14 @@ class Airport:
     mag_var_deg: float | None = None
     # runway ident -> approach types in the sim's navdata, e.g. {"20": ["ILS", "RNAV"], "02": ["RNAV", "VORDME"]}
     approaches: dict[str, list[str]] = field(default_factory=dict)
+    # Transition altitude (feet). Levels above it are flight levels: US 18000, Argentina 3000, UK 6000...
+    # None = unknown (then flight levels from 10000 ft, the old rule). Filled from the sim's data (navdb.enrich).
+    trans_alt_ft: int | None = None
+
+    @property
+    def faa(self) -> bool:
+        """US phraseology (FAA 7110.65) instead of ICAO."""
+        return self.country == "US"
 
 
 @dataclass

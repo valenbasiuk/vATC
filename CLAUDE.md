@@ -30,6 +30,10 @@ python tools/probe_simbrief.py --username Valentino951      # fetch latest OFP -
 $env:ATC_LLM_MODEL = "gemini:gemini-flash-lite-latest,nvidia:nvidia/nemotron-3-super-120b-a12b,openrouter:nvidia/nemotron-3-super-120b-a12b:free,groq:qwen/qwen3.8-27b"
 python -m atc --airport SABE --simbrief simbrief_last.json  # /freq 129.3 = Delivery, 121.9 Ground; fake sim starts on Ground
 ```
+Voice in the sim: add `--sim --voice voices/en_US-libritts-high.onnx --ptt` (keyboard F9, or `--ptt-key f10`,
+or a yoke button `--ptt-joy N --ptt-joy-device D` found with `python tools/probe_ptt.py`; on Valen's PC device 2
+reports buttons 19 and 32 as always held: switches, don't use). `--mic` / `--audio-out` take a sounddevice index
+(defaults: Blue Snowball mic, Samsung USB-C earphones). AI chatter is always on (Tower/Ground of the airport you're at).
 Old style still works (`ATC_LLM_BASE_URL` + `ATC_LLM_API_KEY` + unprefixed models). Keys: `GROQ_API_KEY`, `GEMINI_API_KEY`,
 `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` (client.py PROVIDERS).
 Fake-sim REPL: `/wind 300 10 1015`, `/final 2 31`, `/onrwy`, `/notraffic`, `/air`, `/near SAAR 30 6000`, `/ground`.

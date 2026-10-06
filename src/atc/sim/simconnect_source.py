@@ -29,6 +29,7 @@ class SimConnectSource:
         self._ai = None
         self._ai_failed = False
         self._own_object_id: int | None = None
+        self._own_record = None  # the user's aircraft as the AI list shows it: ATC ID, airline, flight number
         self._aq = AircraftRequests(self._sm, _time=500)
         self._callsign = callsign
 
@@ -62,7 +63,20 @@ class SimConnectSource:
             wind_dir_deg=self._get_opt("AMBIENT_WIND_DIRECTION"),
             wind_kt=self._get_opt("AMBIENT_WIND_VELOCITY"),
             qnh_hpa=self._get_opt("SEA_LEVEL_PRESSURE") or None,
+            temp_c=self._get_opt("AMBIENT_TEMPERATURE"),
+            com2_mhz=self._com2(),
+            zulu_s=self._get_opt("ZULU_TIME"),
         )
+
+    def _com2(self) -> float | None:
+        """COM2's frequency if the pilot hears it (VERIFY: 'COM RECEIVE:2' read through Python-SimConnect)."""
+        try:
+            if not self._get_opt("COM_RECEIVE:2"):
+                return None
+            mhz = self._get_opt("COM_ACTIVE_FREQUENCY:2")
+            return round(mhz, 3) if mhz else None
+        except Exception:  # noqa: BLE001 - simvar not in this package version: no COM2
+            return None
 
     def traffic(self, center_lat: float, center_lon: float, radius_nm: float) -> list[Traffic]:
         """AI aircraft near a point. On any failure: log once, return [] (the prompt then says
@@ -86,9 +100,11 @@ class SimConnectSource:
                 # known; learn the id from a position match. The own read can be up to 500 ms old
                 # (AircraftRequests cache), so the match allows for 1 s of travel at the current speed.
                 if rec.object_id == self._own_object_id:
+                    self._own_record = rec
                     continue
                 if self._own_object_id is None and _is_own(rec, own):
                     self._own_object_id = rec.object_id
+                    self._own_record = rec
                     continue
                 t = to_traffic(rec)
                 if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm:
@@ -99,10 +115,24 @@ class SimConnectSource:
             print(f"[traffic disabled: {exc}]", file=sys.stderr)
             return []
 
+    def identity(self) -> dict | None:
+        """The user's aircraft as the sim's ATC knows it (from the aircraft/flight settings): ATC ID (tail number),
+        airline and flight number, model. None until the traffic list has been read once."""
+        if self._own_record is None:
+            self.traffic(*_latlon(self.own()), 1.0)
+        rec = self._own_record
+        if rec is None:
+            return None
+        return {"atc_id": rec.atc_id, "airline": rec.airline, "flight_number": rec.flight_number, "model": rec.model}
+
     def close(self) -> None:
         if self._ai is not None:
             self._ai.close()
         self._sm.exit()
+
+
+def _latlon(own: OwnState) -> tuple[float, float]:
+    return own.lat, own.lon
 
 
 def _is_own(rec, own: OwnState) -> bool:

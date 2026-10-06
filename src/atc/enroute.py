@@ -82,7 +82,7 @@ def descent_text(session, dest: Airport, own: OwnState) -> str:
     q = _qnh(own, dest.country == "US")
     session.descent_given = True
     session.cleared_level_ft = alt
-    bits = [f"{session.spoken_callsign}, descend to {phrase.level(alt)}"]
+    bits = [f"{session.spoken_callsign}, {phrase.descend(alt, dest)}"]
     if q:
         bits.append(q)
     if rwy is not None:
@@ -141,7 +141,7 @@ def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
     app = _approach(dest, rwy)
     cleared = f"cleared {app}" if app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer")) else \
         f"cleared approach {app}"
-    alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)))
+    alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)), dest)
     session.intercept_given = True
     cs = session.spoken_callsign
     if abs(cross) < 0.5 and heading_diff(own.heading_deg, rwy.heading_deg) <= 20:
@@ -210,10 +210,11 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
     if re.search(r"\b(higher|climb|level)\b", norm) and plan.cruise_ft and not session.descent_given:
         asked = re.search(r"\b(?:flight level|level|fl) (\d{2,3})\b", re.sub(r"(?<=\d) (?=\d)", "", norm))
         want = min(int(asked.group(1)) * 100, plan.cruise_ft) if asked else plan.cruise_ft
+        origin = world.get(session.departed_from) or airport  # its transition altitude: FL or feet
         if own.alt_msl_ft >= want - 300:
-            return f"{cs}, maintain {phrase.level(int(round(own.alt_msl_ft / 1000.0) * 1000))}."
+            return f"{cs}, maintain {phrase.level(int(round(own.alt_msl_ft / 1000.0) * 1000), origin)}."
         session.cleared_level_ft = want
-        return f"{cs}, climb {phrase.level(want)}."
+        return f"{cs}, {phrase.climb(want, origin)}."
     if "vector" in norm and dest is not None:
         rwy = _arrival_runway(dest, own, session)
         if rwy is None:
@@ -264,7 +265,7 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
         st = runway_status(dest, rwy, own, traffic)
         if st.own_final_nm is not None and st.own_final_nm <= LANDING_CLEARANCE_NM and st.landing_blocked() is None:
             session.landing_cleared = True
-            wind = phrase.wind(magnetic(dest, own.wind_dir_deg), own.wind_kt)
+            wind = phrase.wind(magnetic(dest, own.wind_dir_deg), own.wind_kt, dest.faa)
             return f"{cs}, " + (f"{wind}, " if wind else "") + \
                 f"runway {phrase.runway(rwy.ident, dest.country == 'US')}, cleared to land."
     if not _arrival_radar(world, session, airport, facility):
