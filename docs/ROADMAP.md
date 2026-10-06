@@ -4,6 +4,89 @@ Ordered. Each item has a "done when" so it can be checked. Status as of 2026-10-
 Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
 The plan for the next session is in docs/NEXT_SESSION.md.
 
+## WATCH IN THE SIM: built 2026-10-06 against the fake sim only (possible in-sim issues)
+Nothing below has been flown in MSFS. Each line: what might go wrong, what to look for, where the knob is.
+When Valen reports one, fix it and move the line to "verified" (or delete it).
+- **VFR circuit** (`pattern.py`): position reports depend on STT hearing "downwind"/"base"/"final"; a misheard call
+  goes to the model. Straight-in only when within 1.5 NM of the centerline and pointing along it
+  (`STRAIGHT_IN_NM`); a wide downwind gets "join downwind" instead. The watcher clears a circuit aircraft on
+  2.5 NM final if it didn't call (`AUTO_CLEAR_NM`): could fire on a long final the pilot hasn't reported yet.
+  Touch and go / full stop rely on `flow.track` on-ground transitions (a bounce can look like a touch and go; a
+  landing within 120 s of takeoff isn't counted). "report left downwind" after a touch and go fires above 300 ft AGL.
+  SABE/SARC pattern side and height are ASSUMED (left, 1000 ft) in the YAMLs.
+- **Zone transit** (`pattern._TRANSIT`): only "transit / cross the zone / overfly / through the zone" wordings
+  are recognised; other wordings with "N miles north" become a join.
+- **VFR departure without a plan**: a turn-out request (or "VFR") means "frequency change approved" at 8 NM
+  (`LEAVE_ZONE_NM`), no Departure; a plain "ready for departure" without a plan still goes to Departure.
+- **Area control / FIRs**: Argentine hand files are chosen by the NEAREST REFERENCE POINT, not the real boundary:
+  the Ezeiza -> Resistencia/Cordoba handoff may come early or late. Navdata FIRs (`navdb.fir_at`) are AIRAC 1801:
+  frequencies may not match MSFS. Center -> Center handoffs fire once per FIR+frequency.
+- **Tower -> Control at fields without Departure** (SARC): at 2000 ft AGL or 5 NM (`TOWER_TO_CONTROL_AGL_FT`). With
+  the sim db loaded SARC gets APP 118.1/118.7, so this may not trigger there.
+- **FAA initial altitude** ("maintain five thousand", no SID): the level-bust monitor watches it until Departure
+  climbs you; "check altitude" if you climb through 5300 ft before the Departure check-in. SimBrief often has no
+  SID for US radar-vector departures: then this is what you get.
+- **Runway crossings** (`taxi.crossings`): need runway threshold positions (from the YAML or the sim db) and a
+  taxi map; the runway ends in the sim db are pavement ends, not displaced thresholds. "Holding short" is only
+  answered within 0.25 NM of the crossing point and below 5 kt (`CROSSING_NEAR_NM`). A route along a runway edge
+  or past a runway end (within 0.01 NM) could give a false "hold short".
+- **Runway configs** (KSFO `runway_configs`, from general knowledge): Ground may send you to 1L while SimBrief
+  planned 28L (the SID may not fit). Any new call site must pass `use=` or use `runway.session_runway`.
+- **Runway requests** (`flow.runway_request`): approved up to 10 kt tailwind (`REQUEST_MAX_TAILWIND_KT`), no
+  traffic check; the approval sticks for that airport+direction for the whole session. Approach requests reset the
+  vectors. "Runway" must be heard by STT ("request runway one three" / "request ILS one three").
+- **Approach/Departure chatter for AI** (`tracker._radar_event`): departure check-in at 2000 ft AGL, approach call
+  7-15 NM out heading roughly at the field (within 100 degrees), "contact tower" inside 10 NM. Real AI on STAR
+  downwind legs may be missed or called late; only the first APP/DEP frequency in the YAML carries this chatter.
+- **Conditional line-up / automatic takeoff clearance** (`sequence.wait_for_takeoff`, `flow.takeoff_when_clear`):
+  the takeoff clearance comes by itself as soon as nobody is on the runway or inside 3 NM final; if the landing AI
+  rolls out slowly it may come late, if AI positions jump it may come early.
+- **Speed control** (`enroute._speed_text`): `AIRSPEED_INDICATED` units unverified (falls back to ground speed,
+  which is off by the wind). Speeds: 210 on vectors, 180 on the intercept, 160 with traffic < 6 NM ahead.
+- **Ground conflicts** (`ground.py`): straight-line prediction for 30 s from the actual movement, called after 2
+  ticks in a row (`PERSIST_TICKS`), within 65 m (`CONFLICT_NM`). Real AI turns a lot on taxiways: false
+  "give way" calls are the main risk; also missed ones when an AI turns into you. Only on Ground.
+- **Progressive taxi** (`taxi.turn_calls`): the turn is said ~150 m before it (`TURN_CALL_NM`); off the computed
+  route the calls are meaningless (only said near a turn point, so mostly silent). Turn side from the path ±3
+  nodes: dense or odd graph geometry can give the wrong side.
+- **Approach names** (`navdb.approach_type`): plain, then Z, Y, X: the controller's real choice may differ. GPS
+  rows with suffix A/D in the sim db are treated as STARs/SIDs (an airport whose only RNAV approach is coded that
+  way would lose it).
+- **STAR descent**: SimBrief often leaves `star_ident` empty (Valen's SABE-SAAR plan has none) -> no "descend via".
+  FAA "descend via" turns the level-bust monitor off until the next assigned altitude.
+- **VFR flight following** (`following.py`): ends only near a LOADED airport (8 NM, below 3000 ft AGL); flying to an
+  airport that isn't loaded, nobody terminates the service. The squawk must be set exactly.
+- **KSFO runway thresholds** now come from the sim db (`navdb.enrich`): "on final"/"on the runway" at KSFO changed
+  because of it (was all on the reference point before).
+- **Readback stemming** (`readback._stem` drops a final "e"): more replies may count as acknowledgements.
+- **"Say again"** (main.py `_SAY_AGAIN`): repeats the last transmission of the position you're on, word for word;
+  if the last thing on that frequency was a controller call made by the watcher, that is what gets repeated.
+- **Holding** (`holding.py`): published holds from the Navigraph db (AIRAC 1801) within 50 NM of the fix, else
+  "inbound track <current bearing to the fix>, right turns"; FAA hold direction = opposite the inbound course
+  (8-point compass, may not match the chart's wording); level = the cleared level or the current altitude rounded
+  to 1000 ft; EFC = sim zulu + 15 min. No descent/vectors while holding; released on "request approach" / "ready to
+  leave the hold" or at the EFC. The pilot flies the hold; nothing checks it.
+- **Info answers** (`info.py`): "radio check" -> "read you five" (FAA "loud and clear"), "time check", "say QNH /
+  wind" answered by code only when the call asks nothing else; the wind is the surface wind main.py keeps (when
+  high or far it is the airport's, not the wind at the aircraft).
+- **Line up and wait behind a departure** (`sequence.wait_for_takeoff`): an aircraft on the runway faster than
+  30 kt and within 20 degrees of the runway heading counts as rolling; a slow AI backtracking the same way could be
+  mistaken for it. The takeoff clearance follows when it is above 200 ft or off the runway.
+- **AI traffic cache** (`SimConnectSource._ai_records`): one SimConnect AI request per 0.8 s, at least 30 NM wide;
+  if the sim struggles with a big AI list at a busy airport, lower `AI_MIN_REACH_M`.
+- **STT wording**: "take off", "down wind", "cross wind", "up wind" are joined before any check
+  (`readback._normalize`); the STT prompt lists this session's phrases (`audio/stt.py`): watch whether a longer
+  prompt changes recognition speed or accuracy.
+- **Own navigation** (`enroute.own_nav_request`): "request own navigation / full procedure / ... via DOKMU" stops
+  the vectors; the approach clearance comes inside 25 NM (`OWN_NAV_CLEAR_NM`) once the descent was given. The fix
+  after "via" is taken as heard (not checked against the approach's transitions); "request vectors" goes back.
+- **Whole-flight test** (tests/test_whole_flight.py): SABE -> SAAR in the fake sim with zero LLM calls; if a real
+  flight says something extra, add that step to this test.
+- **VFR departure to a compass direction** ("departure to the north", "northbound departure"): turn side from
+  the runway's magnetic heading (within 30 degrees: straight out); marks the flight as a VFR departure (no
+  Departure handoff).
+- **Voices**: `voices/blacklist.txt` keys must match `tools/voice_samples.py` names exactly.
+
 ## A. Make it real on Valen's PC (Phases 0-1)
 1. **Environment.** DONE: Windows venv, `pip install -e .[dev,sim,audio]`, 49 tests pass.
 2. **Own telemetry from MSFS 2024.** WORKING: squawk encoding fixed (commit 2300896). Loose ends: the `VERIFY` notes in `sim/simconnect_source.py` (heading radians guard, wind/pressure units) were never formally ticked off; check them with `tools/probe_own.py` if a value looks wrong.
@@ -93,7 +176,17 @@ The plan for the next session is in docs/NEXT_SESSION.md.
      point). Speed control: vectors "reduce speed to two one zero knots", intercept 180, or 160 + "traffic to follow,
      Airbus three twenty on six mile final" when an AI on final is closer than 6 NM; speed is a readback item;
      indicated airspeed from `AIRSPEED_INDICATED` (VERIFY), ground speed if unknown.
-   - TODO: STAR/approach procedures; holding (needs a hold fix; rare in the sim).
+   - 2026-10-06 (3): approach names from the sim's db with the chart suffix ("cleared ILS Zulu approach runway 13";
+     the db's GPS rows with suffix A/D are STARs/SIDs, no longer counted as RNAV approaches), FAA order "cleared ILS
+     runway two eight left approach"; STAR from SimBrief (`plan.star`, ICAO name from the route) -> area control
+     "descend via the SERFR four arrival" (FAA; no level watched) / ICAO "descend via ASADO eight quebec arrival to
+     flight level one zero zero". VFR flight following (`following.py`): "request flight following" / "flight
+     information service" on a radar position -> squawk, "radar contact (ICAO identified), eight miles south of San
+     Francisco, altimeter ...", then near the field "contact <X> Tower" or "radar service terminated, squawk VFR
+     (7000), frequency change approved".
+   - 2026-10-06 (4): holding on request (`holding.py`, published holds from the Navigraph db), runway requests
+     (`flow.runway_request` + `runway.session_runway`: one place decides the runway for this pilot), "say again"
+     repeats the last transmission word for word, radio/time checks and QNH/wind questions by code (`info.py`).
 9d. **Airports load themselves** DONE in code (2026-10-06, `world.py`): no `--airport` needed with `--sim` (the
     airport you are on is found in the sim's scenery db, inside its area first; else airports/*.yaml, else
     OurAirports); spawning or tuning somewhere new loads that airport (a frequency no loaded airport has -> the
@@ -144,7 +237,10 @@ The plan for the next session is in docs/NEXT_SESSION.md.
     accent voices (5b). 2026-10-06 (2): Approach/Departure chatter (AI checks in climbing through 2000 ft AGL ->
     "radar contact, climb ..."; arrival 7-15 NM -> "descend to ..., cleared ILS approach runway X" / "expect visual
     approach"; established inside 10 NM -> "contact tower ..."), one queued exchange per aircraft per position.
-    Next: ground conflicts (give way).
+    2026-10-06 (3): ground conflicts with the user (`ground.py`, 30 s straight-line prediction, < 65 m): "give way
+    to the Airbus three twenty from the left"; head-on "hold position, ... opposite direction" -> "continue taxi" once
+    it is behind; progressive taxi ("request progressive taxi" / "unfamiliar with the airport": "I'll call your turns",
+    then "turn left on Delta" ~150 m before each taxiway change, from the route's nodes).
 13. **Traffic sequencing (VFR focus).** FIRST SLICE DONE (2026-10-05 audit, `sequence.py`, tests/test_sequence.py): code computes who is on the runway and on final for the runway in use (thresholds from OurAirports, now in the YAMLs), tells Tower whether takeoff/landing clearance is ALLOWED, and a guard replaces any "cleared for takeoff/to land" the model still gives ("hold position, traffic on two miles final" / "number two, traffic to follow..."). Rules: arrival inside 3 NM or anyone on the runway blocks takeoff; anyone closer on final or on the runway blocks landing. Fake sim: `/final 3 [rwy]`, `/onrwy`, `/notraffic`. TODO: pattern positions (downwind/base), departures still climbing out, line up and wait, verify with real AI traffic (own aircraft is now filtered by SimConnect object id, VERIFY).
     VFR circuit IN PROGRESS (2026-10-06): `src/atc/pattern.py` is written (inbound -> "join left downwind runway 31,
     wind, QNH, report downwind" / FAA "enter left downwind ..., report midfield downwind", straight-in when lined up;

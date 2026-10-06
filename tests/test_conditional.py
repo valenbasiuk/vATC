@@ -108,3 +108,24 @@ def test_vfr_turnout_is_kept_in_the_delayed_clearance():
     said = cb.tick(now=30.0)
     assert said.startswith("Lima Victor Alfa Bravo Charlie, left turn approved, wind") and \
         said.endswith("runway three one, cleared for takeoff.")
+
+
+def test_line_up_and_wait_behind_a_departure_rolling():
+    apt, world, sim, s, cb, rwy = _setup()
+    lat, lon = _at(apt, rwy, 0.4, 0.0)
+    sim.add_traffic(Traffic("ARG1234", lat, lon, apt.elevation_ft, 110.0, rwy.heading_deg, True, type="A320"))
+    r = handle(apt, sim, None, _Quiet(), cb.history, "Aeroparque Tower, Martinair 4133, ready for departure",
+               session=s, world=world)
+    assert r == f"{CS}, Aeroparque Tower, line up and wait runway three one."
+    assert check_readback(r, "line up and wait 31, Martinair 4133").status == "correct"
+    sim.clear_traffic()  # airborne and gone
+    assert cb.tick(now=40.0) == f"{CS}, wind three two zero degrees one zero knots, runway three one, cleared for takeoff."
+
+
+def test_slow_aircraft_on_the_runway_is_not_a_departure():
+    apt, world, sim, s, cb, rwy = _setup()
+    lat, lon = _at(apt, rwy, 0.8, 0.0)
+    sim.add_traffic(Traffic("ARG1234", lat, lon, apt.elevation_ft, 12.0, rwy.heading_deg, True))  # rolling out
+    r = handle(apt, sim, None, _Quiet(), cb.history, "Aeroparque Tower, Martinair 4133, ready for departure",
+               session=s, world=world)
+    assert r == f"{CS}, Aeroparque Tower, hold position, traffic on the runway."

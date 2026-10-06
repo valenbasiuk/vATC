@@ -25,6 +25,8 @@ class FasterWhisperSTT:
             hotwords=hotwords or None,
             # Biasing toward aviation vocabulary helps a lot with callsigns and phraseology.
             initial_prompt="Air traffic control radio. Runway, taxi, hold short, cleared for takeoff, "
-            "downwind, base, final, squawk, QNH, readback, Cessna, niner, tree, fife. " + hint,
+            "downwind, base, final, touch and go, full stop, left turnout, squawk, QNH, altimeter, readback, "
+            "holding short, progressive taxi, flight following, request holding, radio check, say again, "
+            "Cessna, niner, tree, fife. " + hint,
         )
         return " ".join(s.text.strip() for s in segments).strip()

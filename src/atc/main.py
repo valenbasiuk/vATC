@@ -20,7 +20,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import atis, enroute, factcheck, flow, monitor, pattern, phrase, weather
+from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -30,13 +30,13 @@ from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
 from atc.models import Airport
 from atc.readback import _normalize, check_readback, is_acknowledgement, readback_missing
-from atc.runway import runway_in_use
+from atc.runway import session_runway
 from atc.sequence import context_lines as sequence_context
 from atc.sequence import guard, runway_status
 from atc.session import Session
 from atc.sim.base import SimSource
 from atc.chatter import RadioBus, exchange_for
-from atc.taxi import departure_route, handle_crossing, handle_taxi
+from atc.taxi import departure_route, handle_crossing, handle_taxi, progressive_event
 from atc.tracker import TrafficTracker
 from atc.traffic import is_traffic_question, traffic_reply
 from atc.world import World, load_world
@@ -105,12 +105,26 @@ def handle(
         reply = flow.wrong_station(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "requesting Delivery frequency" / "frequency change": from the files, never invented
         reply = flow.frequency_request(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "request own navigation" / "full procedure" / "RNAV via DOKMU": no vectors
+        reply = enroute.own_nav_request(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "request runway 13" / "request ILS 13": approved (then used everywhere) or unable
+        reply = flow.runway_request(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "request hold at DOTNE" / "request approach" out of the hold
+        reply = holding.handle(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # radio check, time check, "say QNH / wind"
+        reply = info.handle(session, airport, facility, own, pilot_text)
+    if reply is None:  # VFR "request flight following": squawk, then "radar contact, <position>" by the watcher
+        reply = following.handle(session, world, airport, facility, own, pilot_text)
     if reply is None and plan is not None:  # IFR clearance is code's job: issue, readback check, correction
         reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
     if reply is None:
         reply = handle_push(session, airport, facility, pilot_text)
     if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
         reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
+    if reply is None and _SAY_AGAIN.search(_normalize(pilot_text)) and history \
+            and session.last_role == session._key(facility.role):
+        # "say again": the last transmission of this position, word for word (never the model's paraphrase)
+        reply = f"{cs}, I say again, {_instruction(history[-1][1], cs, station)}"
     traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
     if reply is None:  # VFR circuit, before the readback check ("left downwind 31" repeats Tower's own words)
         reply = pattern.handle(session, airport, facility, own, pilot_text, traffic, preferred)
@@ -149,8 +163,8 @@ def handle(
         return say(reply)
 
     # Fixed-form calls with facts from code: traffic information, taxi, check-ins, takeoff/landing.
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred,
-                        use="departure" if own.on_ground and not session.landed else "arrival")
+    rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session,
+                         "departure" if own.on_ground and not session.landed else "arrival")
     if is_traffic_question(_normalize(pilot_text), pilot_text):
         reply = traffic_reply(cs, own, sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
     if reply is None:
@@ -163,7 +177,7 @@ def handle(
         return say(reply)
 
     context = build_context(own, traffic, airport, cs, facility.role, session.first_contact(facility.role),
-                            preferred_runway=preferred)
+                            preferred_runway=preferred, runway=rwy)
     if facility.role == "ground" and own.on_ground and rwy is not None:
         via = departure_route(world.taxi.get(airport.icao), airport, rwy, own)
         if via and not airport.taxi_routes.get(rwy.ident):
@@ -171,7 +185,7 @@ def handle(
                 "No taxi route on file: give the taxi clearance without naming any taxiway.",
                 f"TAXI ROUTE to runway {rwy.ident} (computed from the airport map, treat as fact): via {via}")
     plan_lines = context_lines(session, airport, facility) + monitor.context_lines(session) + \
-        pattern.context_lines(session) + pattern.transit_lines(pilot_text)
+        pattern.context_lines(session) + pattern.transit_lines(pilot_text) + _state_lines(session)
     if plan and plan.is_ifr and session.clearance == "confirmed" and own.squawk != plan.squawk \
             and facility.role in ("tower", "departure", "approach"):
         plan_lines.append(f"  TRANSPONDER WRONG: the pilot squawks {own.squawk}, assigned {plan.squawk}. "
@@ -214,6 +228,31 @@ def handle(
         print(f"[sequence guard replaced: {reply}]")
         reply = safe
     return say(reply, llm_s)
+
+
+def _state_lines(session: Session) -> list[str]:
+    """What code already decided for this pilot, so a free-form model reply never contradicts it."""
+    lines = []
+    for key, ident in session.runway_requests.items():
+        icao, use = key.split(":")
+        lines.append(f"  Runway {ident} for {use} at {icao} was approved on the pilot's request.")
+    if session.holding:
+        lines.append(f"  The pilot is HOLDING at {session.holding} (cleared by software); don't give vectors or an "
+                     "approach clearance unless they ask to leave the hold.")
+    if session.own_nav is not None:
+        lines.append("  Own navigation approved: the pilot flies the approach procedure; no vectors.")
+    if session.following:
+        lines.append("  VFR flight following / flight information service active (radar identified).")
+    if session.takeoff_waiting:
+        lines.append(f"  Takeoff clearance for runway {session.takeoff_waiting[0]} is held until the runway is free; "
+                     "software gives it. Never say 'cleared for takeoff' yourself.")
+    if session.crossings:
+        lines.append(f"  The pilot must hold short of runway {session.crossings[0][0]}; software clears the crossing.")
+    return (["PILOT STATE (decided by software, treat as fact)"] + lines) if lines else []
+
+
+_SAY_AGAIN = re.compile(r"\b(?:say again|repeat (?:that|last|your last|the last|please)|did not copy|didn t copy|"
+                        r"unable to copy|didn t get that)\b")
 
 
 def _instruction(last_atc: str, cs: str, station: str) -> str:
@@ -305,7 +344,7 @@ class _Callbacks:
             if near is not None:  # keep the airport's surface wind current (ATIS, chatter, runway in use)
                 _surface_wind(own, near, self.session)
             flow.track(self.session, self.world, own, now)
-            text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
+            text = flow.squawk_now_correct(self.session, own, self.world) or flow.repeat_or_clear(self.session, own, now)
             if text is None:  # "hold position, traffic on short final" earlier: the takeoff clearance, now free
                 text = flow.takeoff_when_clear(self.session, self.world, own,
                                                self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
@@ -318,6 +357,15 @@ class _Callbacks:
                     text = f"{self.session.spoken_callsign}, {body}."
             if text is None and self.session.pending_handoff is None:  # level bust, 7700, go-around
                 text = monitor.radar_event(self.session, self.world, own,
+                                           self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM), now)
+            if text is None and self.session.pending_handoff is None:  # out of the hold at the EFC time
+                text = holding.watcher_event(self.session, self.world, own, now)
+            if text is None and self.session.pending_handoff is None:  # VFR flight following ends near the field
+                text = following.watcher_event(self.session, self.world, own)
+            if text is None and self.session.pending_handoff is None:  # progressive taxi: the next turn
+                text = progressive_event(self.session, self.world, own)
+            if text is None and self.session.pending_handoff is None:  # taxiing: give way / hold position
+                text = ground.ground_event(self.session, self.world, own,
                                            self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM), now)
             if text is None and self.session.pending_handoff is None:  # VFR circuit: downwind again, zone left
                 text = pattern.watcher_event(self.session, self.world, own,

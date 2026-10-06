@@ -249,3 +249,19 @@ def test_new_lap_needs_a_new_clearance_even_if_the_touchdown_was_missed():
     assert c.say("LV-ABC downwind, full stop") == f"{CS}, number one, report final."
     c.sim.place_on_leg(c.apt, "final", 2)
     assert c.tick() == [f"{CS}, wind three two zero degrees one zero knots, runway three one, cleared to land."]
+
+
+def test_departure_to_a_compass_direction_gets_the_turn():
+    c = Circuit("SABE")  # runway 31 (true 310... magnetic 320 with VAR 10 W)
+    c.at(-0.05, 0, 0, 0, ground=True, gs=0)
+    r = c.say("Aeroparque Tower, LV-ABC, ready for departure, request departure to the north")
+    assert r.startswith(f"{CS}, Aeroparque Tower, after departure, right turn northbound approved, wind")
+    assert c.session.vfr_departure
+    c2 = Circuit("SABE")
+    c2.at(-0.05, 0, 0, 0, ground=True, gs=0)
+    r = c2.say("Aeroparque Tower, LV-ABC, ready for departure, southbound departure")
+    assert ", after departure, left turn southbound approved, " in r
+    c3 = Circuit("SABE")
+    c3.at(-0.05, 0, 0, 0, ground=True, gs=0)
+    assert ", northwest" + "bound departure approved, " in c3.say("Aeroparque Tower, LV-ABC, ready, northwestbound "
+                                                                   "departure")

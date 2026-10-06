@@ -17,6 +17,7 @@ import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
+from atc import phrase
 from atc.geo import distance_nm
 from atc.models import Airport, Frequency
 
@@ -95,11 +96,14 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
             airport.mag_var_deg = round(float(row[0]), 1)
             added.append(f"magvar {airport.mag_var_deg}")
     approaches: dict[str, list[str]] = {}
-    for rwy, typ in con.execute("select runway_name, type from approach where airport_id=?", (aid,)):
-        if rwy and typ:
-            approaches.setdefault(str(rwy).zfill(2), [])
-            if typ not in approaches[str(rwy).zfill(2)]:
-                approaches[str(rwy).zfill(2)].append(typ)
+    # "ILS Z" keeps its suffix (said "ILS Zulu"); GPS rows with suffix A / D are the STARs and SIDs, not approaches
+    for rwy, typ, suffix in con.execute("select runway_name, type, suffix from approach where airport_id=?", (aid,)):
+        if not rwy or not typ or (typ == "GPS" and suffix in ("A", "D")):
+            continue
+        name = f"{typ} {suffix}" if suffix else typ
+        approaches.setdefault(str(rwy).zfill(2), [])
+        if name not in approaches[str(rwy).zfill(2)]:
+            approaches[str(rwy).zfill(2)].append(name)
     if approaches and not airport.approaches:
         airport.approaches = approaches
     # Runway thresholds the YAML lacks (KSFO had none): without them every runway sits on the airport reference
@@ -243,12 +247,15 @@ _APPROACH_WORDS = {"ILS": "ILS", "LOC": "localizer", "RNAV": "RNAV", "GPS": "RNA
 
 
 def approach_type(airport: Airport, runway: str) -> str | None:
-    """Best approach to that runway as a controller says it: 'ILS', else 'RNAV', 'VOR DME', ... None = unknown."""
+    """Best approach to that runway as a controller says it: 'ILS', else 'RNAV', 'VOR DME', ... None = unknown.
+    With several of a kind the chart suffix is said: 'ILS Zulu' (the plain one first, then Z, Y, X...)."""
     want_key = runway.upper().lstrip("0")  # OurAirports says "1L", the sim "01L"
     kinds = next((v for k, v in airport.approaches.items() if k.upper().lstrip("0") == want_key), [])
     for want in ("ILS", "RNAV", "GPS", "LOC", "VORDME", "VOR", "NDBDME", "NDB"):
-        if want in kinds:
-            return _APPROACH_WORDS[want]
+        suffixes = [k.split()[1] if len(k.split()) > 1 else "" for k in kinds if k.split()[0] == want]
+        if suffixes:
+            best = min(suffixes, key=lambda s: (s != "", -ord(s[0]) if s else 0))
+            return _APPROACH_WORDS[want] + (f" {phrase._NATO.get(best, best).title()}" if best else "")
     return None
 
 

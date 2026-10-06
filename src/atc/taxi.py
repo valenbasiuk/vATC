@@ -373,7 +373,39 @@ def exit_side(net: TaxiNetwork | None, airport: Airport, rwy: Runway, spoken_exi
 
 
 def is_taxi_request(norm: str) -> bool:
-    return "taxi" in norm and ("request" in norm or "ready" in norm)
+    return ("taxi" in norm and ("request" in norm or "ready" in norm)) or _is_progressive(norm)
+
+
+def _is_progressive(norm: str) -> bool:
+    """FAA "request progressive (taxi)", ICAO "unfamiliar with the airport" / "detailed taxi instructions"."""
+    return "progressive" in norm or "unfamiliar" in norm or "detailed taxi" in norm
+
+
+def _edge_name(net: TaxiNetwork, a: int, b: int) -> str | None:
+    return next((n for to, _, n in net.edges.get(a, ()) if to == b), None)
+
+
+def turn_calls(net: TaxiNetwork, nodes: list[int]) -> list[tuple[float, float, str]]:
+    """Progressive taxi: (lat, lon, "turn left on Bravo") at each node of the path where the taxiway changes.
+    The side comes from the path's direction a little before and after the turn (graph nodes can be dense)."""
+    from atc.geo import bearing_deg
+
+    names = [_edge_name(net, a, b) for a, b in zip(nodes, nodes[1:])]
+    out: list[tuple[float, float, str]] = []
+    cur = None
+    for i, name in enumerate(names):
+        if name is None:
+            continue
+        if cur is not None and name != cur and 0 < i < len(nodes) - 1:
+            before = net.nodes[nodes[max(0, i - 3)]]
+            at = net.nodes[nodes[i]]
+            after = net.nodes[nodes[min(len(nodes) - 1, i + 3)]]
+            d = (bearing_deg(*at, *after) - bearing_deg(*before, *at)) % 360
+            words = spoken_route([name])
+            side = "right" if 25 <= d <= 180 else "left" if 180 < d <= 335 else None
+            out.append((at[0], at[1], f"turn {side} on {words}" if side else f"continue on {words}"))
+        cur = name
+    return out
 
 
 def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: str, net: TaxiNetwork | None,
@@ -407,7 +439,14 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
         if stand is None:
             return None  # nothing to assign: let the model answer from CONTEXT
         via = arrival_route(net, own, stand)
-        return f"{cs}{station}, taxi to stand {phrase.spell(stand).lower()}" + (f" via {via}" if via else "") + "."
+        tail = ""
+        if _is_progressive(norm) and net is not None and stand in net.stands:
+            start = net.nearest(own.lat, own.lon)
+            found = route_path(net, start, {net.stands[stand]}) if start is not None else None
+            session.progressive = turn_calls(net, found[1]) if found else []
+            tail = ", I'll call your turns" if session.progressive else ""
+        return f"{cs}{station}, taxi to stand {phrase.spell(stand).lower()}" + (f" via {via}" if via else "") + \
+            f"{tail}."
     if rwy is None:
         return None
     via = departure_route(net, airport, rwy, own)
@@ -416,6 +455,9 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
     found = None if airport.taxi_routes.get(rwy.ident) else _departure_path(net, airport, rwy, own)
     session.crossings = crossings(net, airport, found[1], rwy, (own.wind_dir_deg, own.wind_kt)) if found else []
     hold = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
+    session.progressive = turn_calls(net, found[1]) if found and _is_progressive(norm) else []
+    if session.progressive:
+        hold += ", I'll call your turns"
     if faa:
         return f"{cs}{station}, runway {rw}, taxi" + (f" via {via}" if via else "") + f"{hold}{qnh}."
     return f"{cs}{station}, taxi to holding point runway {rw}" + (f" via {via}" if via else "") + f"{hold}{qnh}."
@@ -457,3 +499,24 @@ def wanted_stand(pilot_text: str) -> str | None:
     compact = re.sub(r"(?<=\d) (?=\d)", "", _normalize(pilot_text))
     m = _STAND.search(compact)
     return m.group(1).upper() if m else None
+
+
+TURN_CALL_NM = 0.08  # progressive taxi: the turn is said this far before it (~150 m)
+
+
+def progressive_event(session, world, own: OwnState) -> str | None:
+    """The next turn of a progressive taxi, when the aircraft gets close to it. Turns already passed (a later one
+    is nearer) are dropped; the list ends with the aircraft off the ground or off the Ground frequency."""
+    if not session.progressive:
+        return None
+    picked = world.pick(own)
+    if not own.on_ground or picked is None or picked[1].role not in ("ground", "tower"):
+        session.progressive = []
+        return None
+    dists = [distance_nm(own.lat, own.lon, lat, lon) for lat, lon, _ in session.progressive]
+    nearest = min(range(len(dists)), key=dists.__getitem__)
+    if dists[nearest] > TURN_CALL_NM or own.gs_kt < 2:
+        return None
+    _, _, text = session.progressive[nearest]
+    del session.progressive[: nearest + 1]
+    return f"{session.spoken_callsign}, {text}."

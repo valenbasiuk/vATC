@@ -180,3 +180,56 @@ def test_station_named_by_its_sim_name():
     ksfo.frequencies[0].spoken = "NorCal Approach"
     a, fac = _station(world, ksfo, "radar", ["norcal", "approach"])
     assert fac.freq.spoken == "NorCal Approach"
+
+
+def test_descend_via_the_star():
+    import dataclasses
+
+    from atc import enroute
+    from atc.readback import check_readback
+
+    plan = FlightPlan(callsign="UAL436", rules="I", aircraft_type="B738", origin="KLAX", destination="KSFO",
+                      destination_name="San Francisco", alternate=None, route="DCT SERFR4", sid=None,
+                      sid_transition=None, cruise_ft=33000, planned_runway=None, star="SERFR4")
+    world, ksfo = _ksfo_world(plan)
+    sim = FakeSim(ksfo, callsign="UAL436")
+    sim.update(lat=ksfo.lat - 0.6, lon=ksfo.lon, alt_msl_ft=25000, alt_agl_ft=25000, on_ground=False, heading_deg=0)
+    s = Session(callsign="UAL436", plan=plan, faa=True)
+    assert enroute.descent_text(s, ksfo, sim.own(), "control") == \
+        "United four thirty-six, descend via the SERFR four arrival."
+    assert s.center_descent and s.cleared_level_ft is None  # the chart's altitudes: no single level to watch
+    # ICAO: "descend via (STAR) to (level)", and the level must be read back
+    sabe = load_world("SABE", ROOT / "airports", None, use_navdb=False).get("SABE")
+    s2 = Session(callsign="MAR4133", plan=dataclasses.replace(plan, destination="SABE", star="ASADO8Q"),
+                 telephony="Martinair")
+    r = enroute.descent_text(s2, sabe, sim.own(), "control")
+    assert r == "Martinair four one three three, descend via ASADO eight quebec arrival to flight level one zero zero."
+    assert check_readback(r, "descend via ASADO 8Q to flight level 100, Martinair 4133").status == "correct"
+    assert check_readback(r, "descend via ASADO 8Q to flight level 110, Martinair 4133").status == "incomplete"
+
+
+def test_vfr_flight_following():
+    from atc import following
+    from atc.main import _Callbacks
+
+    world, ksfo = _ksfo_world()
+    app = next(f.mhz for f in ksfo.frequencies if f.kind == "APP")
+    sim = FakeSim(ksfo, callsign="N123AB")
+    sim.update(com1_mhz=app, lat=ksfo.lat - 8 / 60, lon=ksfo.lon, alt_msl_ft=3500, alt_agl_ft=3490, on_ground=False,
+               heading_deg=160, gs_kt=110, qnh_hpa=1013.2)
+    s = Session(callsign="N123AB")
+    cb = _Callbacks(world, sim, _Quiet(), [], s)
+    r = handle(ksfo, sim, None, _Quiet(), cb.history, "NorCal Approach, N123AB, Cessna 172, 8 south of San Francisco, "
+               "3500, request flight following to Monterey", session=s, world=world)
+    code = following.vfr_code(s)
+    assert r.startswith("November one two three Alfa Bravo, ") and r.endswith(f"squawk {phrase.digits(code)}.")
+    assert handle(ksfo, sim, None, _Quiet(), cb.history, f"squawk {code}, N123AB", session=s, world=world) is None
+    assert cb.tick(now=0.0) is None  # transponder not set yet
+    sim.update(squawk=code)
+    assert cb.tick(now=1.0) == ("November one two three Alfa Bravo, radar contact, eight miles south of San Francisco, "
+                                "altimeter two niner niner two.")
+    sim.update(lat=ksfo.lat - 5 / 60, alt_msl_ft=2000, alt_agl_ft=1990)  # descending into San Francisco
+    said = cb.tick(now=20.0)
+    assert said.startswith("November one two three Alfa Bravo, contact San Francisco Tower ") and \
+        said.endswith(", good day.")
+    assert not s.following

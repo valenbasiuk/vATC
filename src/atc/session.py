@@ -81,8 +81,20 @@ class Session:
     circuit_intention: str | None = None  # "full stop" / "touch and go" / "circuits"
     touched_down: bool = False
     zone_left: bool = False
+    # ground conflicts (ground.py)
+    ground_called: set[str] = field(default_factory=set)  # AI already told about (once each)
+    ground_hold: str | None = None  # AI we were told to hold position for: "continue taxi" once it has passed
+    last_ground_call: float = -1e9
+    ground_seen: dict = field(default_factory=dict)  # callsign ('' = us) -> (lat, lon, time) of the last tick
+    ground_conflict: dict = field(default_factory=dict)  # callsign -> ticks in a row a conflict was predicted
+    progressive: list = field(default_factory=list)  # taxi.py: turns still to call (lat, lon, text)
     crossings: list = field(default_factory=list)  # taxi.py: runways still to cross (ident, lat, lon)
     takeoff_waiting: tuple | None = None  # (runway, clearance text) Tower gives when the runway is free
+    following: bool = False  # VFR flight following / flight information service (following.py)
+    runway_requests: dict[str, str] = field(default_factory=dict)  # "ICAO:departure" -> runway the pilot got
+    holding: str | None = None  # fix the pilot is holding at (holding.py): no descent or vectors meanwhile
+    holding_until: float | None = None  # watcher time of the expected further clearance
+    own_nav: str | None = None  # flying the approach procedure on their own ("" = no fix named): no vectors
     vfr_departure: bool = False  # asked for a turn-out / said VFR: "frequency change approved", not Departure
 
     def __post_init__(self) -> None:

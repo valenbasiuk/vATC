@@ -30,3 +30,14 @@ def test_requests_and_unrelated_calls_are_not_readbacks():
 def test_runway_sides_distinguished():
     assert check_readback("Runway 09 left, cleared to land.", "Runway 09 right cleared to land").status == "incomplete"
     assert check_readback("Runway 09 left, cleared to land.", "Runway 09 left cleared to land").status == "correct"
+
+
+def test_stt_spellings_of_compound_words():
+    from atc.readback import _normalize, check_readback
+
+    atc = "Martinair four one three three, wind three two zero degrees one zero knots, runway three one, cleared for " \
+          "takeoff."
+    for said in ("cleared for take off runway 31, Martinair 4133", "cleared for take-off 31, Martinair 4133"):
+        assert check_readback(atc, said).status == "correct"
+    assert _normalize("Left down wind runway 31") == "left downwind runway 31"
+    assert _normalize("cross wind leg") == "crosswind leg"

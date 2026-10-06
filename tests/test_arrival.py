@@ -165,3 +165,20 @@ def test_intercept_behind_traffic_on_final_slows_to_160_and_names_it():
     s2 = Session(callsign="MAR4133", plan=PLAN, telephony="Martinair")
     sim.update(ias_kt=175.0)  # already slow (indicated airspeed, ground speed says 220): no speed restriction
     assert "reduce speed" not in intercept_text(s2, saar, rwy, sim.own(), [])
+
+
+def test_own_navigation_no_vectors_then_the_approach_clearance():
+    world, sim, s, saar = _setup()
+    cb = _Callbacks(world, sim, _Quiet(), [], s)
+    sim.update(com1_mhz=118.7)
+    s.contacted.add("SAAR:tower")
+    s.descent_given = True
+    s.assign_level(3000, 20000)
+    _fly(sim, -33.30, -60.25, 8000, toward=(saar.lat, saar.lon))
+    r = handle(saar, sim, None, _Quiet(), cb.history, "Rosario Tower, Martinair 4133, request RNAV approach runway 02 "
+               "via DOKMU", session=s, world=world)
+    assert r == f"{CS}, own navigation approved, expect runway zero two."  # no approach types in the test YAML
+    assert s.own_nav == "DOKMU" and s.runway_requests == {"SAAR:arrival": "02"}
+    _fly(sim, -33.05, -60.45, 4000, toward=(saar.lat, saar.lon))  # 20 NM: would have been vectors
+    assert cb.tick(now=10) == f"{CS}, cleared approach runway zero two via DOKMU, report established."
+    assert cb.tick(now=11) is None

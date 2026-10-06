@@ -159,3 +159,19 @@ def test_standby_missed_if_pilot_left_the_frequency():
 def test_say_again_repeats_clearance():
     replies, _ = _run(["Testa Delivery, Martinair 4133, request IFR clearance", "Say again, Martinair 4133"])
     assert replies[1].startswith("Martinair four one three three, I say again, cleared to Rosario")
+
+
+def test_simbrief_sid_and_star_names(tmp_path):
+    import json
+
+    from atc.flightplan import load_simbrief
+
+    ofp = {"general": {"sid_ident": "ATOV4B", "sid_trans": "ATOVO", "star_ident": "ASAD8Q", "star_trans": "ESKON",
+                       "route_ifps": "ATOVO4B ATOVO W5 ESKON ASADO8Q", "initial_altitude": "20000"},
+           "atc": {"callsign": "MAR4133", "flight_rules": "I"}, "aircraft": {"icaocode": "F100"},
+           "origin": {"icao_code": "SABE", "plan_rwy": "31"},
+           "destination": {"icao_code": "SAAR", "name": "Rosario", "plan_rwy": "02", "trans_alt": "3000"}}
+    path = tmp_path / "ofp.json"
+    path.write_text(json.dumps(ofp), encoding="utf-8")
+    plan = load_simbrief(path)
+    assert (plan.sid, plan.star, plan.star_transition) == ("ATOVO4B", "ASADO8Q", "ESKON")  # ICAO names from the route

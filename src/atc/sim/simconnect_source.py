@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 
 from atc.geo import distance_nm, heading_diff
 from atc.models import OwnState, Traffic
+
+AI_CACHE_S = 0.8  # one AI request per watcher tick (1 s) at most
+AI_MIN_REACH_M = int(30 * 1852)  # ask for at least 30 NM so the next callers' smaller radii hit the cache
 
 
 class SimConnectSource:
@@ -28,6 +32,7 @@ class SimConnectSource:
         self._sm = SimConnect(library_path=library_path) if library_path else SimConnect()
         self._ai = None
         self._ai_failed = False
+        self._ai_cache: tuple[float, int, list] | None = None  # (time, radius_m, records) of the last AI read
         self._own_object_id: int | None = None
         self._own_record = None  # the user's aircraft as the AI list shows it: ATC ID, airline, flight number
         self._aq = AircraftRequests(self._sm, _time=500)
@@ -96,7 +101,7 @@ class SimConnectSource:
             # filter around the airport ourselves.
             reach_m = int((radius_nm + distance_nm(own.lat, own.lon, center_lat, center_lon)) * 1852)
             out = []
-            for rec in self._ai.read(reach_m):
+            for rec in self._ai_records(reach_m):
                 # Confirmed: the user's own aircraft IS in the list (KJFK probe). Drop it by object id once
                 # known; learn the id from a position match. The own read can be up to 500 ms old
                 # (AircraftRequests cache), so the match allows for 1 s of travel at the current speed.
@@ -115,6 +120,18 @@ class SimConnectSource:
             self._ai_failed = True
             print(f"[traffic disabled: {exc}]", file=sys.stderr)
             return []
+
+    def _ai_records(self, reach_m: int) -> list:
+        """One SimConnect AI request serves every caller for AI_CACHE_S (the watcher asks up to six times per tick:
+        takeoff, radar, ground, circuit, arrival, chatter), as long as the cached radius covers the new one."""
+        now = time.monotonic()
+        c = self._ai_cache
+        if c is not None and now - c[0] < AI_CACHE_S and c[1] >= reach_m:
+            return c[2]
+        reach = max(reach_m, AI_MIN_REACH_M)
+        recs = self._ai.read(reach)
+        self._ai_cache = (now, reach, recs)
+        return recs
 
     def identity(self) -> dict | None:
         """The user's aircraft as the sim's ATC knows it (from the aircraft/flight settings): ATC ID (tail number),

@@ -17,7 +17,7 @@ from atc import phrase
 from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.readback import _normalize
-from atc.runway import magnetic, runway_in_use
+from atc.runway import magnetic, session_runway
 
 LEVEL_BUST_FT = 300.0
 GO_AROUND_NM = 1.0  # Tower orders a go-around inside this when the runway is not clear
@@ -73,9 +73,7 @@ def radar_event(session, world, own: OwnState, traffic: list[Traffic], now: floa
     if facility.role == "tower" and (session.go_around_at is None or now - session.go_around_at > 120):
         from atc.sequence import runway_status
 
-        plan = session.plan
-        rwy = runway_in_use(target, own.wind_dir_deg, own.wind_kt,
-                            plan.dest_runway if plan and plan.destination == target.icao else None, use="arrival")
+        rwy = session_runway(target, own.wind_dir_deg, own.wind_kt, session, "arrival")
         if rwy is not None:
             st = runway_status(target, rwy, own, traffic)
             if st.own_final_nm is not None and st.own_final_nm <= GO_AROUND_NM and st.occupied_by:
@@ -112,10 +110,7 @@ def handle_pilot(session, world, airport: Airport, facility: Facility, own: OwnS
             return None  # the follow-up (nature, intentions, souls on board) is free-form: the model answers
         bits = [f"{cs}, roger {kind}"]
         if not own.on_ground and facility.role in ("tower", "approach") and airport.runways:
-            plan = session.plan
-            rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt,
-                                plan.dest_runway if plan and plan.destination == airport.icao else None,
-                                use="arrival")
+            rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "arrival")
             if rwy is not None:
                 wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, airport.faa)
                 bits.append(f"runway {phrase.runway(rwy.ident, airport.faa)} available" + (f", {wind}" if wind else ""))
@@ -136,7 +131,7 @@ def handle_pilot(session, world, airport: Airport, facility: Facility, own: OwnS
                     session.handoffs_done.add(f"{airport.icao}:approach_after_go_around")
                     return f"{cs}, roger, follow the published missed approach procedure, {app[1]}."
                 return f"{cs}, roger, follow the published missed approach procedure, expect vectors for another approach."
-            rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, use="arrival")
+            rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "arrival")
             side = (rwy.pattern_direction if rwy and rwy.pattern_direction else "left")
             return f"{cs}, roger, climb to circuit altitude, report {side} downwind" + (
                 f" runway {phrase.runway(rwy.ident, airport.faa)}" if rwy else "") + "."

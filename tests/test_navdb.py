@@ -45,7 +45,10 @@ def test_frequencies_variation_and_approaches_from_the_sim():
     assert ("GND", 121.85) in kinds and ("TWR", 118.7) in kinds
     assert saar.frequencies[0].mhz == 118.7  # the YAML's own frequency stays first
     assert saar.mag_var_deg is not None and -11 < saar.mag_var_deg < -9
-    assert navdb.approach_type(saar, "20") == "ILS" and navdb.approach_type(saar, "02") == "RNAV"
+    assert navdb.approach_type(saar, "20") == "ILS Zulu" and navdb.approach_type(saar, "02") == "RNAV"
+    sabe = _apt("SABE")  # SIDs and STARs (GPS rows with suffix A / D) are not approaches
+    assert navdb.approach_type(sabe, "13") == "ILS Zulu" and navdb.approach_type(sabe, "31") == "RNAV"
+    assert all(not k.startswith("GPS") for v in sabe.approaches.values() for k in v)
     sabe = _apt("SABE")
     assert sabe.mag_var_deg == -10  # the YAML (LIDO chart) wins over the sim's -10.2
 

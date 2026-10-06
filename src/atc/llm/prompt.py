@@ -104,9 +104,11 @@ def build_context(
     role: str | None = None,
     first_contact: bool | None = None,
     preferred_runway: str | None = None,
+    runway=None,
 ) -> str:
     """Live state block, rebuilt every turn and prepended to the pilot's transmission.
-    `preferred_runway`: the flight plan's departure runway (see runway.runway_in_use)."""
+    `preferred_runway`: the flight plan's departure runway (see runway.runway_in_use); `runway`: the runway code
+    already chose for this pilot (runway.session_runway: also an approved request), which wins over both."""
     d = distance_nm(own.lat, own.lon, airport.lat, airport.lon)
     brg = bearing_deg(airport.lat, airport.lon, own.lat, own.lon)
     lines = [
@@ -124,9 +126,9 @@ def build_context(
     if first_contact is not None:
         lines.append("This is your first contact with this pilot: say your station name once." if first_contact
                      else "Not first contact: do not say your station name.")
-    lines += _weather_lines(own, airport, preferred_runway)
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
-                        use="departure" if own.on_ground else "arrival")
+    lines += _weather_lines(own, airport, preferred_runway, runway)
+    rwy = runway or runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
+                                  use="departure" if own.on_ground else "arrival")
     if role == "ground" and rwy is not None and own.on_ground:
         route = airport.taxi_routes.get(rwy.ident)
         lines.append(f"TAXI ROUTE to runway {rwy.ident} (from the charts, treat as fact): {route}" if route
@@ -156,7 +158,7 @@ def _relative(own: OwnState, t: Traffic) -> str:
     return out
 
 
-def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None = None) -> list[str]:
+def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None = None, runway=None) -> list[str]:
     out: list[str] = []
     if own.wind_dir_deg is not None and own.wind_kt is not None:
         if own.wind_kt <= 3:
@@ -172,8 +174,8 @@ def _weather_lines(own: OwnState, airport: Airport, preferred_runway: str | None
             out.append(f"QNH: {own.qnh_hpa:.0f} hectopascals")
     else:
         out.append('Altimeter/QNH: NOT AVAILABLE (if asked, reply "altimeter not available"; never state one)')
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
-                        use="departure" if own.on_ground else "arrival")
+    rwy = runway or runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred_runway,
+                                  use="departure" if own.on_ground else "arrival")
     if rwy is not None:
         out.append(f"Runway in use (computed from wind, treat as fact): {rwy.ident}")
     return out

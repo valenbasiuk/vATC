@@ -19,6 +19,7 @@ FINAL_MAX_NM = 10.0
 FINAL_MAX_AGL_FT = 3500.0
 SHORT_FINAL_NM = 3.0  # an arrival inside this blocks a takeoff in front of it (about 60-80 s out)
 FINAL_TRACK_DEG = 30.0  # heading within this of the runway heading
+ROLL_KT = 30.0  # faster than this along the runway: a takeoff roll (line up and wait behind it)
 RUNWAY_HALF_WIDTH_NM = 0.03  # ~55 m: on the runway, not at the holding point or on a parallel taxiway
 FT_PER_NM = 6076.1
 
@@ -78,6 +79,7 @@ class RunwayStatus:
     finals: list[tuple[str, float]] = field(default_factory=list)  # other traffic, nearest first
     own_final_nm: float | None = None
     types: dict[str, str] = field(default_factory=dict)  # callsign -> spoken type, when the sim gives one
+    departing: list[str] = field(default_factory=list)  # of occupied_by: on the takeoff roll in our direction
 
     def _what(self, callsign: str) -> str:
         return self.types.get(callsign) or "traffic"
@@ -121,6 +123,9 @@ def wait_for_takeoff(st: RunwayStatus, airport: Airport, own: OwnState) -> str |
     rw = phrase.runway(st.runway.ident, faa)
     lined_up = on_runway(airport, st.runway, own)
     short = [(c, d) for c, d in st.finals if d <= SHORT_FINAL_NM]
+    if st.occupied_by and set(st.occupied_by) <= set(st.departing) and not short and not lined_up:
+        # only a departure rolling ahead of us: line up behind it, the takeoff clearance follows once it's airborne
+        return f"runway {rw}, line up and wait" if faa else f"line up and wait runway {rw}"
     if not faa and short and not st.occupied_by and not lined_up:
         cs, nm = short[0]
         return f"behind the landing {st._what(cs)} on {_miles(nm)} final, line up and wait runway {rw}, behind"
@@ -148,6 +153,8 @@ def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Tr
             st.types[t.callsign] = typ
         if on_runway(airport, rwy, t):
             st.occupied_by.append(t.callsign)
+            if t.gs_kt >= ROLL_KT and heading_diff(t.heading_deg, rwy.heading_deg) <= 20:
+                st.departing.append(t.callsign)
             continue
         d = final_distance(airport, rwy, t)
         if d is not None:

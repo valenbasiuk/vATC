@@ -45,6 +45,8 @@ class FlightPlan:
     fixes: list[Fix] = field(default_factory=list)  # route waypoints in order (no TOC/TOD/airports)
     tod: tuple[float, float] | None = None  # planned top of descent position
     dest_trans_alt_ft: int | None = None  # destination transition altitude (Argentina: 3000 ft)
+    star: str | None = None  # ICAO name of the arrival, e.g. "SERFR4" (None = no STAR filed)
+    star_transition: str | None = None
 
     @property
     def squawk(self) -> str:
@@ -76,6 +78,10 @@ def load_simbrief(path: Path) -> FlightPlan:
     first = route.split()[0] if route else ""
     if sid and first[:4] == sid[:4] and first[-2:] == sid[-2:]:
         sid = first
+    star = (gen.get("star_ident") or "").strip() or None
+    last = route.split()[-1] if route else ""  # the ICAO STAR name is the last route_ifps token
+    if star and last[:4] == star[:4] and last[-2:] == star[-2:]:
+        star = last
     cruise = gen.get("initial_altitude")
     nav = data.get("navlog") or []
     nav = nav.get("fix", []) if isinstance(nav, dict) else nav
@@ -110,4 +116,6 @@ def load_simbrief(path: Path) -> FlightPlan:
         fixes=fixes,
         tod=tod,
         dest_trans_alt_ft=int(ta) if ta.isdigit() else None,
+        star=star,
+        star_transition=(gen.get("star_trans") or "").strip() or None,
     )

@@ -195,7 +195,8 @@ def _radar_exchange(ev: Event, cs: str, voice: int, wind) -> Exchange | None:
         rw = phrase.runway(rwy.ident, faa)
         alt = int(-(-(a.elevation_ft + 2000) // 1000) * 1000)
         app = approach_type(a, rwy.ident)
-        cleared = (f"cleared {app} runway {rw} approach" if faa else f"cleared {app} approach runway {rw}") if app             else f"expect visual approach runway {rw}"
+        cleared = (f"cleared {app} runway {rw} approach" if faa else f"cleared {app} approach runway {rw}") if app \
+            else f"expect visual approach runway {rw}"
         atc = f"{cs}, {phrase.descend(alt, a)}, {cleared}"
         lines = [("ATC", atc + ".", None),
                  (cs, f"{phrase.descend(alt, a).capitalize()}, {cleared}, {cs}.", voice)]

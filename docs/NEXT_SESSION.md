@@ -1,7 +1,7 @@
 # Next session plan (written 2026-10-06, end of the second session that day)
 
 Start here after a `/clear`: read CLAUDE.md (auto-loaded), then this file, then work the steps in order.
-State: 203 tests pass, 6/6 scenarios pass. Valen committed part of this session as "wait for takeoff" (46f765e);
+State: 230 tests pass, 6/6 scenarios pass. Valen committed part of this session as "wait for takeoff" (46f765e);
 the rest (speed control, worldwide FIRs, voice samples, docs, ...) is uncommitted on disk (`git status`). Don't
 commit unless Valen asks.
 
@@ -15,8 +15,15 @@ commit unless Valen asks.
   runway thresholds from the sim's db (KSFO had none), `runway_configs` (KSFO departs 1L/1R, lands 28L/28R).
 - Approach/Departure chatter for AI; ICAO conditional line-up + takeoff clearance said once the runway is free;
   speed control on the arrival (210 / 180 / 160 + traffic to follow); tools/voice_samples.py + voices/blacklist.txt.
+- Then (Valen couldn't fly): ground conflicts (`ground.py`), approach names with suffix ("ILS Zulu") + FAA order,
+  STAR from SimBrief ("descend via ..."), progressive taxi, VFR flight following (`following.py`).
+- Then: runway requests, "say again", radio/time checks + QNH/wind by code, holding on request, own navigation,
+  line up and wait behind a rolling departure, VFR "departure to the north", STT compound words, AI request cache,
+  whole-flight test, PILOT STATE context lines. Every feature's in-sim risk: docs/ROADMAP.md "WATCH IN THE SIM".
 
 ## 1. Things only the real sim can tell (Valen flies, brings the terminal output)
+**Read docs/ROADMAP.md "WATCH IN THE SIM" first**: every feature built without the sim, what may go wrong in MSFS,
+and the constant to tune. When Valen brings output, match it against that list.
 Ask Valen to run (voice, PTT, no --airport, no --simbrief first, then with it):
 `python -m atc --sim --voice voices/en_US-libritts-high.onnx --ptt [--ptt-joy N --ptt-joy-device D]`
 - Carried over: spawn at a random airport (YAML written? Ground answers?), callsign from the sim's ATC settings,
@@ -30,6 +37,11 @@ Ask Valen to run (voice, PTT, no --airport, no --simbrief first, then with it):
   frequency above FL245, then Los Angeles Center. These are AIRAC 1801 frequencies: do they match what MSFS shows?
 - New: speed control: does `AIRSPEED_INDICATED` come back in knots? `tools/probe_own.py` prints `ias_kt` now.
 - New: Approach chatter for real AI arrivals (on the Approach frequency): too chatty? Wrong runway?
+- New: taxi with real AI moving around: "give way ..." / "hold position" -> "continue taxi": false alarms? (the
+  prediction is straight lines for 30 s; real AI turns a lot on taxiways.) Progressive taxi: "request progressive
+  taxi" and listen for "turn left on ..." before each turn (too early / late?).
+- New: a SimBrief plan with a STAR into SABE or KSFO: does SimBrief fill `star_ident`, and is "descend via ..."
+  said by Center? A VFR flight with "request flight following" (US) / "flight information service" (Argentina).
 - `python tools/voice_samples.py` once, listen, put bad voices in voices/blacklist.txt (or `accent:Spanish` if the
   Argentine controllers are too hard to understand).
 Fix what comes back before step 3.
@@ -37,17 +49,20 @@ Fix what comes back before step 3.
 ## 2. Questions for Valen (don't guess)
 - SARC approach: the sim's db gives APP 118.1 / 118.7 "Resistencia"; the VATSIM manual has SARE_APP 119.4
   "Resistencia Control". Which does MSFS show at SARC? Only then change SARC.yaml.
+- VFR reporting points (SABE river points, SARC): neither the sim db nor the Navigraph db has VFR reporting points
+  in Argentina; joins via a reporting point need them by hand (AIP VAC) in the airport YAML.
 - SABE circuit: the YAML says "ASSUMED: pattern 1000 ft AGL, left traffic". Real Aeroparque VFR procedures differ
   (river reporting points); ask what he flies, or take it from the AIP VAC.
 - KSFO `runway_configs` (west plan 28s/1s, SE plan 19s/10s) were written from general knowledge: fine for him?
 
 ## 3. Next realism items (in this order unless Valen asks otherwise)
-1. Ground conflicts: AI taxiing across the user's route -> "give way to the Airbus from the left" / "hold position".
-2. Approach procedures by name from the sim's db ("cleared ILS Z runway 13"), STAR in the clearance/descent.
-3. Holding when the runway stays blocked (needs a hold fix: the STAR's last fix or the IAF).
-4. Progressive taxi on request ("request progressive"): turn-by-turn from the route nodes (taxi.route_path).
-5. VFR flight following in the US ("squawk 4521, radar contact, altimeter ...") and VFR departures from Class B.
-6. Spanish phraseology + Spanish ATC voice (roadmap 20) once Valen wants it.
+Done: ground conflicts, approach names, STAR descent, progressive taxi, VFR flight following, holding on request,
+own navigation, runway requests. Left:
+1. Fix what the real sim shows (WATCH IN THE SIM list) before adding more.
+2. ATC-initiated holding when the runway stays blocked (holding.py has the hold phrasing; needs a trigger).
+3. VFR departures from Class B/C (US: "remain outside Class Bravo", departure frequency for VFR with following).
+4. Check "via <fix>" against the approach's transitions in the sim db (`transition` table) and say the IAF.
+5. Spanish phraseology + Spanish ATC voice (roadmap 20) once Valen wants it.
 
 ## Notes for whoever picks this up
 - Git Bash heredocs on this PC eat backslash-newline line continuations even with a quoted delimiter

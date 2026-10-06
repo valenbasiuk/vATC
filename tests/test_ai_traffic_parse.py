@@ -58,3 +58,30 @@ def test_other_messages_are_ignored():
 def test_to_traffic_falls_back_to_object_id_when_no_callsign():
     t = to_traffic(unpack_record(9, _record_bytes(atc_id=b"", ground=1)))
     assert t.callsign == "AI9" and t.on_ground is True
+
+
+def test_one_simconnect_ai_request_per_tick(monkeypatch):
+    """The watcher asks for traffic several times per tick: only one SimConnect request goes out (cache 0.8 s)."""
+    import atc.sim.simconnect_source as scs
+    from atc.models import OwnState
+    from atc.sim.ai_traffic import AiRecord
+
+    class Reader:
+        calls = 0
+
+        def read(self, radius_m):
+            Reader.calls += 1
+            return [AiRecord(7, -34.56, -58.41, 500.0, 140.0, 310.0, False, "LV-XYZ")]
+
+    src = object.__new__(scs.SimConnectSource)
+    src._ai, src._ai_failed, src._ai_cache = Reader(), False, None
+    src._own_object_id, src._own_record = None, None
+    monkeypatch.setattr(src, "own", lambda: OwnState(-34.6, -58.5, 3000, 2980, 150, 90, False, 118.85))
+    clock = [100.0]
+    monkeypatch.setattr(scs.time, "monotonic", lambda: clock[0])
+    for _ in range(6):
+        assert [t.callsign for t in src.traffic(-34.56, -58.41, 15)] == ["LV-XYZ"]
+    assert Reader.calls == 1
+    clock[0] += 1.0  # next tick
+    src.traffic(-34.56, -58.41, 15)
+    assert Reader.calls == 2

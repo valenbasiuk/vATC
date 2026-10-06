@@ -22,7 +22,7 @@ from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.pattern import is_transit
 from atc.readback import _normalize
-from atc.runway import magnetic, runway_in_use
+from atc.runway import magnetic, session_runway
 from atc.sequence import along_cross, final_distance, on_runway, runway_status, wait_for_takeoff
 
 DEP_HANDOFF_AGL_FT = 700.0  # Tower -> Departure once climbing through this
@@ -91,8 +91,7 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         return due(f"{apt.icao}:ground", _contact(apt, ("GND", "RMP")))
     # before departure: Ground -> Tower once stopped next to the departure end of the runway in use
     if fac.role == "ground" and own.on_ground and not session.landed and own.gs_kt < 5:
-        pref = plan.planned_runway if plan and plan.origin == apt.icao else None
-        rwy = runway_in_use(apt, own.wind_dir_deg, own.wind_kt, pref, use="departure")
+        rwy = session_runway(apt, own.wind_dir_deg, own.wind_kt, session, "departure")
         if rwy is not None:
             along, cross = along_cross(apt, rwy, own.lat, own.lon)
             if -0.3 <= along <= 0.4 and 0.03 < cross <= 0.15:
@@ -137,7 +136,7 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         return None
     # destination Approach -> Tower, once established on final (or close in and low)
     if fac.role == "approach":
-        rwy = runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None, use="arrival")
+        rwy = session_runway(dest, own.wind_dir_deg, own.wind_kt, session, "arrival")
         established = rwy is not None and final_distance(dest, rwy, own) is not None
         if established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000):
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
@@ -167,13 +166,21 @@ def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) ->
     return f"{session.spoken_callsign}, {clearance}."
 
 
-def squawk_now_correct(session, own: OwnState) -> str | None:
-    """After "squawk 2235" on check-in: "radar contact" as soon as the transponder shows it."""
+def squawk_now_correct(session, own: OwnState, world=None) -> str | None:
+    """After "squawk 2235" on check-in: "radar contact" as soon as the transponder shows it (VFR flight following:
+    "radar contact, five miles north of San Carlos, altimeter ...")."""
     freq = session.awaiting_squawk
     if freq is None:
         return None
     if abs(own.com1_mhz - freq) >= 0.005:
         session.awaiting_squawk = None  # left the frequency
+        return None
+    if session.following:
+        from atc import following
+
+        if own.squawk == following.vfr_code(session):
+            session.awaiting_squawk = None
+            return following.identified(session, world, own)
         return None
     if session.plan and own.squawk == session.plan.squawk:
         session.awaiting_squawk = None
@@ -197,6 +204,69 @@ def repeat_or_clear(session, own: OwnState, now: float) -> str | None:
 
 _AT_HOLDING_POINT = re.compile(
     r"\b(?:on|at|reaching|approaching|arrived at|established at|holding at|now at) (?:the )?holding point\b")
+
+
+_SIDE_WORD = r"(left|right|center|centre|l|r|c)"
+_REQ_RUNWAY = re.compile(rf"\brequest(?:ing)?\b.*?\brunway (\d{{1,2}}) ?{_SIDE_WORD}?\b")
+_REQ_APPROACH = re.compile(rf"\brequest(?:ing)?\b.*?\b(?:ils|rnav|gps|vor|visual|localizer|loc)\b(?: approach)?"
+                           rf"(?: (?:for|to))?(?: runway)? (\d{{1,2}}) ?{_SIDE_WORD}?\b")
+
+
+def runway_request(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
+    """'Request runway 13 for departure' / 'request ILS 13': approved when the wind allows it (up to
+    runway.REQUEST_MAX_TAILWIND_KT of tailwind), then every later decision uses that runway (runway.session_runway);
+    else "unable, tailwind one five knots, runway three one in use". With a taxi request in the same call the
+    approval is silent: the taxi clearance itself names the runway."""
+    from atc.readback import join_digits
+    from atc.runway import find_runway, headwind_kt, request_ok
+    from atc.taxi import is_taxi_request
+
+    norm = join_digits(_normalize(pilot_text))
+    m = _REQ_RUNWAY.search(norm) or _REQ_APPROACH.search(norm)
+    if m is None:
+        return None
+    departing = own.on_ground and not session.landed
+    if departing and facility.role not in ("clearance", "ground", "tower"):
+        return None
+    if not own.on_ground and facility.role not in ("approach", "departure", "control", "tower"):
+        return None
+    if own.on_ground and session.landed:
+        return None
+    use = "departure" if departing else "arrival"
+    ident = m.group(1).zfill(2) + {"left": "L", "right": "R", "center": "C", "centre": "C"}.get(
+        m.group(2) or "", (m.group(2) or "").upper())
+    faa = airport.faa
+    cs = session.spoken_callsign
+    pre = f"{cs}, {callsign_for(airport, facility)}" if session.is_first_contact(facility.role) else cs
+
+    def reply(text: str) -> str:
+        session.first_contact(facility.role)
+        return f"{pre}, {text}."
+
+    combined = is_taxi_request(norm) or re.search(r"\b(push|pushback|start|clearance)\b", norm) is not None
+    rwy = find_runway(airport, ident)
+    if rwy is None:
+        return None if combined else reply("say again the runway")
+    if not request_ok(rwy, own.wind_dir_deg, own.wind_kt):
+        if combined:
+            return None
+        tail = -headwind_kt(own.wind_dir_deg, own.wind_kt, rwy.heading_deg)
+        now = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, use)
+        in_use = f", runway {phrase.runway(now.ident, faa)} in use" if now is not None else ""
+        return reply(f"unable runway {phrase.runway(rwy.ident, faa)}, tailwind {phrase.digits(str(round(tail)))} "
+                     f"knots{in_use}")
+    key = f"{airport.icao}:{use}"
+    changed = session.runway_requests.get(key) != rwy.ident
+    session.runway_requests[key] = rwy.ident
+    if combined:
+        return None
+    if use == "arrival" and facility.role != "tower":
+        if changed and not session.landing_cleared:  # new runway: vectors and the approach clearance again
+            session.vectors_given = session.intercept_given = False
+        from atc.enroute import _approach
+
+        return reply(f"expect {_approach(airport, rwy)}")
+    return reply(f"runway {phrase.runway(rwy.ident, faa)} approved")
 
 
 def at_holding_point(session, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
@@ -338,9 +408,8 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     first = session.is_first_contact(facility.role)
     station = callsign_for(airport, facility)
     arriving = plan is not None and plan.destination == airport.icao
-    pref = plan.dest_runway if arriving and plan else preferred
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, pref,
-                        use="departure" if own.on_ground and not session.landed else "arrival")
+    rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session,
+                         "departure" if own.on_ground and not session.landed else "arrival")
 
     # a plain check-in on a radar position (a check-in with a request or a question goes to the model)
     from atc.enroute import _arrival_radar, checkin_extra

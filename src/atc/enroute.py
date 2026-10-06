@@ -17,8 +17,8 @@ import re
 from atc import phrase
 from atc.geo import bearing_deg, distance_nm, heading_diff, offset_nm
 from atc.models import Airport, Facility, OwnState, Runway, Traffic
-from atc.readback import _normalize
-from atc.runway import magnetic, runway_in_use
+from atc.readback import _normalize, join_digits
+from atc.runway import magnetic, session_runway
 from atc.sequence import _miles, final_distance, on_runway, runway_status, threshold
 
 VECTORS_NM = 25.0  # the arrival radar starts vectoring inside this
@@ -60,8 +60,7 @@ def _dest(world, session) -> Airport | None:
 
 
 def _arrival_runway(dest: Airport, own: OwnState, session) -> Runway | None:
-    plan = session.plan
-    return runway_in_use(dest, own.wind_dir_deg, own.wind_kt, plan.dest_runway if plan else None, use="arrival")
+    return session_runway(dest, own.wind_dir_deg, own.wind_kt, session, "arrival")
 
 
 def _qnh(own: OwnState, faa: bool) -> str | None:
@@ -97,7 +96,14 @@ def descent_due(session, dest: Airport, own: OwnState, role: str | None) -> bool
 def descent_text(session, dest: Airport, own: OwnState, role: str | None = None) -> str:
     if _center_stage(session, dest, own, role):
         session.center_descent = True
+        star = session.plan.star if session.plan else None
+        if star and dest.faa:  # FAA "descend via": the altitudes on the chart; the radar can't check a single level
+            session.cleared_level_ft = session.cleared_dir = None
+            return f"{session.spoken_callsign}, descend via the {phrase.procedure(star)} arrival."
         session.assign_level(CENTER_DESCENT_FT, own.alt_msl_ft)
+        if star:  # ICAO "descend via (STAR) to (level)"
+            return f"{session.spoken_callsign}, descend via {phrase.procedure(star)} arrival to " \
+                f"{phrase.level(CENTER_DESCENT_FT, dest)}."
         return f"{session.spoken_callsign}, {phrase.descend(CENTER_DESCENT_FT, dest)}."
     alt = _arrival_altitude(dest, session)
     rwy = _arrival_runway(dest, own, session)
@@ -119,7 +125,44 @@ def _approach(dest: Airport, rwy: Runway) -> str:
 
     rw = f"runway {phrase.runway(rwy.ident, dest.country == 'US')}"
     kind = approach_type(dest, rwy.ident)
+    if kind and dest.faa:  # FAA order: "ILS runway two eight left approach"
+        return f"{kind} {rw} approach"
     return f"{kind} approach {rw}" if kind else rw
+
+
+def _cleared(app: str) -> str:
+    """'cleared ILS Zulu approach runway one three'; without a known approach type 'cleared approach runway ...'."""
+    return f"cleared {app}" if app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer")) else f"cleared approach {app}"
+
+
+OWN_NAV_CLEAR_NM = 25.0  # flying the procedure on their own: the approach clearance this far out
+
+
+def own_nav_request(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
+    """'Request own navigation' / 'request the full procedure' / 'request RNAV approach via DOKMU' on the arrival
+    radar: no vectors; "own navigation approved, expect RNAV approach runway zero two"; the approach clearance
+    follows inside OWN_NAV_CLEAR_NM ("cleared RNAV approach runway zero two via DOKMU, report established")."""
+    if own.on_ground or not _arrival_radar(world, session, airport, facility) or session.plan is None:
+        return None
+    norm = _normalize(pilot_text)
+    if "request" not in norm or not re.search(r"\b(?:own navigation|full procedure|full approach|"
+                                              r"no vectors|via [a-z]{2,5}\d{0,2})\b", norm):
+        return None
+    via = re.search(r"\bvia ([a-z]{2,5}\d{0,2})\b", norm)
+    session.own_nav = via.group(1).upper() if via else ""
+    session.vectors_given = session.intercept_given = False
+    session.holding = session.holding_until = None  # "ready to leave the hold, request own navigation"
+    dest = _dest(world, session)
+    named = re.search(r"\brunway (\d{1,2}) ?(left|right|center|l|r|c)?\b", join_digits(norm))
+    if named and dest is not None:  # "... RNAV approach runway 02 via DOKMU": that runway too, if the wind allows
+        from atc.runway import find_runway, request_ok
+
+        r = find_runway(dest, named.group(1).zfill(2) + (named.group(2) or "")[:1].upper())
+        if r is not None and request_ok(r, own.wind_dir_deg, own.wind_kt):
+            session.runway_requests[f"{dest.icao}:arrival"] = r.ident
+    rwy = _arrival_runway(dest, own, session) if dest is not None else None
+    expect = f", expect {_approach(dest, rwy)}" if rwy is not None else ""
+    return f"{session.spoken_callsign}, own navigation approved{expect}."
 
 
 def _past_tod(session, dest: Airport, own: OwnState) -> bool:
@@ -194,9 +237,7 @@ def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState, traffic=(
     """Turn onto a 30-degree intercept (or straight in if already lined up) and the approach clearance, with the
     speed: 180 kt, or 160 kt and the traffic to follow when someone is on final close ahead."""
     _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
-    app = _approach(dest, rwy)
-    cleared = f"cleared {app}" if app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer")) else \
-        f"cleared approach {app}"
+    cleared = _cleared(_approach(dest, rwy))
     alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)), dest)
     session.intercept_given = True
     cs = session.spoken_callsign
@@ -279,6 +320,7 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         rwy = _arrival_runway(dest, own, session)
         if rwy is None:
             return None
+        session.own_nav = None  # back to vectors after "own navigation"
         if not session.descent_given and own.alt_msl_ft > _arrival_altitude(dest, session) + 1000:
             return descent_text(session, dest, own, facility.role)
         if _due_for_intercept(dest, rwy, own):
@@ -344,14 +386,20 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
                 f"runway {phrase.runway(rwy.ident, dest.country == 'US')}, cleared to land."
     if not _arrival_radar(world, session, airport, facility):
         return None
-    if session.is_first_contact(facility.role):
-        return None  # let the pilot check in first
+    if session.is_first_contact(facility.role) or session.holding:
+        return None  # let the pilot check in first; in the hold: nothing until it is left (holding.py)
     # descent at the planned top of descent (area control: to FL100 first; the arrival radar: the final altitude)
     if descent_due(session, dest, own, facility.role):
         return descent_text(session, dest, own, facility.role)
     if rwy is None or final_distance(dest, rwy, own) is not None:
         return None
     d_dest = distance_nm(own.lat, own.lon, dest.lat, dest.lon)
+    if session.own_nav is not None:  # flying the procedure on their own: no vectors, the approach clearance at 25 NM
+        if session.descent_given and not session.intercept_given and d_dest <= OWN_NAV_CLEAR_NM:
+            session.intercept_given = True
+            via = f" via {spoken_fix(session.own_nav)}" if session.own_nav else ""
+            return f"{session.spoken_callsign}, {_cleared(_approach(dest, rwy))}{via}, report established."
+        return None
     if session.descent_given and not session.intercept_given and d_dest <= VECTORS_NM + 10:
         if _due_for_intercept(dest, rwy, own):
             return intercept_text(session, dest, rwy, own, traffic)

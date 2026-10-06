@@ -20,9 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-from atc import phrase
 from atc.airports.schema import load_airport
-from atc.runway import magnetic
 from atc.audio.tts import PrintTTS
 from atc.llm.client import PROVIDERS, OpenAICompatLLM, env_key
 from atc.main import handle
@@ -78,7 +76,8 @@ def _question(airports_dir: Path):
     s = Session(callsign="MAR4133", telephony="Martinair")
     s.where = "SABE"
     s.contacted.add("SABE:ground")
-    return apt, sim, s, "Aeroparque Ground, Martinair 4133, say the wind and QNH please"
+    # wind/QNH questions are answered by code since 2026-10-06 (info.py); this one still reaches the model
+    return apt, sim, s, "Aeroparque Ground, Martinair 4133, say the runway in use and the temperature please"
 
 
 def _score_question(reply: str) -> list[str]:
@@ -86,17 +85,17 @@ def _score_question(reply: str) -> list[str]:
     fails = []
     if not low.startswith("martinair four one three three"):
         fails.append("does not start with the spoken callsign")
-    want = phrase.digits(f"{magnetic(load_airport(Path('airports/SABE.yaml')), WIND[0]):03.0f}")  # VAR 10 W: 040
-    if want not in low or "seven" not in low:
-        fails.append(f"wind not {want} degrees seven knots (magnetic)")
-    if "one zero two zero" not in low:
-        fails.append("no QNH one zero two zero")
+    if "three one" not in low and "31" not in low:
+        fails.append("no runway three one (computed from wind 030)")
+    if re.search(r"temperature[^.,]*\b(?:zero|one|two|three|four|five|six|seven|eight|nine|niner|\d)", low):
+        fails.append("stated a temperature it was not given")
     if "aeroparque" in low:
         fails.append("said station name (not first contact)")
     return fails
 
 
-CASES = [("VFR zone transit SARC", _vfr_transit, _score_vfr), ("wind/QNH question SABE", _question, _score_question)]
+CASES = [("VFR zone transit SARC", _vfr_transit, _score_vfr), ("runway/temperature question SABE", _question,
+                                                                   _score_question)]
 
 
 def score(reply: str | None, check) -> list[str]:

@@ -75,3 +75,31 @@ def test_keep_holding_with_traffic_on_short_final():
     r = handle_crossing(s, apt, gnd, sim.own(), "N123AB, holding short runway 27", sim.traffic(0, 0, 50))
     assert r == f"{CS}, hold short of runway two seven, Boeing seven thirty-seven on two mile final."
     assert [c[0] for c in s.crossings] == ["27"]  # still to cross
+
+
+def test_progressive_taxi_calls_the_turns():
+    from atc.taxi import progressive_event, turn_calls
+    from atc.world import World
+
+    apt = _airport()
+    net = TaxiNetwork()
+    # Alfa eastbound, then Bravo north (a left turn), then Charlie east again (a right turn)
+    pts = {1: (-0.01, 0.0), 2: (-0.01, 0.002), 3: (-0.01, 0.004), 4: (-0.008, 0.004), 5: (-0.006, 0.004),
+           6: (-0.006, 0.006), 7: (-0.006, 0.008)}
+    net.nodes = pts
+    for a, b, n in ((1, 2, "A"), (2, 3, "A"), (3, 4, "B"), (4, 5, "B"), (5, 6, "C"), (6, 7, "C")):
+        net.edges.setdefault(a, []).append((b, 100.0, n))
+        net.edges.setdefault(b, []).append((a, 100.0, n))
+    calls = turn_calls(net, [1, 2, 3, 4, 5, 6, 7])
+    assert [t for _, _, t in calls] == ["turn left on Bravo", "turn right on Charlie"]
+    sim = FakeSim(apt, callsign="N123AB")
+    s = Session(callsign="N123AB")
+    s.progressive = calls
+    world = World([apt])
+    sim.update(lat=-0.01, lon=0.0, com1_mhz=121.9, gs_kt=15.0, heading_deg=90.0, on_ground=True)
+    assert progressive_event(s, world, sim.own()) is None  # 0.24 NM before the first turn
+    sim.update(lon=0.0035)
+    assert progressive_event(s, world, sim.own()) == f"{CS}, turn left on Bravo."
+    sim.update(lat=-0.006, lon=0.0045, heading_deg=0.0)
+    assert progressive_event(s, world, sim.own()) == f"{CS}, turn right on Charlie."
+    assert s.progressive == []

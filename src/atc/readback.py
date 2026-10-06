@@ -29,7 +29,13 @@ def _normalize(text: str) -> str:
     t = text.lower().replace("-", " ").replace("pushback", "push back")
     t = re.sub(r"(?<=\d)\.(?=\d)", " decimal ", t)  # "120.6" -> "120 decimal 6", same as when spoken
     t = re.sub(r"[^a-z0-9 ]", " ", t)
-    return " ".join(_DIGITS.get(w, w) for w in t.split())
+    t = " ".join(_DIGITS.get(w, w) for w in t.split())
+    # speech-to-text splits these ("cleared for take off", "left down wind"): one spelling everywhere
+    return re.sub(r"\b(take|down|up|cross) (off|wind)\b",
+                  lambda m: m.group(0).replace(" ", "") if (m.group(1), m.group(2)) in _JOINED else m.group(0), t)
+
+
+_JOINED = {("take", "off"), ("down", "wind"), ("up", "wind"), ("cross", "wind")}
 
 
 def join_digits(t: str) -> str:
@@ -105,8 +111,8 @@ def _taxi_route(t: str, letters_ok: bool) -> frozenset[str] | None:
     """Taxiway designators after 'via' in normalized text: 'via kilo alfa 1' -> {'k', 'a1'}.
     `letters_ok`: also accept bare letters ('via k a'), which is how speech-to-text writes a pilot's readback."""
     m = re.search(r"\bvia ((?:\w+ ?)+?)(?= qnh| altimeter| hold| runway| cleared|$)", t)
-    if not m:
-        return None
+    if not m or re.search(r"\bvia [a-z0-9 ]*?\b(?:arrival|departure|transition|sid|star)\b", t):
+        return None  # "descend via ASADO eight quebec arrival": a procedure, not taxiways
     out: list[str] = []
     prev_designator = False
     for w in m.group(1).split():
@@ -170,7 +176,8 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
         if val:
             items[key] = val
     # an assigned level ("climb flight level two zero zero"); "expect ..." is not an instruction to read back
-    lvl = re.search(r"\b(climb|descend|maintain)\b[a-z ]*?\bflight level (\d{2,3})\b", join_digits(t))
+    lvl = re.search(r"\b(climb|descend|maintain)\b[a-z ]*?\bflight level (\d{2,3})\b", join_digits(t)) or \
+        re.search(r"\b(descend) via [a-z0-9 ]+? to flight level (\d{2,3})\b", join_digits(t))  # via a STAR
     if lvl:
         items["level"] = lvl.group(2)
     # "descend to 3000 feet" (ICAO) or "climb and maintain one one thousand" (FAA, no "feet")
@@ -251,8 +258,10 @@ def readback_missing(atc_text: str | None, pilot_text: str, ignore: tuple[str, .
 
 
 def _stem(w: str) -> str:
-    """'holding' ~ 'hold', 'contacting' ~ 'contact': a readback often changes the verb form."""
-    return w[:-3] if w.endswith("ing") and len(w) > 5 else w
+    """'holding' ~ 'hold', 'contacting' ~ 'contact', 'giving' ~ 'give', 'lining' ~ 'line': a readback often changes
+    the verb form (both sides are stemmed the same way, so a dropped final 'e' only has to agree with itself)."""
+    w = w[:-3] if w.endswith("ing") and len(w) > 5 else w
+    return w[:-1] if w.endswith("e") and len(w) > 3 else w
 
 
 def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:

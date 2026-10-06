@@ -110,3 +110,31 @@ def runways_in_use(airport: Airport, wind_dir_deg: float | None, wind_kt: float 
         if any(r is one for r in rs):
             return rs
     return [one]
+
+
+REQUEST_MAX_TAILWIND_KT = 10.0  # a runway the pilot asked for is approved (and kept) up to this tailwind
+
+
+def find_runway(airport: Airport, ident: str | None) -> Runway | None:
+    return next((r for r in airport.runways if ident and _same(r.ident, ident)), None)
+
+
+def request_ok(rwy: Runway, wind_dir_deg: float | None, wind_kt: float | None) -> bool:
+    return wind_dir_deg is None or wind_kt is None or rwy.heading_deg is None \
+        or headwind_kt(wind_dir_deg, wind_kt, rwy.heading_deg) >= -REQUEST_MAX_TAILWIND_KT
+
+
+def session_runway(airport: Airport, wind_dir_deg: float | None, wind_kt: float | None, session,
+                   use: str) -> Runway | None:
+    """The runway for this pilot: one they asked for and got approved (while the wind still allows it), else the
+    flight plan's (SimBrief) runway where it fits, else the airport's runway in use for `use`."""
+    if session is not None:
+        req = find_runway(airport, session.runway_requests.get(f"{airport.icao}:{use}"))
+        if req is not None and request_ok(req, wind_dir_deg, wind_kt):
+            return req
+    plan = getattr(session, "plan", None)
+    pref = None
+    if plan is not None:
+        pref = plan.planned_runway if use == "departure" and plan.origin == airport.icao else \
+            plan.dest_runway if use == "arrival" and plan.destination == airport.icao else None
+    return runway_in_use(airport, wind_dir_deg, wind_kt, pref, use=use)

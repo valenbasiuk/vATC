@@ -12,7 +12,16 @@ docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (s
   KSFO runway thresholds from the sim's db (were missing); separate departure/arrival runways (`runway_configs`,
   KSFO 1L/1R + 28L/28R); Approach/Departure chatter for AI; ICAO conditional line-up + automatic takeoff clearance
   once the runway is free; speed control on the arrival; tools/voice_samples.py + voices/blacklist.txt.
-  203 tests, 6/6 scenarios. All fake-sim / sim-db only: see docs/NEXT_SESSION.md step 1 (real-sim checks).
+  Then (Valen couldn't fly): ground conflicts ("give way to the Airbus from the left", "hold position" -> "continue
+  taxi"), approach names with chart suffix ("ILS Zulu") and FAA order, STAR from SimBrief ("descend via the SERFR
+  four arrival"), progressive taxi ("I'll call your turns" -> "turn left on Delta"), VFR flight following /
+  flight information service (squawk -> "radar contact, 8 miles south of San Francisco" -> Tower or "radar service
+  terminated"). Then: runway requests ("request runway 13" -> approved/unable, one place decides the runway:
+  `runway.session_runway`), "say again" word for word, radio/time checks and QNH/wind questions by code (`info.py`),
+  holding on request (`holding.py`, Navigraph published holds), own navigation (no vectors), line up and wait behind
+  a rolling departure, VFR "departure to the north", STT compound words ("take off"), one SimConnect AI request per
+  tick (cache), a whole SABE -> SAAR flight test, PILOT STATE lines for the model. 230 tests, 6/6 scenarios.
+  All fake-sim / sim-db only: docs/ROADMAP.md "WATCH IN THE SIM" lists the possible in-sim issues per feature.
 - Session 2026-10-06 (Valen: "polish everything, as realistic as SayIntentions"): airports load themselves (spawn
   anywhere, no --airport with --sim; YAML written once from OurAirports or the sim's db), US/FAA phraseology (group
   callsigns "United four thirty-six", altitudes by transition altitude, "climb and maintain", "then as filed", "ground
@@ -101,6 +110,10 @@ src/atc/world.py         all airports of the plan + airspace/*.yaml; tuned frequ
                          (airspace file in reach, else the navdata FIR at your position: navdb.fir_at)
 src/atc/atis.py          ATIS text (ICAO/FAA) + letter state + "information X is now current" check
 src/atc/weather.py       METAR from aviationweather.gov (cached, background thread; ATC_METAR=off)
+src/atc/ground.py        taxi conflicts with moving AI: give way / hold position / continue taxi (watcher)
+src/atc/following.py     VFR flight following: squawk, "radar contact, <position>", termination near the field
+src/atc/holding.py       holds on request (published ones from the Navigraph db), EFC, leaving the hold
+src/atc/info.py          radio check, time check, "say QNH / wind" answered by code
 src/atc/monitor.py       radar watch: level bust, 7700, traffic alerts, go-around; pilot mayday/pan pan/going around
 src/atc/pattern.py       VFR circuit at towered fields: join/straight-in, sequence, touch and go, turn-outs, zone exit
 src/atc/voices.py        voice bank: accent pools from voices/*.onnx; pilot voice by country, one per ATC position
@@ -137,7 +150,7 @@ scenarios/               6 scenarios (YAML; `silence_ok` / `expect_silence` for 
 airports/                SABE, SARC, SAAR, SAAV, KSFO (+ any the world writes when you spawn/tune there); osm/ maps
 airspace/                one per Argentine FIR: SAEF Ezeiza, SARR Resistencia, SACF Cordoba, SAMF Mendoza, SAVF
                          Comodoro Rivadavia (VATSIM Argentina manual); elsewhere the navdata FIRs (AIRAC 1801)
-tests/                   203 tests; synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
+tests/                   230 tests (test_whole_flight.py: SABE -> SAAR end to end, zero LLM calls); synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
                          the LNM db, off the network (ATC_METAR=off) and from writing airport files (AUTO_GENERATE)
 ```
 

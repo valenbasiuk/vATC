@@ -23,7 +23,7 @@ from atc.facility import callsign_for
 from atc.geo import distance_nm, heading_diff
 from atc.models import Airport, Facility, OwnState, Runway, Traffic
 from atc.readback import _normalize
-from atc.runway import magnetic, runway_in_use
+from atc.runway import magnetic, session_runway
 from atc.sequence import _miles, along_cross, final_distance, runway_status, wait_for_takeoff
 
 LEAVE_ZONE_NM = 8.0
@@ -60,6 +60,12 @@ _INBOUND = re.compile(r"\b(?:inbound|for landing|to land|landing|joining|request
                       r"(?:miles|nm|mile) (?:north|south|east|west|northeast|northwest|southeast|southwest)|"
                       r"(?:north|south|east|west) of the field)\b")
 _POSITION = re.compile(r"\b(?:(left|right) )?(downwind|base|final)\b")
+_COMPASS_DEG = {"north": 0, "northeast": 45, "east": 90, "southeast": 135, "south": 180, "southwest": 225,
+                "west": 270, "northwest": 315}
+_DIRS = "north|northeast|east|southeast|south|southwest|west|northwest"
+# "departure to the north" / "northbound departure" / "request north departure"
+_COMPASS_DEP = re.compile(rf"\b(?:departure|depart|departing|leave the zone|leaving the zone) (?:to|towards) the "
+                          rf"({_DIRS})\b|\b({_DIRS})(?:bound)? (?:departure|departing)\b")
 # passing through the zone, not landing: "10 miles south, request to transit the zone northbound" (the model's turn)
 _TRANSIT = re.compile(r"\b(?:transit(?:ing)?|cross(?:ing)? (?:the )?(?:field|zone|airport|control zone|ctr)|"
                       r"overfl(?:y|ying|ight)|over ?fly|through (?:the|your) (?:zone|ctr|airspace|class))\b")
@@ -73,8 +79,7 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
     norm = _normalize(pilot_text)
     cs = session.spoken_callsign
     faa = airport.faa
-    rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, preferred,
-                        use="departure" if own.on_ground else "arrival")
+    rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "departure" if own.on_ground else "arrival")
     if rwy is None:
         return None
     rw = phrase.runway(rwy.ident, faa)
@@ -92,13 +97,20 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
         session.first_contact(facility.role)
         bits = []
         turn = re.search(r"\b(left|right) (?:turn ?out|turn|departure)\b", norm)
+        heading = _COMPASS_DEP.search(norm)
         if want == "circuits" or session.circuit_intention in ("circuits", "touch and go"):
             session.in_circuit = True
             if faa:
                 bits.append(f"make {_side(rwy)} closed traffic")
         elif turn:
             bits.append(f"{turn.group(1)} turn{'out' if faa else ''} approved")
-        if turn or re.search(r"\bvfr\b", norm):
+        elif heading:  # "departure to the north": the turn that gets there from this runway
+            word = heading.group(1) or heading.group(2)
+            d = (_COMPASS_DEG[word] - magnetic(airport, rwy.heading_deg)) % 360 if airport.mag_var_deg is not None \
+                else (_COMPASS_DEG[word] - rwy.heading_deg) % 360
+            side = "" if d <= 30 or d >= 330 else "right turn " if d < 180 else "left turn "
+            bits.append(f"after departure, {side}{word}bound approved" if side else f"{word}bound departure approved")
+        if turn or heading or re.search(r"\bvfr\b", norm):
             session.vfr_departure = True  # leaves the zone on its own: no handoff to Departure
         if wind:
             bits.append(wind)
@@ -204,7 +216,7 @@ def watcher_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
             and session.circuit_intention in ("touch and go", "circuits") and session.touched_down:
         session.landing_cleared = False
         session.touched_down = False
-        rwy = runway_in_use(airport, own.wind_dir_deg, own.wind_kt, use="arrival")
+        rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "arrival")
         side = _side(rwy) if rwy else "left"
         return f"{cs}, report {side} downwind." if not airport.faa else f"{cs}, make {side} closed traffic."
     if own.on_ground and session.landing_cleared:
@@ -212,7 +224,7 @@ def watcher_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
     # in the circuit, on short final, the pilot didn't report final: Tower clears them once the runway is free
     if session.in_circuit and not own.on_ground and not session.landing_cleared:
         wind_dir, wind_kt = session.surface_wind.get(airport.icao) or (own.wind_dir_deg, own.wind_kt)
-        rwy = runway_in_use(airport, wind_dir, wind_kt, use="arrival")
+        rwy = session_runway(airport, wind_dir, wind_kt, session, "arrival")
         if rwy is not None:
             st = runway_status(airport, rwy, own, traffic)
             if st.own_final_nm is not None and st.own_final_nm <= AUTO_CLEAR_NM and st.landing_blocked() is None:
