@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from atc.geo import heading_diff
+from atc.geo import bearing_deg, distance_nm, heading_diff
 from atc.models import Airport, Runway, Traffic
 from atc.sequence import along_cross, final_distance, on_runway
 
@@ -25,7 +25,8 @@ STOPPED_S = 3.0
 @dataclass
 class Track:
     callsign: str
-    phase: str  # parked, taxi_out, holding, lineup, takeoff, departed, arrival, final, rollout, vacated, taxi_in
+    phase: str  # parked, pushback, taxi_out, holding, lineup, takeoff, departed, arrival, final, rollout, vacated,
+    # taxi_in
     since: float
     last: Traffic
     runway: str | None = None
@@ -36,7 +37,7 @@ class Track:
 
 @dataclass
 class Event:
-    kind: str  # taxi_out, lineup, takeoff_roll, departed, final, vacated, taxi_in
+    kind: str  # pushback, taxi_out, lineup, takeoff_roll, departed, final, vacated, taxi_in
     traffic: Traffic
     airport: Airport
     runway: Runway | None
@@ -73,6 +74,13 @@ def _near_holding_point(airport: Airport, t: Traffic) -> bool:
         if -0.3 <= along <= 0.4 and 0.03 < cross <= 0.15:
             return True
     return False
+
+
+def _backwards(prev: Traffic, now: Traffic) -> bool:
+    """Moved tail first since the last look (a pushback), judged from the positions (> 0.5 m apart)."""
+    if distance_nm(prev.lat, prev.lon, now.lat, now.lon) * 1852 < 0.5:
+        return False
+    return heading_diff(bearing_deg(prev.lat, prev.lon, now.lat, now.lon), now.heading_deg) > 120
 
 
 class TrafficTracker:
@@ -114,7 +122,7 @@ class TrafficTracker:
                     fin = _final_runway(a, t)
                     events.append(Event("final", t, a, fin[0] if fin else None, now, repeat=True))
                 continue
-            kind = {"taxi_out": "taxi_out", "lineup": "lineup", "takeoff": "takeoff_roll", "departed": "departed",
+            kind = {"pushback": "pushback", "taxi_out": "taxi_out", "lineup": "lineup", "takeoff": "takeoff_roll", "departed": "departed",
                     "final": "final", "vacated": "vacated", "taxi_in": "taxi_in"}.get(new)
             rwy = _aligned_runway(a, t) if new in ("lineup", "takeoff") else \
                 (_final_runway(a, t) or (None,))[0] if new == "final" else None
@@ -139,6 +147,10 @@ class TrafficTracker:
                 return "vacated" if not _on_any_runway(a, t) else None
             if p == "vacated":
                 return "taxi_in" if t.gs_kt >= TAXI_KT else None
+            if p == "parked" and t.gs_kt >= 0.5 and _backwards(tr.last, t):
+                return "pushback"  # moving tail first: being pushed back from the stand
+            if p == "pushback" and t.gs_kt >= TAXI_KT and not _backwards(tr.last, t) and not _on_any_runway(a, t):
+                return "taxi_out"
             if p in ("parked", "taxi_in") and t.gs_kt >= TAXI_KT and not _on_any_runway(a, t):
                 return "taxi_out" if p == "parked" else None
             if p in ("taxi_out", "holding", "parked") and rwy is not None:

@@ -19,7 +19,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import atis, enroute, factcheck, flow, phrase, weather
+from atc import atis, enroute, factcheck, flow, monitor, phrase, weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -90,12 +90,14 @@ def handle(
             reply = reply.rstrip(".") + f". {atis_note[:1].upper()}{atis_note[1:]}."
         history.append((pilot_text, reply))
         session.last_role = session._key(facility.role)
-        _say_timed(speaker, reply, stt_s, llm_s)
+        _say_timed(speaker, reply, stt_s, llm_s, _atc_voice(speaker, airport, facility.role))
         return reply
 
     reply = None
     if session.names_other_flight(pilot_text):  # misheard or wrong callsign: never answer it as ours
         reply = f"Station calling {station}, say again your callsign."
+    if reply is None:  # mayday / pan pan / going around come before anything else
+        reply = monitor.handle_pilot(session, world, airport, facility, own, pilot_text, time.monotonic())
     if reply is None:  # "Rosario Center ..." on Aeroparque Delivery: "this is Aeroparque Delivery, ..."
         reply = flow.wrong_station(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "requesting Delivery frequency" / "frequency change": from the files, never invented
@@ -129,7 +131,12 @@ def handle(
     elif reply is None and rb.status == "incomplete" and target:
         # Wrong readback: say the instruction again, word for word (ICAO "negative, I say again").
         session.readback_due.pop(key, None)  # the correction itself now carries the instruction
-        reply = f"{cs}, negative, I say again, {_instruction(target, cs, station)}"
+        contact = re.search(r"contact [a-z ]+?(?:decimal|point)(?: (?:zero|one|two|three|four|five|six|seven|eight|"
+                            r"niner))+", target, re.I)
+        if rb.missing == ["frequency"] and contact:  # wrong frequency read back: "negative, contact Tower 118.85"
+            reply = f"{cs}, negative, {contact.group(0)}."
+        else:
+            reply = f"{cs}, negative, I say again, {_instruction(target, cs, station)}"
     if reply is not None:
         return say(reply)
 
@@ -155,7 +162,7 @@ def handle(
             context = context.replace(
                 "No taxi route on file: give the taxi clearance without naming any taxiway.",
                 f"TAXI ROUTE to runway {rwy.ident} (computed from the airport map, treat as fact): via {via}")
-    plan_lines = context_lines(session, airport, facility)
+    plan_lines = context_lines(session, airport, facility) + monitor.context_lines(session)
     if plan and plan.is_ifr and session.clearance == "confirmed" and own.squawk != plan.squawk \
             and facility.role in ("tower", "departure", "approach"):
         plan_lines.append(f"  TRANSPONDER WRONG: the pilot squawks {own.squawk}, assigned {plan.squawk}. "
@@ -207,6 +214,7 @@ def _instruction(last_atc: str, cs: str, station: str) -> str:
     while True:
         stripped = re.sub(r"^(?:negative,?\s*)?i say again,?\s*", "", text, flags=re.I)
         stripped = stripped.removeprefix(station).lstrip(" ,")
+        stripped = re.sub(r",?\s*good day\.?$", ".", stripped, flags=re.I)  # "negative ..., contact X 118.85."
         if stripped == text:
             return text
         text = stripped
@@ -284,6 +292,9 @@ class _Callbacks:
             here = self.world.pick(own)
             if here is not None:
                 self.session.faa = here[0].faa  # FAA or ICAO callsign form for what the controller says now
+            near = self.world.nearest(own)
+            if near is not None:  # keep the airport's surface wind current (ATIS, chatter, runway in use)
+                _surface_wind(own, near, self.session)
             flow.track(self.session, self.world, own, now)
             text = flow.squawk_now_correct(self.session, own) or flow.repeat_or_clear(self.session, own, now)
             if text is None and self.session.pending_handoff is None:
@@ -293,6 +304,9 @@ class _Callbacks:
                     self.session.handoffs_done.add(key)
                     self.session.pending_handoff = flow.Pending(key, body, own.com1_mhz, now)
                     text = f"{self.session.spoken_callsign}, {body}."
+            if text is None and self.session.pending_handoff is None:  # level bust, 7700, go-around
+                text = monitor.radar_event(self.session, self.world, own,
+                                           self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM), now)
             if text is None and self.session.pending_handoff is None:
                 # descent at top of descent, vectors, intercept, landing clearance, vacate
                 text = enroute.arrival_event(self.session, self.world, own,
@@ -324,6 +338,7 @@ class _Callbacks:
         p = self.atis_play
         if p is None or p["icao"] != found.icao:
             p = self.atis_play = {"icao": found.icao, "lines": [], "i": 0, "next": now}
+            weather.get(found.icao, wait_s=4.0)  # the first broadcast should have the clouds and temperature
         if now < p["next"]:
             return None
         if p["i"] >= len(p["lines"]):  # (re)start the broadcast: the letter may have changed meanwhile
@@ -338,7 +353,7 @@ class _Callbacks:
             p["next"] = now + (ATIS_PAUSE_S if getattr(self.speaker, "audio", False) else ATIS_TEXT_PAUSE_S)
         say_as = getattr(self.speaker, "say_as", None)
         if say_as is not None:
-            say_as(line, who="ATIS", voice=ATIS_VOICE)
+            say_as(line, who="ATIS", voice=_atc_voice(self.speaker, found, "atis") or ATIS_VOICE)
         else:
             self.speaker.say(line)
         return line
@@ -365,7 +380,10 @@ class _Callbacks:
             tracker.tracks[ex.key].cleared = True  # said now: stop offering it again
         print()
         self.last_chatter = []
+        bank = getattr(self.speaker, "bank", None)
         for who, text, voice in ex.lines:
+            if bank is not None:  # the controller of that position, and the AI pilot with its country's accent
+                voice = bank.controller(apt.icao, ex.role, apt.country) if who == "ATC" else                     bank.pilot(ex.key, ex.country) or voice
             say_as = getattr(self.speaker, "say_as", None)
             if say_as is not None:
                 say_as(text, who=who, voice=voice)
@@ -383,7 +401,8 @@ class _Callbacks:
             self.session.last_role = self.session._key(picked[1].role)
         print()
         self.history.append((pilot_side, text))
-        _say_timed(self.speaker, text, None, 0.0)
+        _say_timed(self.speaker, text, None, 0.0,
+                   _atc_voice(self.speaker, picked[0], picked[1].role) if picked else None)
         print(self.prompt, end="", flush=True)
 
     def _fire(self) -> None:
@@ -398,9 +417,21 @@ class _Callbacks:
                 self._transmit(reply, "(pilot standing by)")
 
 
-def _say_timed(speaker, reply: str, stt_s: float | None, llm_s: float) -> None:
+def _atc_voice(speaker, airport: Airport | None, role: str | None):
+    """The voice of that controller position (its own person, with the airport country's accent), if the speaker
+    has a voice bank."""
+    bank = getattr(speaker, "bank", None)
+    if bank is None or airport is None or role is None:
+        return None
+    return bank.controller(airport.icao, role, airport.country)
+
+
+def _say_timed(speaker, reply: str, stt_s: float | None, llm_s: float, voice=None) -> None:
     """Speak, then print per-stage latency (roadmap item 15). Target: under 3-4 s to first audio."""
-    speaker.say(reply)
+    if voice is not None and getattr(speaker, "audio", False):
+        speaker.say_as(reply, who="ATC", voice=voice)
+    else:
+        speaker.say(reply)
     synth_s = getattr(speaker, "last_synth_s", None)  # PiperTTS only; PrintTTS has no audio
     if stt_s is None and synth_s is None:
         return
@@ -533,7 +564,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.voice:
         from atc.audio.tts import PiperTTS
 
-        speaker = PiperTTS(args.voice, device=_device(args.audio_out))
+        from atc.voices import VoiceBank
+
+        bank = VoiceBank(args.voice.parent, args.voice)
+        print(f"voices: {bank.describe()}" + ("" if len(bank.pools) > 2 else
+                                               "  (more accents: python tools/download_voices.py)"))
+        speaker = PiperTTS(args.voice, device=_device(args.audio_out), bank=bank)
+        models = {v.model for pool in bank.pools.values() for v in pool}
+        threading.Thread(target=speaker.preload, args=(sorted(models),), daemon=True, name="voices").start()
     else:
         from atc.audio.tts import PrintTTS
 
@@ -549,6 +587,8 @@ def main(argv: list[str] | None = None) -> None:
     if dest is not None:  # its spoken_name is how the clearance limit is said ("Rosario")
         session.dest_name = dest.spoken_name or dest.name
 
+    for a in world.airports:  # METARs in the background: ATIS, and the surface wind of the destination
+        weather.get(a.icao)
     llm = make_llm()
     print(f"LLM: {getattr(llm, 'model', 'stub (no ATC_LLM_MODEL set)')}")
     history: list[tuple[str, str]] = []
@@ -616,6 +656,9 @@ def _stt_words(world: World, session: Session) -> list[str]:
     for a in world.airports:
         name = a.spoken_name or a.name.split()[0]
         words.append(f"{name} Delivery, {name} Ground, {name} Tower, {name} Approach.")
+        spoken = sorted({f.spoken for f in a.frequencies if f.spoken})  # "NorCal Departure", "Oakland Center"
+        if spoken:
+            words.append(", ".join(spoken[:6]) + ".")
     for s in world.airspaces:
         words.append(f"{s.spoken_name or s.name} Control.")
     num = "".join(c for c in session.callsign if c.isdigit())

@@ -15,6 +15,8 @@ from atc.models import OwnState, Traffic
 
 RELEVANT_NM = 8.0
 RELEVANT_FT = 3000.0
+ALERT_NM = 6.0  # radar calls traffic on its own when it comes this close...
+ALERT_FT = 1500.0  # ...within this much altitude, and is getting closer
 
 # ICAO type designator -> how a controller says it. Unknown types are left out (never guessed).
 _TYPES = {

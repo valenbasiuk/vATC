@@ -113,7 +113,7 @@ def build_airport(icao: str, data_dir: Path) -> Airport:
         if f["airport_ident"] != ident:
             continue
         mhz = _float(f.get("frequency_mhz", ""))
-        if mhz is None:
+        if mhz is None or not 118.0 <= mhz <= 136.99:  # civil VHF airband only (no 36.07 "approach", no UHF)
             continue
         freqs.append(Frequency(kind=f["type"].strip().upper(), mhz=mhz, description=f.get("description", "")))
 

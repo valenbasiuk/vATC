@@ -60,8 +60,10 @@ def get(icao: str, wait_s: float = 0.0) -> Metar | None:
     """Cached METAR for `icao` (None if not known yet). Starts a refresh when it is old; `wait_s` > 0 waits up
     to that long for a first result (startup, tests)."""
     icao = icao.upper()
-    if not enabled():
-        return None
+    if not enabled():  # offline: only what was put in by hand
+        with _lock:
+            hit = _cache.get(icao)
+        return hit[1] if hit else None
     with _lock:
         hit = _cache.get(icao)
         stale = hit is None or time.time() - hit[0] > (MAX_AGE_S if hit[1] else RETRY_S)

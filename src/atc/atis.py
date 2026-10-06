@@ -38,9 +38,10 @@ def _height(ft: int, faa: bool) -> str:
     return out if faa else f"{out} feet"
 
 
-def _temp(c: float) -> str:
+def _temp(c: float, faa: bool = False) -> str:
+    """ICAO two digits ('zero niner', 'minus zero five'), FAA as is ('niner')."""
     n = int(round(c))
-    return ("minus " if n < 0 else "") + phrase.digits(str(abs(n)))
+    return ("minus " if n < 0 else "") + phrase.digits(str(abs(n)) if faa else f"{abs(n):02d}")
 
 
 _COVER = {"FEW": "few", "SCT": "scattered", "BKN": "broken", "OVC": "overcast", "VV": "vertical visibility"}
@@ -184,7 +185,8 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
     dew = metar.dew_c if metar else None
     s: list[str] = []
     if faa:
-        s.append(f"{name} information {word}. {phrase.digits(_zulu(own, metar))} Zulu.")
+        z = phrase.digits(_zulu(own, metar))
+        s.append(f"{name} information {word}. {z[:1].upper()}{z[1:]} Zulu.")
         if wind:
             s.append(f"{wind[:1].upper()}{wind[1:]}.")
         if metar and metar.visibility_m is not None:
@@ -196,7 +198,7 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
             sky = _clouds(metar, True)
             s.append(f"{sky[:1].upper()}{sky[1:]}." if sky else ("Sky clear." if metar.visibility_m else ""))
         if temp is not None:
-            s.append(f"Temperature {_temp(temp)}" + (f", dew point {_temp(dew)}." if dew is not None else "."))
+            s.append(f"Temperature {_temp(temp, True)}" + (f", dew point {_temp(dew, True)}." if dew is not None else "."))
         if qnh:
             s.append(f"Altimeter {phrase.digits(f'{qnh * 0.02953:.2f}')}.")
         if rw:
@@ -231,19 +233,23 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
     return word, [x for x in s if x]
 
 
-_INFO = re.compile(r"\b(?:information|info|with)\s+([a-z]+)\b")
+_INFO = re.compile(r"\b(?:information|info)\s+([a-z]+)\b")
+_WITH = re.compile(r"\bwith\s+([a-z]+)\b")
 
 
 def heard_letter(norm: str) -> str | None:
     """'... with information bravo' / 'information b' -> 'B'. None if no ATIS letter was mentioned."""
     words = {v: k for k, v in phrase._NATO.items()}
     words.update({"alpha": "A", "juliet": "J", "whisky": "W", "xray": "X"})
-    for m in _INFO.finditer(norm):
+    for m in _INFO.finditer(norm):  # "information bravo", "info b"
         w = m.group(1)
         if w in words:
             return words[w]
-        if len(w) == 1 and w.isalpha() and m.group(0).startswith(("information", "info")):
+        if len(w) == 1 and w.isalpha():
             return w.upper()
+    for m in _WITH.finditer(norm):  # "with bravo"
+        if m.group(1) in words:
+            return words[m.group(1)]
     return None
 
 

@@ -64,7 +64,7 @@ def wind(direction: float | None, kt: float | None, faa: bool = False) -> str | 
         return None
     if kt <= 3:
         return "wind calm"
-    d = int(round(direction)) % 360 or 360
+    d = int(round(direction / 10.0) * 10) % 360 or 360  # reported in steps of 10 degrees (ICAO Annex 3)
     if faa:
         return f"wind {digits(f'{d:03d}')} at {digits(str(int(round(kt))))}"
     return f"wind {digits(f'{d:03d}')} degrees {digits(str(int(round(kt))))} knots"

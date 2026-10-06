@@ -47,6 +47,8 @@ def _contact(airport: Airport, kinds: tuple[str, ...]) -> tuple[Facility, str] |
     if f is None:
         return None
     fac = resolve_facility(airport, f.mhz)
+    if airport.faa and fac.role == "ground" and 121.6 <= f.mhz <= 121.975:
+        return fac, f"contact ground {phrase.frequency(f.mhz, True).split(' ', 3)[-1]}"  # "contact ground point eight"
     return fac, f"contact {callsign_for(airport, fac)} {phrase.frequency(f.mhz, airport.country == 'US')}"
 
 
@@ -208,6 +210,12 @@ def _station(world, airport: Airport, grp: str, words: list[str], own: OwnState 
     """The position of group `grp` at the airport named in `words` (else this one); area control from the world."""
     if grp == "control":
         return world.control(own, airport)
+    for a in world.airports:  # a station name the pilot used: "SoCal Approach", "NorCal Departure"
+        for f in a.frequencies:
+            if f.spoken and f.spoken.split()[0].lower() in words:
+                fac = resolve_facility(a, f.mhz)
+                if fac is not None and group(fac.role) == grp:
+                    return a, fac
     named = next((a for a in world.airports if (a.spoken_name or a.name.split()[0]).lower() in words), airport)
     kinds = ("DEP", "APP", "ARR") if grp == "radar" and "departure" in words else _KINDS[grp]
     f = _freq(named, *kinds)
@@ -319,7 +327,7 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
                 bits.append(q)
         elif departing and facility.role in ("departure", "approach") and plan.cruise_ft:
             # ICAO 2018: "climb via SID to <level>"; no Control on file, so Departure clears the filed level
-            session.cleared_level_ft = plan.cruise_ft
+            session.assign_level(plan.cruise_ft, own.alt_msl_ft)
             bits.append(f"climb via SID to {phrase.level(plan.cruise_ft, airport)}" if plan.sid and not faa
                         else phrase.climb(plan.cruise_ft, airport))
         elif departing and plan.sid and facility.role in ("departure", "approach"):

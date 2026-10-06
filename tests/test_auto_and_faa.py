@@ -112,3 +112,54 @@ def test_ai_chatter_in_the_us_uses_group_form():
     t = Traffic("N1", 0, 0, 0, 0, 0, True, airline="United", flight_number="436")
     assert ai_callsign(t, faa=True) == "United four thirty-six"
     assert ai_callsign(t) == "United four three six"
+
+
+def test_only_vhf_airband_frequencies_are_used():
+    from atc.clearance import _freq
+    from atc.models import Airport, Frequency
+
+    a = Airport("KXXX", "X", 0, 0, 0, country="US",
+                frequencies=[Frequency("APP", 36.07), Frequency("APP", 124.3, spoken="SoCal Approach")])
+    assert _freq(a, "APP").mhz == 124.3
+
+
+def test_center_descends_to_fl100_then_approach_gives_the_final_altitude():
+    from atc import enroute
+
+    plan = FlightPlan(callsign="UAL436", rules="I", aircraft_type="B738", origin="KSFO", destination="KSFO",
+                      destination_name="San Francisco", alternate=None, route="DCT", sid=None, sid_transition=None,
+                      cruise_ft=33000, planned_runway=None)
+    world, ksfo = _ksfo_world(plan)
+    sim = FakeSim(ksfo, callsign="UAL436")
+    sim.update(lat=ksfo.lat + 0.6, lon=ksfo.lon, alt_msl_ft=25000, alt_agl_ft=25000, on_ground=False, heading_deg=180,
+               qnh_hpa=1013.0)
+    s = Session(callsign="UAL436", plan=plan, faa=True)
+    own = sim.own()
+    assert enroute.descent_due(s, ksfo, own, "control")
+    assert enroute.descent_text(s, ksfo, own, "control") == "United four thirty-six, descend and maintain one zero thousand."
+    assert not s.descent_given and s.center_descent and s.cleared_level_ft == 10000
+    assert not enroute.descent_due(s, ksfo, own, "control")  # Center doesn't give the rest
+    assert enroute.descent_due(s, ksfo, own, "approach")
+    r = enroute.descent_text(s, ksfo, own, "approach")
+    assert r.startswith("United four thirty-six, descend and maintain three thousand, altimeter two niner nine")
+
+
+def test_us_arrival_altitude_is_not_the_transition_altitude():
+    from atc import enroute
+    from atc.models import Airport
+
+    plan = FlightPlan(callsign="UAL1", rules="I", aircraft_type="B738", origin="KSFO", destination="KDEN",
+                      destination_name="Denver", alternate=None, route="DCT", sid=None, sid_transition=None,
+                      cruise_ft=33000, planned_runway=None, dest_trans_alt_ft=18000)
+    s = Session(callsign="UAL1", plan=plan)
+    assert enroute._arrival_altitude(Airport("KDEN", "Denver", 0, 0, 5434, country="US"), s) == 8000
+    assert enroute._arrival_altitude(Airport("SAAR", "Rosario", 0, 0, 85, country="AR"), s) == 3000
+
+
+def test_station_named_by_its_sim_name():
+    from atc.flow import _station
+
+    world, ksfo = _ksfo_world()
+    ksfo.frequencies[0].spoken = "NorCal Approach"
+    a, fac = _station(world, ksfo, "radar", ["norcal", "approach"])
+    assert fac.freq.spoken == "NorCal Approach"

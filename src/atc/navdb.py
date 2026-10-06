@@ -78,10 +78,13 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
         if kind is None or not raw:
             continue
         mhz = round(raw / 1_000_000.0 if raw > 1_000_000 else raw / 1000.0, 3)
-        same = next((f for f in airport.frequencies if abs(f.mhz - mhz) < 0.005), None)
-        if same is not None:
-            if same.spoken is None:  # KSFO's 128.325 "NORCAL" in the sim: "NorCal Approach", not "San Francisco ..."
-                same.spoken = _spoken(airport, same.kind, name, own_name)
+        if not 118.0 <= mhz <= 136.99 or "RAMP" in (name or "").upper():  # airline ramp control isn't ATC
+            continue
+        same = [f for f in airport.frequencies if abs(f.mhz - mhz) < 0.005]
+        if same:
+            for f in same:  # KSFO's 128.325 "NORCAL" in the sim: "NorCal Approach", not "San Francisco ..."
+                if f.spoken is None:
+                    f.spoken = _spoken(airport, f.kind, name, own_name)
             continue
         airport.frequencies.append(Frequency(kind, mhz, f"{name or ''} (sim)".strip(),
                                              _spoken(airport, kind, name, own_name)))

@@ -25,10 +25,13 @@ class Item:
     required: bool = True  # must appear in the readback
 
 
+VHF_MIN_MHZ, VHF_MAX_MHZ = 118.0, 136.99  # civil VHF COM band (OurAirports also lists UHF/military ones)
+
+
 def _freq(airport: Airport, *kinds: str) -> Frequency | None:
     for kind in kinds:
         for f in airport.frequencies:
-            if f.kind == kind:
+            if f.kind == kind and VHF_MIN_MHZ <= f.mhz <= VHF_MAX_MHZ:
                 return f
     return None
 
@@ -146,6 +149,10 @@ def handle_clearance(
         session.clearance = "confirmed"
         session.pending = []
         gnd = _freq(airport, "GND", "RMP") if who == "clearance" else None
+        if gnd and airport.faa:  # US: "readback correct, contact ground point eight when ready"
+            short = phrase.frequency(gnd.mhz, True)
+            short = short.split(" ", 3)[-1] if 121.6 <= gnd.mhz <= 121.975 else short
+            return f"{cs}, readback correct, contact Ground {short} when ready."
         if gnd:
             return (f"{cs}, readback correct. When ready for push and start, contact Ground "
                     f"{phrase.frequency(gnd.mhz, airport.country == 'US')}.")
@@ -188,7 +195,7 @@ def handle_push(session: Session, airport: Airport, facility: Facility, pilot_te
         if f:
             return f"{cs}, no clearance received yet. Contact Delivery {phrase.frequency(f.mhz, airport.country == 'US')}."
     station = f", {callsign_for(airport, facility)}" if session.first_contact(facility.role) else ""
-    return f"{cs}{station}, push and start approved."
+    return f"{cs}{station}, push back approved." if airport.faa else f"{cs}{station}, push and start approved."
 
 
 def context_lines(session: Session, airport: Airport, facility: Facility) -> list[str]:

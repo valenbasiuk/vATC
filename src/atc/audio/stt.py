@@ -19,6 +19,9 @@ class FasterWhisperSTT:
             language="en",
             beam_size=1,
             vad_filter=True,
+            without_timestamps=True,  # one short call: no timestamps, no conditioning on earlier text (faster)
+            condition_on_previous_text=False,
+            temperature=0.0,
             hotwords=hotwords or None,
             # Biasing toward aviation vocabulary helps a lot with callsigns and phraseology.
             initial_prompt="Air traffic control radio. Runway, taxi, hold short, cleared for takeoff, "

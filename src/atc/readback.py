@@ -26,7 +26,7 @@ class ReadbackResult:
 
 
 def _normalize(text: str) -> str:
-    t = text.lower().replace("-", " ")
+    t = text.lower().replace("-", " ").replace("pushback", "push back")
     t = re.sub(r"(?<=\d)\.(?=\d)", " decimal ", t)  # "120.6" -> "120 decimal 6", same as when spoken
     t = re.sub(r"[^a-z0-9 ]", " ", t)
     return " ".join(_DIGITS.get(w, w) for w in t.split())
@@ -182,6 +182,10 @@ def _items(text: str, letters_ok: bool = False) -> dict[str, str | bool | frozen
         items["cleared for takeoff"] = True
     if "cleared to land" in t:
         items["cleared to land"] = True
+    if re.search(r"\bcontact\b", t):  # handoff: the new frequency (only checked if the pilot says one)
+        freqs = _frequencies(t)
+        if freqs:
+            items["frequency"] = frozenset(freqs)
     return items
 
 
@@ -261,10 +265,20 @@ def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:
         lvl = re.search(r"\b(?:flight level|fl|level) (\d{2,3})\b", joined)
         if lvl:
             got["level"] = lvl.group(1)
+    if "frequency" in expected:  # a frequency read back must be the right one; leaving it out is fine
+        said = _frequencies(pilot_norm)
+        if said:
+            got["frequency"] = frozenset(said)
+        elif len(expected) == 1:
+            return ReadbackResult("none")
     if not got:  # nothing of the instruction repeated: not a readback attempt
         return ReadbackResult("none")
     missing = []
     for key, val in expected.items():
+        if key == "frequency":
+            if "frequency" in got and not (val & got["frequency"]):
+                missing.append("frequency")
+            continue
         if key in ("qnh", "squawk", "level", "altitude", "heading"):
             if got.get(key) != val:
                 missing.append(f"{key} {val}")

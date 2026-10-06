@@ -40,6 +40,7 @@ class Exchange:
     created: float
     role: str  # position that talks: "tower" / "ground"
     priority: int = 1  # 0 = most urgent (landing/takeoff clearances)
+    country: str | None = None  # where the AI aircraft is from (its pilot's accent)
 
 
 @lru_cache(maxsize=1)
@@ -77,7 +78,19 @@ def voice_for(callsign: str) -> int:
 
 def _contact(airport: Airport, *kinds: str) -> str | None:
     f = _freq(airport, *kinds)
-    return phrase.frequency(f.mhz, airport.country == "US") if f else None
+    if f is None:
+        return None
+    if airport.faa and kinds[0] == "GND" and 121.6 <= f.mhz <= 121.975:
+        return phrase.frequency(f.mhz, True).split(" ", 3)[-1]  # FAA: "ground point eight" for 121.8
+    return phrase.frequency(f.mhz, airport.faa)
+
+
+def _departure_name(airport: Airport) -> str:
+    """'NorCal Departure' when the frequency has its own name (KSFO), else just 'departure'."""
+    f = _freq(airport, "DEP", "APP", "ARR")
+    if f is not None and f.spoken:
+        return f.spoken.replace("Approach", "Departure")
+    return "departure"
 
 
 def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[float | None, float | None],
@@ -95,7 +108,11 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
     rw = phrase.runway(rwy.ident, faa) if rwy is not None else None
     atc = pilot = None
     role, prio = "tower", 1
-    if ev.kind == "taxi_out" and rw:
+    if ev.kind == "pushback":
+        role = "ground"
+        atc = f"{cs}, push back approved" if faa else f"{cs}, push and start approved"
+        pilot = f"Push back approved, {cs}" if faa else f"Push and start approved, {cs}"
+    elif ev.kind == "taxi_out" and rw:
         from atc.taxi import departure_route
 
         role = "ground"
@@ -111,7 +128,8 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
     elif ev.kind == "departed":
         dep = _contact(a, "DEP", "APP", "ARR")
         if dep:
-            atc, pilot = f"{cs}, contact departure {dep}, good day", f"{dep}, good day, {cs}"
+            name = _departure_name(a)
+            atc, pilot = f"{cs}, contact {name} {dep}, good day", f"{name[:1].upper()}{name[1:]} {dep}, good day, {cs}"
     elif ev.kind == "final" and rw:
         st = runway_status(a, rwy, own, [x for x in traffic if x.callsign != t.callsign])
         blocked = st.occupied_by or (own.on_ground and _user_on(a, rwy, own))
@@ -129,11 +147,15 @@ def exchange_for(ev: Event, own: OwnState, traffic: list[Traffic], wind: tuple[f
             atc, pilot = f"{cs}, contact ground {gnd}", f"Ground {gnd}, {cs}"
     elif ev.kind == "taxi_in":
         role = "ground"
-        atc, pilot = f"{cs}, taxi to the apron", f"Taxi to the apron, {cs}"
+        where = "the ramp" if faa else "the apron"
+        atc, pilot = f"{cs}, taxi to {where}", f"Taxi to {where}, {cs}"
     if atc is None:
         return None
     pilot = pilot[:1].upper() + pilot[1:]
-    return Exchange(t.callsign, [("ATC", atc + ".", None), (cs, pilot + ".", voice)], ev.at, role, prio)
+    from atc.voices import country_of
+
+    return Exchange(t.callsign, [("ATC", atc + ".", None), (cs, pilot + ".", voice)], ev.at, role, prio,
+                    country_of(t.airline, t.callsign))
 
 
 def _user_on(airport: Airport, rwy, own: OwnState) -> bool:

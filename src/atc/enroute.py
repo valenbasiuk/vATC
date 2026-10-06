@@ -71,17 +71,38 @@ def _qnh(own: OwnState, faa: bool) -> str | None:
         f"QNH {phrase.digits(f'{own.qnh_hpa:.0f}')}"
 
 
+CENTER_DESCENT_FT = 10000  # area control descends arrivals to this; the arrival radar gives the final altitude
+
+
 def _arrival_altitude(dest: Airport, session) -> int:
-    ta = (session.plan.dest_trans_alt_ft if session.plan else None) or 3000
-    return max(ta, int(math.ceil((dest.elevation_ft + 2000) / 1000.0) * 1000))
+    """Altitude the arrival radar descends to before vectoring: 3000 ft, or about 2500 ft above a high field
+    (never the transition altitude itself: in the US that is 18000 ft)."""
+    return max(3000, int(math.ceil((dest.elevation_ft + 2500) / 1000.0) * 1000))
 
 
-def descent_text(session, dest: Airport, own: OwnState) -> str:
+def _center_stage(session, dest: Airport, own: OwnState, role: str | None) -> bool:
+    """Area control's part of the descent: high aircraft go to FL100 / 10000 ft first."""
+    return role == "control" and not session.center_descent and own.alt_msl_ft > CENTER_DESCENT_FT + 1000         and _arrival_altitude(dest, session) < CENTER_DESCENT_FT
+
+
+def descent_due(session, dest: Airport, own: OwnState, role: str | None) -> bool:
+    if session.descent_given or not _past_tod(session, dest, own):
+        return False
+    if role == "control":
+        return _center_stage(session, dest, own, role)
+    return own.alt_msl_ft > _arrival_altitude(dest, session) + 1000
+
+
+def descent_text(session, dest: Airport, own: OwnState, role: str | None = None) -> str:
+    if _center_stage(session, dest, own, role):
+        session.center_descent = True
+        session.assign_level(CENTER_DESCENT_FT, own.alt_msl_ft)
+        return f"{session.spoken_callsign}, {phrase.descend(CENTER_DESCENT_FT, dest)}."
     alt = _arrival_altitude(dest, session)
     rwy = _arrival_runway(dest, own, session)
     q = _qnh(own, dest.country == "US")
     session.descent_given = True
-    session.cleared_level_ft = alt
+    session.assign_level(alt, own.alt_msl_ft)
     bits = [f"{session.spoken_callsign}, {phrase.descend(alt, dest)}"]
     if q:
         bits.append(q)
@@ -204,7 +225,7 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         return None
     if re.search(r"\b(descent|descend|lower)\b", norm) and dest is not None:
         if _past_tod(session, dest, own) or (plan.tod and distance_nm(own.lat, own.lon, *plan.tod) <= 10):
-            return descent_text(session, dest, own)
+            return descent_text(session, dest, own, facility.role)
         n = max(5, int(round(distance_nm(own.lat, own.lon, *plan.tod) / 5.0) * 5)) if plan.tod else None
         return f"{cs}, expect descent in {phrase.digits(str(n))} miles." if n else f"{cs}, expect descent later."
     if re.search(r"\b(higher|climb|level)\b", norm) and plan.cruise_ft and not session.descent_given:
@@ -213,14 +234,14 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         origin = world.get(session.departed_from) or airport  # its transition altitude: FL or feet
         if own.alt_msl_ft >= want - 300:
             return f"{cs}, maintain {phrase.level(int(round(own.alt_msl_ft / 1000.0) * 1000), origin)}."
-        session.cleared_level_ft = want
+        session.assign_level(want, own.alt_msl_ft)
         return f"{cs}, {phrase.climb(want, origin)}."
     if "vector" in norm and dest is not None:
         rwy = _arrival_runway(dest, own, session)
         if rwy is None:
             return None
         if not session.descent_given and own.alt_msl_ft > _arrival_altitude(dest, session) + 1000:
-            return descent_text(session, dest, own)
+            return descent_text(session, dest, own, facility.role)
         if _due_for_intercept(dest, rwy, own):
             return intercept_text(session, dest, rwy, own)
         return vectors_text(session, dest, rwy, own)
@@ -249,8 +270,23 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
             session.vacate_given = True
             from atc.taxi import vacate
 
-            name = airport.spoken_name or airport.name
-            exit_ = vacate(world.taxi.get(airport.icao), airport, rwy, own)
+            from atc.airports.gen import spoken_name
+
+            name = airport.spoken_name or spoken_name(airport.name) or airport.name
+            net = world.taxi.get(airport.icao)
+            exit_ = vacate(net, airport, rwy, own)
+            if airport.faa:  # FAA: no welcome; the exit and Ground together ("turn left at Bravo, contact ground")
+                from atc.flow import _contact
+                from atc.taxi import exit_side
+
+                gnd = _contact(airport, ("GND", "RMP"))
+                if gnd is not None:
+                    session.handoffs_done.add(f"{airport.icao}:ground")
+                tail = f", {gnd[1]}" if gnd else ""
+                if exit_ is None or exit_[1]:
+                    return f"{cs}, turn off when able{tail}."
+                side = exit_side(net, airport, rwy, exit_[0])
+                return f"{cs}, turn {side} at {exit_[0]}{tail}." if side else f"{cs}, exit at {exit_[0]}{tail}."
             if exit_ is None:
                 return f"{cs}, welcome to {name}, vacate the runway when able."
             via, backtrack = exit_
@@ -272,10 +308,9 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
         return None
     if session.is_first_contact(facility.role):
         return None  # let the pilot check in first
-    # descent at the planned top of descent
-    if not session.descent_given and own.alt_msl_ft > _arrival_altitude(dest, session) + 1000 \
-            and _past_tod(session, dest, own):
-        return descent_text(session, dest, own)
+    # descent at the planned top of descent (area control: to FL100 first; the arrival radar: the final altitude)
+    if descent_due(session, dest, own, facility.role):
+        return descent_text(session, dest, own, facility.role)
     if rwy is None or final_distance(dest, rwy, own) is not None:
         return None
     d_dest = distance_nm(own.lat, own.lon, dest.lat, dest.lon)
@@ -292,6 +327,6 @@ def checkin_extra(session, world, airport: Airport, facility: Facility, own: Own
     dest = _dest(world, session)
     if dest is None or own.on_ground or session.descent_given or not _arrival_radar(world, session, airport, facility):
         return []
-    if own.alt_msl_ft > _arrival_altitude(dest, session) + 1000 and _past_tod(session, dest, own):
-        return [descent_text(session, dest, own).split(", ", 1)[1].rstrip(".")]
+    if descent_due(session, dest, own, facility.role):
+        return [descent_text(session, dest, own, facility.role).split(", ", 1)[1].rstrip(".")]
     return []

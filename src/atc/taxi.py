@@ -230,7 +230,8 @@ def arrival_route(net: TaxiNetwork | None, own: OwnState, stand: str) -> str | N
     return spoken_route(names) if names else None
 
 
-_STAND = re.compile(r"\b(?:stand|gate|parking|position)\s+([0-9]+[a-z]?)\b")
+# where the pilot wants to go ("taxi to stand 12", "request gate 5"), not where they are ("at stand 12")
+_STAND = re.compile(r"\b(?:to|for|request|requesting|via) (?:the )?(?:stand|gate|parking|position)\s+([0-9]+[a-z]?)\b")
 
 
 def vacate(net: TaxiNetwork | None, airport: Airport, rwy: Runway, own: OwnState) -> tuple[str, bool] | None:
@@ -254,6 +255,32 @@ def vacate(net: TaxiNetwork | None, airport: Airport, rwy: Runway, own: OwnState
         return spoken_route([ahead[0][1]]), False
     behind = max((a, n) for n, a in exits.items())
     return spoken_route([behind[1]]), True
+
+
+def exit_side(net: TaxiNetwork | None, airport: Airport, rwy: Runway, spoken_exit: str) -> str | None:
+    """'left' / 'right': which side of the runway (looking along `rwy`) the exit taxiway leaves to."""
+    import math
+
+    from atc.sequence import threshold
+
+    if net is None:
+        return None
+    tlat, tlon = threshold(airport, rwy)
+    h = math.radians(rwy.heading_deg or 0.0)
+    total = 0.0
+    for node, edges in net.edges.items():
+        for _, _, name in edges:
+            if not name or spoken_route([name]) != spoken_exit:
+                continue
+            lat, lon = net.nodes[node]
+            _, cross = along_cross(airport, rwy, lat, lon)
+            if 0.03 < cross < 0.3:  # off the runway, close to it
+                e = (lon - tlon) * 60.0 * math.cos(math.radians(tlat))
+                n = (lat - tlat) * 60.0
+                total += e * math.cos(h) - n * math.sin(h)  # + = right of the centerline
+    if total == 0.0:
+        return None
+    return "right" if total > 0 else "left"
 
 
 def is_taxi_request(norm: str) -> bool:

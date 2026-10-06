@@ -54,7 +54,8 @@ class Session:
     # radar / arrival (enroute.py)
     cleared_level_ft: int | None = None
     direct_to: str | None = None
-    descent_given: bool = False
+    descent_given: bool = False  # the final arrival altitude (from the arrival radar)
+    center_descent: bool = False  # area control's first step (FL100)
     vectors_given: bool = False
     intercept_given: bool = False
     landing_cleared: bool = False
@@ -66,6 +67,19 @@ class Session:
     readback_due: dict[str, str] = field(default_factory=dict)
     faa: bool = False  # talking to a US position this turn: group-form callsign ("United four thirty-six")
     atis: AtisState = field(default_factory=AtisState)  # current ATIS letter per airport
+    # radar monitoring (monitor.py)
+    cleared_dir: str | None = None  # "up" / "down": which way the last assigned level was
+    level_checked: int | None = None  # "check altitude" already said for this cleared level
+    emergency: str | None = None  # "mayday" / "pan pan" once declared (or 7700 seen)
+    go_around_at: float | None = None  # when Tower ordered (or the pilot reported) a go-around
+    traffic_called: set[str] = field(default_factory=set)  # AI already called as traffic (once each)
+    traffic_seen: dict[str, float] = field(default_factory=dict)  # AI callsign -> last distance (closing?)
+    last_traffic_call: float = -1e9
+    # VFR circuit (pattern.py)
+    in_circuit: bool = False
+    circuit_intention: str | None = None  # "full stop" / "touch and go" / "circuits"
+    touched_down: bool = False
+    zone_left: bool = False
 
     def __post_init__(self) -> None:
         if self.telephony is not None:
@@ -123,6 +137,12 @@ class Session:
                 continue
             return True
         return False
+
+    def assign_level(self, ft: int, current_ft: float) -> None:
+        """A level was cleared: remember it, and whether it is a climb or a descent (for level-bust checks)."""
+        self.cleared_level_ft = int(ft)
+        self.cleared_dir = "up" if ft >= current_ft else "down"
+        self.level_checked = None
 
     def _key(self, role: str) -> str:
         return f"{self.where}:{role}" if self.where else role
