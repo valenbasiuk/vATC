@@ -53,6 +53,7 @@ class Event:
     repeat: bool = False  # "final" again for an aircraft still waiting for its landing clearance
 
 RECHECK_S = 5.0  # an aircraft on final without landing clearance is looked at again this often
+LINEUP_HELD_S = 300.0
 
 
 def _aligned_runway(airport: Airport, t: Traffic) -> Runway | None:
@@ -120,6 +121,8 @@ class TrafficTracker:
             tr = self.tracks.get(t.callsign)
             if tr is None:
                 tr = self.tracks[t.callsign] = Track(t.callsign, self._initial_phase(t), now, t)
+                on = _aligned_runway(a, t) if tr.phase in ("lineup", "rollout") else None
+                tr.runway = on.ident if on is not None else None
                 fin = _final_runway(a, t) if not t.on_ground else None
                 d = distance_nm(t.lat, t.lon, a.lat, a.lon)
                 tr.dep_checked = tr.phase == "departed"  # already climbing out: it checked in before we looked
@@ -158,6 +161,13 @@ class TrafficTracker:
             del self.tracks[gone]
         self.started = True
         return events
+
+    def runway_users(self, now: float) -> dict[str, str | None]:
+        """{callsign: runway} of the AI lined up, rolling for takeoff or rolling out after landing: Tower put them
+        there and keeps the runway theirs until they are airborne or off it (a line-up held longer than
+        LINEUP_HELD_S is dropped, in case the phase got stuck)."""
+        return {cs: tr.runway for cs, tr in self.tracks.items()
+                if tr.phase in ("takeoff", "rollout") or (tr.phase == "lineup" and now - tr.since < LINEUP_HELD_S)}
 
     def _radar_event(self, tr: Track, t: Traffic, now: float) -> Event | None:
         """Departure check-in, approach clearance, handoff to Tower: from position, height and track."""

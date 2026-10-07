@@ -16,6 +16,12 @@ def _no_new_airport_files(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_runway_users_left_over(monkeypatch):
+    """The AI Tower put on a runway (kept by the chatter watcher) never leak from one test into the next."""
+    monkeypatch.setattr("atc.sequence.RUNWAY_USERS", {})
+
+
+@pytest.fixture(autouse=True)
 def _offline_weather(monkeypatch):
     """No METAR downloads in tests (tests seed atc.weather with weather.put when they need one)."""
     monkeypatch.setenv("ATC_METAR", "off")

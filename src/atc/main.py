@@ -20,7 +20,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, weather
+from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, sequence, \
+    weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -32,7 +33,7 @@ from atc.models import Airport
 from atc.readback import _normalize, check_readback, is_acknowledgement, readback_missing
 from atc.runway import session_runway
 from atc.sequence import context_lines as sequence_context
-from atc.sequence import guard, runway_status
+from atc.sequence import debug_line, guard, runway_status
 from atc.session import Session
 from atc.sim.base import SimSource
 from atc.chatter import RadioBus, exchange_for
@@ -193,6 +194,7 @@ def handle(
     status = None
     if facility.role == "tower" and rwy is not None:  # who may take off / land is code's decision
         status = runway_status(airport, rwy, own, traffic)
+        print(debug_line(airport, status, traffic))
         plan_lines += sequence_context(status, own)
     if plan_lines:
         context += "\n" + "\n".join(plan_lines)
@@ -434,6 +436,7 @@ class _Callbacks:
             ex = exchange_for(ev, own, traffic, wind, self.world.taxi.get(apt.icao))
             if ex is not None:
                 self.bus.offer(ex)
+        sequence.RUNWAY_USERS[apt.icao] = tracker.runway_users(now)
         picked = self.world.pick(own)
         role = picked[1].role if picked and picked[0].icao == apt.icao and picked[1].can_reply else None
         ex = self.bus.next_due(now, role)

@@ -23,6 +23,22 @@ ROLL_KT = 30.0  # faster than this along the runway: a takeoff roll (line up and
 RUNWAY_HALF_WIDTH_NM = 0.03  # ~55 m: on the runway, not at the holding point or on a parallel taxiway
 FT_PER_NM = 6076.1
 
+# AI that Tower itself put on a runway (line up, takeoff roll, landing roll; tracker phases), per airport, kept by
+# the chatter watcher. Tower remembers whom it cleared: they block a takeoff even when a position read misses them
+# (real sim, SABE: "Bondi, line up and wait runway three one", then the user was cleared for takeoff on 13).
+RUNWAY_USERS: dict[str, dict[str, str | None]] = {}  # ICAO -> {callsign: runway ident, None = unknown}
+
+
+def same_strip(a: str, b: str) -> bool:
+    """'13' and '31', '28L' and '10R': the two directions of one runway (or the same one)."""
+    a, b = a.upper(), b.upper()
+    if a == b:
+        return True
+    if not (a[:2].isdigit() and b[:2].isdigit()) or abs(int(a[:2]) - int(b[:2])) != 18:
+        return False
+    flip = {"L": "R", "R": "L", "C": "C", "": ""}
+    return flip.get(a[2:], "?") == b[2:]
+
 
 def threshold(airport: Airport, rwy: Runway) -> tuple[float, float]:
     """Threshold position. Without one on file, assume the airport reference point is the runway midpoint."""
@@ -147,11 +163,14 @@ def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Tr
     from atc.traffic import spoken_type
 
     st = RunwayStatus(runway=rwy, own_final_nm=final_distance(airport, rwy, own))
+    users = RUNWAY_USERS.get(airport.icao, {})
     for t in traffic:
         typ = spoken_type(getattr(t, "type", None))
         if typ:
             st.types[t.callsign] = typ
-        if on_runway(airport, rwy, t):
+        cleared_on = t.on_ground and t.callsign in users and \
+            (users[t.callsign] is None or same_strip(users[t.callsign], rwy.ident))
+        if on_runway(airport, rwy, t) or cleared_on:
             st.occupied_by.append(t.callsign)
             if t.gs_kt >= ROLL_KT and heading_diff(t.heading_deg, rwy.heading_deg) <= 20:
                 st.departing.append(t.callsign)
@@ -161,6 +180,24 @@ def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Tr
             st.finals.append((t.callsign, d))
     st.finals.sort(key=lambda x: x[1])
     return st
+
+
+def debug_line(airport: Airport, st: RunwayStatus, traffic: list[Traffic]) -> str:
+    """What Tower saw when it decided (printed to the terminal): who is on the runway / on final, and the ground
+    AI closest to the centerline with their position along / across it, to tell a geometry miss from a timing one."""
+    rwy = st.runway
+    near = []
+    for t in traffic:
+        if t.on_ground:
+            along, cross = along_cross(airport, rwy, t.lat, t.lon)
+            near.append((cross, f"{t.callsign} along {along:.2f} cross {cross:.3f} hdg {t.heading_deg:.0f} "
+                                f"gs {t.gs_kt:.0f}"))
+    near.sort()
+    users = RUNWAY_USERS.get(airport.icao, {})
+    finals = ", ".join(f"{c} {d:.1f} NM" for c, d in st.finals) or "-"
+    return (f"[runway {rwy.ident}: on it {', '.join(st.occupied_by) or '-'}; final {finals}; "
+            f"Tower's runway users {users or '-'}; {len(traffic)} AI; closest on the ground: "
+            + ("; ".join(n for _, n in near[:3]) or "none") + "]")
 
 
 def context_lines(st: RunwayStatus, own: OwnState) -> list[str]:

@@ -33,6 +33,8 @@ ARRIVAL_APP_NM = 40.0  # -> destination Approach inside this
 ARRIVAL_TWR_NM = 12.0  # Approach -> Tower inside this (or -> Tower directly when there is no Approach)
 REPEAT_AFTER_S = 20.0  # no frequency change by then: say it again once
 GIVE_UP_AFTER_S = 60.0
+AIRBORNE_MIN_GS_KT = 30.0  # "not on ground" below this speed and height is a bad read, not a takeoff
+AIRBORNE_MIN_AGL_FT = 50.0
 
 
 @dataclass
@@ -57,15 +59,24 @@ def _contact(airport: Airport, kinds: tuple[str, ...]) -> tuple[Facility, str] |
 def track(session, world, own: OwnState, now: float | None = None) -> None:
     """Takeoff / landing detection from on_ground changes (call every tick)."""
     now = time.monotonic() if now is None else now
+    if not own.on_ground and own.gs_kt < AIRBORNE_MIN_GS_KT and own.alt_agl_ft < AIRBORNE_MIN_AGL_FT:
+        return  # SIM_ON_GROUND read as 0 while sitting still (sim loading, a failed read): not a takeoff
     prev = session.was_on_ground
     session.was_on_ground = own.on_ground
-    if prev is None or prev == own.on_ground:
+    if prev is None:
+        if not own.on_ground:
+            session.airborne_at = now  # started in the air
+        return
+    if prev == own.on_ground:
         return
     near = world.nearest(own)
     close = distance_nm(own.lat, own.lon, near.lat, near.lon) <= 5.0
     if not own.on_ground and close:
         session.departed_from, session.airborne_at, session.landed = near.icao, now, False
-    elif own.on_ground and close and (session.departed_from != near.icao or now - (session.airborne_at or now) > 120):
+    elif not own.on_ground:
+        session.airborne_at = now
+    elif close and session.airborne_at is not None \
+            and (session.departed_from != near.icao or now - session.airborne_at > 120):
         session.landed, session.landed_at = True, near.icao
 
 
@@ -206,6 +217,20 @@ _AT_HOLDING_POINT = re.compile(
     r"\b(?:on|at|reaching|approaching|arrived at|established at|holding at|now at) (?:the )?holding point\b")
 
 
+def is_ready_call(norm: str, departure_runway: str) -> bool:
+    """'Ready for departure', or at the departure runway's holding point ('on holding point Alfa for runway 13',
+    'holding short runway 13'): a departure telling Tower or Ground it is ready. 'Holding short' of another runway
+    is a crossing, not this."""
+    from atc.readback import _runway
+
+    if "ready" in norm and ("departure" in norm or "takeoff" in norm or "take off" in norm) and "taxi" not in norm:
+        return True  # ("ready to taxi for departure" is a taxi request)
+    if not (_AT_HOLDING_POINT.search(norm) or re.search(r"\bholding short\b", norm)):
+        return False
+    named = _runway(norm)
+    return named is None or named.lstrip("0") == departure_runway.lower().lstrip("0")
+
+
 _SIDE_WORD = r"(left|right|center|centre|l|r|c)"
 _REQ_RUNWAY = re.compile(rf"\brequest(?:ing)?\b.*?\brunway (\d{{1,2}}) ?{_SIDE_WORD}?\b")
 _REQ_APPROACH = re.compile(rf"\brequest(?:ing)?\b.*?\b(?:ils|rnav|gps|vor|visual|localizer|loc)\b(?: approach)?"
@@ -275,7 +300,8 @@ def at_holding_point(session, airport: Airport, facility: Facility, own: OwnStat
     if facility.role != "ground" or not own.on_ground or session.landed:
         return None
     norm = _normalize(pilot_text)
-    if not (_AT_HOLDING_POINT.search(norm) or "ready for departure" in norm):
+    rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "departure")
+    if rwy is None or not is_ready_call(norm, rwy.ident):
         return None
     target = _contact(airport, ("TWR",))
     if target is None:
@@ -448,7 +474,10 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     rw = phrase.runway(rwy.ident, faa)
     wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, faa)
 
-    if own.on_ground and "ready" in norm and ("departure" in norm or "takeoff" in norm or "take off" in norm):
+    if own.on_ground and not session.landed and is_ready_call(norm, rwy.ident):
+        from atc.sequence import debug_line
+
+        print(debug_line(airport, st, traffic))
         session.first_contact(facility.role)
         clearance = (f"{wind}, " if wind else "") + f"runway {rw}, cleared for takeoff"
         wait = wait_for_takeoff(st, airport, own)

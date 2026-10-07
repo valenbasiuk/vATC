@@ -163,6 +163,51 @@ def test_takeoff_held_for_traffic_on_final_by_code():
     assert r == f"{CS}, Testa Tower, hold position, traffic on two mile final."
 
 
+def _bondi_lined_up_on_31(sim, cross_nm=0.0):
+    """Real sim, SABE: an AI lined up at the far end (runway 31) while the user waits for 13."""
+    r31 = ORIGIN.runways[1]
+    sim.add_traffic(Traffic("ARG5310", r31.lat + cross_nm / 60.0, r31.lon, 18, 0.0, 304.0, True))
+
+
+def test_holding_point_call_to_tower_is_answered_by_code_and_sees_traffic_at_the_far_end():
+    """Real sim, SABE: 'on holding point, alpha for runway 13' had no 'ready', went to the model, and the model
+    cleared the user for takeoff with the Bondi lined up on 31. llm=None: any model call would crash here."""
+    sim = _tower_sim()
+    sim.update(wind_dir_deg=80.0, wind_kt=20.0)
+    _bondi_lined_up_on_31(sim)
+    r = handle(ORIGIN, sim, None, _Quiet(), [], "Testa Tower, Martinair 4133, on holding point, alfa for runway 13",
+               session=_session(clearance="confirmed"))
+    assert r == f"{CS}, Testa Tower, hold position, traffic on the runway."
+
+
+def test_tower_remembers_the_ai_it_put_on_the_runway(monkeypatch):
+    """A position read that misses the AI (here 90 m off the centerline) doesn't free the runway: the watcher's
+    tracker knows Tower lined it up on 31, the other end of 13."""
+    from atc import sequence
+
+    sim = _tower_sim()
+    sim.update(wind_dir_deg=80.0, wind_kt=20.0)
+    _bondi_lined_up_on_31(sim)
+    cb, _ = _watch(sim, _session(clearance="confirmed"))
+    cb.tick(now=0)
+    assert sequence.RUNWAY_USERS["SATS"] == {"ARG5310": "31"}
+    sim._traffic.clear()
+    _bondi_lined_up_on_31(sim, cross_nm=0.05)
+    st = sequence.runway_status(ORIGIN, ORIGIN.runways[0], sim.own(), sim.traffic(ORIGIN.lat, ORIGIN.lon, 15))
+    assert st.occupied_by == ["ARG5310"]
+    sequence.RUNWAY_USERS["SATS"] = {"ARG5310": "04"}  # on another runway: not ours
+    st = sequence.runway_status(ORIGIN, ORIGIN.runways[0], sim.own(), sim.traffic(ORIGIN.lat, ORIGIN.lon, 15))
+    assert st.occupied_by == []
+
+
+def test_holding_short_call_to_ground_after_the_handoff_gets_the_tower_frequency():
+    sim = _tower_sim()
+    sim.update(com1_mhz=121.9, wind_dir_deg=80.0, wind_kt=20.0)
+    r = handle(ORIGIN, sim, None, _Quiet(), [], "Testa Ground, Martinair 4133, holding short of runway 13 on alfa",
+               session=_session(clearance="confirmed"))
+    assert r == f"{CS}, contact Testa Tower one one eight decimal eight five."
+
+
 def test_landing_clearance_on_final_and_number_two_behind_traffic():
     sim = FakeSim(DEST, callsign="MAR4133")
     sim.update(com1_mhz=118.7, wind_dir_deg=190.0, wind_kt=8.0)
@@ -185,6 +230,23 @@ def _watch(sim, session, world=None):
             said.append(text)
 
     return _Callbacks(world or _world(), sim, Cap(), [], session), said
+
+
+def test_on_ground_glitch_at_the_gate_is_not_a_landing():
+    """Real sim, SABE: SIM_ON_GROUND read 0 at startup, then 1 -> was taken for a landing, and Ground answered
+    every taxi request with 'taxi to stand one'."""
+    sim = FakeSim(ORIGIN, callsign="MAR4133")
+    sim.update(lat=-34.5638, lon=-58.4072, com1_mhz=121.9, on_ground=False)  # first read: bogus, standing still
+    s = _session(clearance="confirmed")
+    cb, _ = _watch(sim, s)
+    cb.tick(now=0)
+    sim.update(on_ground=True)
+    cb.tick(now=1)
+    sim.update(on_ground=False)  # a failed read later on
+    cb.tick(now=2)
+    sim.update(on_ground=True)
+    cb.tick(now=3)
+    assert not s.landed and s.departed_from is None
 
 
 def test_tower_hands_off_to_departure_after_takeoff_and_repeats_once():
