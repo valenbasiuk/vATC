@@ -8,6 +8,12 @@ from atc.models import Airport, Runway
 
 CALM_KT = 3.0
 MAX_TAILWIND_KT = 5.0  # a preferred runway stays in use up to this tailwind (ICAO noise-preferential limit)
+AI_FLOW_MAX_TAILWIND_KT = 10.0  # the runway the sim's AI uses stays the runway in use up to this tailwind
+
+# The runway the sim's own AI traffic is using, per airport and use ("departure" / "arrival"), kept by the chatter
+# watcher (tracker.ai_flow). MSFS AI picks its runway itself and ignores this ATC; following it keeps the user and
+# the AI on the same runway (real sim, SABE: AI departing 31 while this ATC sent the user to 13).
+AI_FLOW: dict[str, dict[str, str]] = {}
 
 
 def headwind_kt(wind_dir_deg: float, wind_kt: float, runway_heading_deg: float) -> float:
@@ -72,6 +78,9 @@ def runway_in_use(
     candidates = [r for r in airport.runways if r.heading_deg is not None]
     if not candidates:
         return None
+    ai = _ai_runway(airport, candidates, wind_dir_deg, wind_kt, use)
+    if ai is not None:
+        return ai
     cfg = runway_config(airport, wind_dir_deg, wind_kt) if use in ("departure", "arrival") else None
     if cfg is not None:
         listed = cfg.get(use) or cfg.get("arrival", [])
@@ -96,6 +105,25 @@ def runway_in_use(
     if wind_dir_deg is None or wind_kt is None or wind_kt <= CALM_KT:
         return max(candidates, key=lambda r: r.length_ft or 0)
     return max(candidates, key=lambda r: headwind_kt(wind_dir_deg, wind_kt, r.heading_deg))
+
+
+def _ai_runway(airport: Airport, candidates: list[Runway], wind_dir_deg: float | None, wind_kt: float | None,
+               use: str | None) -> Runway | None:
+    """The runway the sim's AI is using for `use`, unless its tailwind is beyond AI_FLOW_MAX_TAILWIND_KT. With
+    separate departure / arrival runways (`runway_configs`) only the AI's runway for that same use counts."""
+    flow = AI_FLOW.get(airport.icao)
+    if not flow:
+        return None
+    ident = flow.get(use) if use else None
+    if ident is None and not airport.runway_configs:
+        ident = flow.get("departure") or flow.get("arrival")
+    rwy = next((r for r in candidates if ident and _same(r.ident, ident)), None)
+    if rwy is None:
+        return None
+    if wind_dir_deg is not None and wind_kt is not None \
+            and headwind_kt(wind_dir_deg, wind_kt, rwy.heading_deg) < -AI_FLOW_MAX_TAILWIND_KT:
+        return None
+    return rwy
 
 
 def runways_in_use(airport: Airport, wind_dir_deg: float | None, wind_kt: float | None, use: str) -> list[Runway]:

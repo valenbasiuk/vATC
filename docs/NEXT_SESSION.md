@@ -46,6 +46,19 @@ Ask Valen to run (voice, PTT, no --airport, no --simbrief first, then with it):
   Argentine controllers are too hard to understand).
 Fix what comes back before step 3.
 
+## 1b. First real-sim flight, 2026-10-07 (SABE, IFR): fixed
+- Startup SIM_ON_GROUND glitch read as a landing -> Ground gave "taxi to stand" (flow.track ignores slow/low
+  "airborne" reads, a landing needs an airborne phase seen first).
+- "On holding point ... runway 13" to Tower went to the LLM, which cleared takeoff with an AI lined up on 31:
+  now code-owned (flow.is_ready_call); Tower remembers the AI it put on a runway (sequence.RUNWAY_USERS from
+  tracker.runway_users) and prints a `[runway ..]` debug line per decision: if it happens again, read that line.
+- The runway in use follows the sim's AI (runway.AI_FLOW from tracker.ai_flow, majority of the last 20 min) up to
+  10 kt tailwind; the taxi clearance pins the pilot's runway (session.runway_requests).
+- MSFS AI taxis through the user in the holding-point queue (it ignores this ATC). Valen OK'd building OWN traffic
+  if viable. Step 0 = `python tools/probe_inject.py` (UNTESTED: create a non-ATC aircraft, AIReleaseControl +
+  freeze events, move it with SetDataOnSimObject at 20 Hz, remove it). Full plan (phases, FSLTL / FS Traffic model
+  matching and schedules found on his PC, voices track): docs/OWN_TRAFFIC_PLAN.md.
+
 ## 2. Questions for Valen (don't guess)
 - SARC approach: the sim's db gives APP 118.1 / 118.7 "Resistencia"; the VATSIM manual has SARE_APP 119.4
   "Resistencia Control". Which does MSFS show at SARC? Only then change SARC.yaml.

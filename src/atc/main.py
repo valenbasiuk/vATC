@@ -20,8 +20,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, sequence, \
-    weather
+from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, runway, \
+    sequence, weather
 from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -437,6 +437,10 @@ class _Callbacks:
             if ex is not None:
                 self.bus.offer(ex)
         sequence.RUNWAY_USERS[apt.icao] = tracker.runway_users(now)
+        flow_now = tracker.ai_flow(now)
+        if flow_now != runway.AI_FLOW.get(apt.icao, {}):
+            print(f"[AI runway use at {apt.icao}: {flow_now or 'none'}]")
+        runway.AI_FLOW[apt.icao] = flow_now
         picked = self.world.pick(own)
         role = picked[1].role if picked and picked[0].icao == apt.icao and picked[1].can_reply else None
         ex = self.bus.next_due(now, role)

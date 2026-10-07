@@ -54,6 +54,7 @@ class Event:
 
 RECHECK_S = 5.0  # an aircraft on final without landing clearance is looked at again this often
 LINEUP_HELD_S = 300.0
+AI_FLOW_WINDOW_S = 1200.0  # the AI's runway in use: from their movements in the last 20 minutes
 
 
 def _aligned_runway(airport: Airport, t: Traffic) -> Runway | None:
@@ -97,6 +98,7 @@ class TrafficTracker:
         self.airport = airport
         self.tracks: dict[str, Track] = {}
         self.started = False  # after the first update: aircraft seen from then on are new arrivals in range
+        self.movements: dict[tuple[str, str], tuple[float, str]] = {}  # (use, callsign) -> (time, runway)
 
     def _initial_phase(self, t: Traffic) -> str:
         a = self.airport
@@ -152,6 +154,7 @@ class TrafficTracker:
                 (_final_runway(a, t) or (None,))[0] if new == "final" else None
             if rwy is not None:
                 tr.runway = rwy.ident
+                self.movements[("arrival" if new == "final" else "departure", t.callsign)] = (now, rwy.ident)
             tr.phase, tr.since = new, now
             if new == "final":
                 tr.last_offer = now
@@ -161,6 +164,21 @@ class TrafficTracker:
             del self.tracks[gone]
         self.started = True
         return events
+
+    def ai_flow(self, now: float) -> dict[str, str]:
+        """{"departure": "31", "arrival": "31"}: the runway most AI lined up / took off on, and came in on final to,
+        within the last AI_FLOW_WINDOW_S (a tie goes to the most recent one). Older movements are forgotten."""
+        self.movements = {k: v for k, v in self.movements.items() if now - v[0] <= AI_FLOW_WINDOW_S}
+        out: dict[str, str] = {}
+        for use in ("departure", "arrival"):
+            seen: dict[str, tuple[int, float]] = {}  # runway -> (count, latest)
+            for (u, _), (at, ident) in self.movements.items():
+                if u == use:
+                    n, last = seen.get(ident, (0, 0.0))
+                    seen[ident] = (n + 1, max(last, at))
+            if seen:
+                out[use] = max(seen, key=lambda i: seen[i])
+        return out
 
     def runway_users(self, now: float) -> dict[str, str | None]:
         """{callsign: runway} of the AI lined up, rolling for takeoff or rolling out after landing: Tower put them

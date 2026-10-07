@@ -19,6 +19,7 @@ def _no_new_airport_files(monkeypatch):
 def _no_runway_users_left_over(monkeypatch):
     """The AI Tower put on a runway (kept by the chatter watcher) never leak from one test into the next."""
     monkeypatch.setattr("atc.sequence.RUNWAY_USERS", {})
+    monkeypatch.setattr("atc.runway.AI_FLOW", {})
 
 
 @pytest.fixture(autouse=True)
