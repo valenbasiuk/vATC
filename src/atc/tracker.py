@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from atc import own
 from atc.geo import bearing_deg, distance_nm, heading_diff
 from atc.models import Airport, Runway, Traffic
 from atc.sequence import along_cross, final_distance, on_runway
@@ -119,6 +120,8 @@ class TrafficTracker:
         events: list[Event] = []
         seen = set()
         for t in traffic:
+            if own.is_own(t.callsign):  # our own aircraft: their pilot makes their radio calls
+                continue
             seen.add(t.callsign)
             tr = self.tracks.get(t.callsign)
             if tr is None:

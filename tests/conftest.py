@@ -20,6 +20,15 @@ def _no_runway_users_left_over(monkeypatch):
     """The AI Tower put on a runway (kept by the chatter watcher) never leak from one test into the next."""
     monkeypatch.setattr("atc.sequence.RUNWAY_USERS", {})
     monkeypatch.setattr("atc.runway.AI_FLOW", {})
+    monkeypatch.setattr("atc.own.OWN", {})
+
+
+@pytest.fixture(autouse=True)
+def _no_community_folder(monkeypatch):
+    """Own traffic never reads the sim's Community folder (FSLTL, FS Traffic, GSX) of whoever runs the tests."""
+    monkeypatch.setenv("ATC_COMMUNITY_DIR", "Z:/no/such/Community")
+    for var in ("ATC_OWN_MODELS", "ATC_OWN_TUG", "ATC_OWN_TUG_YAW"):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)

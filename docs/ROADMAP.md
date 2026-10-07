@@ -43,7 +43,8 @@ When Valen reports one, fix it and move the line to "verified" (or delete it).
   rolls out slowly it may come late, if AI positions jump it may come early.
 - **Speed control** (`enroute._speed_text`): `AIRSPEED_INDICATED` units unverified (falls back to ground speed,
   which is off by the wind). Speeds: 210 on vectors, 180 on the intercept, 160 with traffic < 6 NM ahead.
-- **Ground conflicts** (`ground.py`): straight-line prediction for 30 s from the actual movement, called after 2
+- **Ground conflicts** (`ground.py`) — "give way" WORKED in the real sim (Valen, 2026-10-07). Kept for the record:
+  straight-line prediction for 30 s from the actual movement, called after 2
   ticks in a row (`PERSIST_TICKS`), within 65 m (`CONFLICT_NM`). Real AI turns a lot on taxiways: false
   "give way" calls are the main risk; also missed ones when an AI turns into you. Only on Ground.
 - **Progressive taxi** (`taxi.turn_calls`): the turn is said ~150 m before it (`TURN_CALL_NM`); off the computed

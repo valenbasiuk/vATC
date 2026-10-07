@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import csv
 import re
+import threading
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +45,7 @@ class Exchange:
     role: str  # position that talks: "tower" / "ground" / the radar frequency's role ("approach", "departure")
     priority: int = 1  # 0 = most urgent (landing/takeoff clearances)
     country: str | None = None  # where the AI aircraft is from (its pilot's accent)
+    on_said: Callable[[], None] | None = None  # our own traffic: the pilot moves once its clearance was heard
 
 
 @lru_cache(maxsize=1)
@@ -57,7 +60,12 @@ def _airline_telephony(path: str = "data/airlines.dat") -> dict[str, str]:
                     out.setdefault(row[1].strip().lower(), row[5].strip().title())
                     if len(row[4]) == 3:
                         out.setdefault(row[4].upper(), row[5].strip().title())
+    out.update(_TELEPHONY_FIXES)
     return out
+
+
+# airlines newer than the OpenFlights list (or wrong in it): ICAO -> telephony, as FSLTL's aircraft.cfg has them
+_TELEPHONY_FIXES = {"FBZ": "Bondi", "JES": "Smartbird"}
 
 
 def ai_callsign(t: Traffic, faa: bool = False) -> str:
@@ -222,14 +230,16 @@ class RadioBus:
     queue: list[Exchange] = field(default_factory=list)
     busy_until: float = 0.0  # gap after the last transmission (anyone's)
     quiet_until: float = 0.0  # the user's turn: after ATC talked to them
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)  # own traffic offers from its thread
 
     def offer(self, ex: Exchange) -> None:
         # a newer event replaces the one still waiting for the same aircraft on the same position (a Tower handoff
         # and the Departure check-in that follows it are on different frequencies: both stay)
-        self.queue = [q for q in self.queue if (q.key, q.role) != (ex.key, ex.role)]
-        self.queue.append(ex)
-        self.queue.sort(key=lambda q: (q.priority, q.created))
-        del self.queue[MAX_QUEUE:]
+        with self.lock:
+            self.queue = [q for q in self.queue if (q.key, q.role) != (ex.key, ex.role)]
+            self.queue.append(ex)
+            self.queue.sort(key=lambda q: (q.priority, q.created))
+            del self.queue[MAX_QUEUE:]
 
     def heard(self, now: float, to_user: bool = False) -> None:
         """Something was transmitted (by anyone). After ATC talks to the user, leave them time to answer."""
@@ -238,13 +248,14 @@ class RadioBus:
             self.quiet_until = max(self.quiet_until, now + READBACK_S)
 
     def next_due(self, now: float, role: str | None) -> Exchange | None:
-        self.queue = [q for q in self.queue if now - q.created <= STALE_S]
-        if role is None or now < self.busy_until or now < self.quiet_until:
+        with self.lock:
+            self.queue = [q for q in self.queue if now - q.created <= STALE_S]
+            if role is None or now < self.busy_until or now < self.quiet_until:
+                return None
+            for i, q in enumerate(self.queue):
+                if q.role == role:
+                    return self.queue.pop(i)
             return None
-        for i, q in enumerate(self.queue):
-            if q.role == role:
-                return self.queue.pop(i)
-        return None
 
 
 def facility_role(airport: Airport, own: OwnState) -> str | None:

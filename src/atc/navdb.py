@@ -307,6 +307,27 @@ def taxi_network(icao: str, con: sqlite3.Connection | None = None):
     return net
 
 
+def parkings(icao: str, con: sqlite3.Connection | None = None) -> list[dict]:
+    """Parking spots: ref ("12", "12A"), lat, lon, heading (true, the nose of a parked aircraft), type (Little
+    Navmap: GS/GM/GH gates, RGA/RGAS/RGAM/RGAL ramps, RC cargo, FUEL, V vehicles...), radius_m, airline codes."""
+    con = con or connect()
+    if con is None:
+        return []
+    aid = _airport_id(con, icao)
+    if aid is None:
+        return []
+    out = []
+    for number, suffix, typ, codes, radius, heading, lon, lat in con.execute(
+            "select number, suffix, type, airline_codes, radius, heading, lonx, laty from parking where airport_id=?",
+            (aid,)):
+        if number is None:
+            continue
+        out.append({"ref": f"{number}{suffix or ''}".upper(), "lat": lat, "lon": lon, "heading": heading or 0.0,
+                    "type": typ or "", "radius_m": (radius or 0.0) * 0.3048,  # VERIFY: LNM radius in feet
+                    "airlines": [c.strip().upper() for c in (codes or "").split(",") if c.strip()]})
+    return out
+
+
 # --- navaids and waypoints ---------------------------------------------------------------------------
 
 def find_fix(ident: str, near: tuple[float, float], con: sqlite3.Connection | None = None,

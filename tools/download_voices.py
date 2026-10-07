@@ -2,6 +2,7 @@
 
     python tools/download_voices.py            # the two accent sets (~150 MB)
     python tools/download_voices.py --more     # + a few single British/American voices
+    python tools/download_voices.py --high     # + every high-quality English / Spanish voice (~650 MB)
     python tools/download_voices.py --list     # what is in voices/ and how it is used
 
   en_US-l2arctic-medium  24 speakers with a first language other than English: Spanish (Aerolineas, LATAM, Iberia,
@@ -25,6 +26,10 @@ BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 ACCENTS = ["en_US-l2arctic-medium", "en_GB-vctk-medium"]
 MORE = ["en_GB-alan-medium", "en_GB-northern_english_male-medium", "en_GB-southern_english_female-low",
         "en_US-ryan-high", "en_US-joe-medium", "en_US-kristin-medium"]
+# --high: every "high" quality voice that can be used: English (the ATC and the pilots) and Spanish (kept for the
+# Spanish ATC later). The other high ones (de, it, pl, uk, kk) read English with their own language's rules.
+HIGH = ["en_GB-cori-high", "en_US-lessac-high", "en_US-ljspeech-high", "en_US-ryan-high", "en_US-libritts-high",
+        "es_AR-daniela-high", "es_MX-claude-high"]
 
 
 def url_for(voice: str, ext: str) -> str:
@@ -58,12 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path, default=Path("voices"))
     p.add_argument("--more", action="store_true", help="also single-speaker British/American voices")
+    p.add_argument("--high", action="store_true", help="every high-quality English and Spanish voice (~650 MB)")
     p.add_argument("--list", action="store_true", help="show the accent pools made from voices/")
     args = p.parse_args(argv)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     if not args.list:
         args.out.mkdir(parents=True, exist_ok=True)
-        for v in ACCENTS + (MORE if args.more else []):
+        for v in ACCENTS + (MORE if args.more else []) + (HIGH if args.high else []):
             print(v)
             try:
                 fetch(v, args.out)

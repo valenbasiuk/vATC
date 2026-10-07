@@ -131,6 +131,24 @@ def group_number(num: str) -> str:
     return digits(num)
 
 
+_CARDINAL = ["north", "east", "south", "west"]
+PUSH_STYLES_ICAO = ("tail_cardinal", "facing", "tail_side")
+PUSH_STYLES_FAA = ("tail_cardinal", "facing")
+
+
+def push_direction(nose_before: float, nose_after: float, style: str) -> str:
+    """Where the tug leaves the aircraft, the way controllers say it:
+    "tail east" (where the tail ends up pointing), "facing west" (where the nose does), "tail left" / "tail right"
+    (which way the tail swings, seen from the cockpit: nose turning right = tail left). A side is only said for a
+    clear turn (45-135 degrees); otherwise the compass form."""
+    swing = (nose_after - nose_before + 180.0) % 360.0 - 180.0  # + = the nose ends up to the right
+    if style == "tail_side" and 45.0 <= abs(swing) <= 135.0:
+        return "tail left" if swing > 0 else "tail right"
+    if style == "facing":
+        return f"facing {_CARDINAL[round(nose_after / 90.0) % 4]}"
+    return f"tail {_CARDINAL[round(((nose_after + 180.0) % 360.0) / 90.0) % 4]}"
+
+
 def spell(text: str) -> str:
     """Letters in the ICAO alphabet, digits one by one; everything else dropped."""
     out = []

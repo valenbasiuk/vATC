@@ -203,8 +203,10 @@ def deliver_after_standby(session: Session, airport: Airport, facility: Facility
     return f"{session.spoken_callsign}, {_issue(session, airport, dest_name)}."
 
 
-def handle_push(session: Session, airport: Airport, facility: Facility, pilot_text: str) -> str | None:
-    """Push/start request on Ground: approve it, or send an IFR flight without clearance back to Delivery."""
+def handle_push(session: Session, airport: Airport, facility: Facility, pilot_text: str,
+                direction=None) -> str | None:
+    """Push/start request on Ground: approve it, or send an IFR flight without clearance back to Delivery.
+    `direction`: a function giving "tail left" / "tail east" / "facing west" for this stand, or None."""
     norm = _normalize(pilot_text)
     if facility.role != "ground" or not re.search(r"\b(push|pushback|start up|startup|start)\b", norm):
         return None
@@ -221,7 +223,9 @@ def handle_push(session: Session, airport: Airport, facility: Facility, pilot_te
         if f:
             return f"{cs}, no clearance received yet. Contact Delivery {phrase.frequency(f.mhz, airport.country == 'US')}."
     station = f", {callsign_for(airport, facility)}" if session.first_contact(facility.role) else ""
-    return f"{cs}{station}, push back approved." if airport.faa else f"{cs}{station}, push and start approved."
+    way = direction() if direction is not None else None
+    way = f", {way}" if way else ""
+    return f"{cs}{station}, push back approved{way}." if airport.faa else f"{cs}{station}, push and start approved{way}."
 
 
 def context_lines(session: Session, airport: Airport, facility: Facility) -> list[str]:

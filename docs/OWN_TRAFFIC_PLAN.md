@@ -40,9 +40,47 @@ Community folder: `%LOCALAPPDATA%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\Loc
 Sim settings while our traffic runs (FSLTL's own advice for an injector): Traffic type OFF, aircraft traffic
 quantity OFF, parked aircraft OFF (or low). Then every aircraft around is ours (plus parked ones, which don't move).
 
+## Status
+- Phase 0 PASSED in MSFS (2026-10-07, SABE): sim-AI model and `FSLTL_FAIB_B738_FBZ-FlyBondi` both created,
+  moved 60 m + turned 90 deg at 20 Hz smoothly, ended 0.3 m from the commanded spot, removed. Valen saw all of it.
+- Phase 1 BUILT, fake sim + tests only (tests/test_own_traffic.py; a whole SABE departure simulated with the real
+  taxi map: push 23 s, taxi via Mike, Alfa, takeoff on 13 at ~5 min). `src/atc/own/`, run with `--own-traffic`.
+  WATCH IN THE SIM (first flight with it, sim traffic OFF):
+  - height: on its gear while taxiing (not sunk / floating)? `PLANE ALT ABOVE GROUND` of a frozen object is what
+    the injector follows (injector.py).
+  - pitch on rotation: nose up? If it pitches DOWN, run with `$env:ATC_OWN_PITCH_SIGN = "1"`.
+  - gear up after takeoff, lights, engines (events on a non-ATC aircraft: may do nothing).
+  - its ATC id: does the sim report our callsign ("ARG1216") for the object? (own.merge also drops anything within
+    20 m of one of ours, so a different id only matters for the chatter tracker.)
+  - SimConnect exceptions printed as `[own traffic: SimConnect exception ...]`.
+  - pushback looks right (tail first along the lead-in, then along the taxiway)? stops behind you on the taxiway?
+
+- First flight with it (2026-10-07, SABE): taxi and waiting behind others OK, takeoff sequencing OK; rough /
+  laggy (worst on pushback), stopped a bit past the holding point, braking not smooth, no landings, parked sim
+  aircraft still visible (sim setting), FSLTL's Aerolineas logo looked stretched, no tug. Then built (fake sim +
+  tests, 256 tests; 5 x 40 min simulated at SABE: 0 runway conflicts, 0 landings without clearance):
+  - smoothness: telemetry read on its own thread (it blocked the mover for up to 1.5 s); poses sent once per sim
+    frame ("Frame" event + Win32 event handle); sim clock stops on "Pause" and runs at the sim rate; terrain
+    height eased in (no bump once a second).
+  - taxi 15 kt on taxiways, 10 kt on aprons, 7 kt in turns, never above 20; braking planned at 0.45 m/s2 through
+    a jerk-limited controller; stops 60 m behind traffic; nose stops 6 m short of the holding point.
+  - phase 2 arrivals: 12 NM final (behind whoever is on it), Tower call at 9 NM, landing clearance or "continue
+    approach" (traffic on the runway / departing / number two), go-around at 1 NM without one; touchdown ~400 m,
+    braking dosed for the exit planned at touchdown on the stand's side of the runway; "contact Ground", taxi to
+    the stand, parked 4-8 min, removed. Departures wait for arrivals inside 5 NM.
+  - traffic amount: `schedule.movements_per_hour` (FS Traffic deps today x2 / 16 h, boost x3 under 20/day, x1.5
+    under 150, x2 more at 3000 m+ runways; min 6/h, max 40/h; GA only without schedule: 3/h towered, 1.5/h not),
+    airport YAML `traffic_per_hour` overrides, `--own-factor`. SABE 22/h, SAEZ 20/h, SARC/SAAR 6/h, JFK 40/h.
+  - liveries: FS Traffic's first (ATC_OWN_MODELS=fsltl for FSLTL first). Tug: GSX's FSDT_TPX_200 / TPX_500 under the
+    nose during the push (AICreateSimulatedObject; ATC_OWN_TUG=<title>|off, ATC_OWN_TUG_YAW if it faces wrong).
+  - push held by Ground while someone taxis behind the stand; the push stops for traffic.
+  - gear heights per type learned from ground spawns (data/gear_heights.json) for the ones created in the air.
+  WATCH IN THE SIM next: smoothness per frame; arrivals (sunk/floating after touchdown = gear height guess); the
+  tug (appears? faces right? moves with the nose?); the Pause event; exits taken / stands reached.
+
 ## Phases
 
-### Phase 0 - can we move an aircraft smoothly? (probe written: `tools/probe_inject.py`, UNTESTED)
+### Phase 0 - can we move an aircraft smoothly? (`tools/probe_inject.py`: PASSED)
 Valen runs it standing on an apron. Pass: the aircraft appears on the ground 120 m ahead (not sunk / floating),
 slides 60 m and turns smoothly at 20 Hz, is removed. Also try `--title "FSLTL_FAIB_B738_FBZ-FlyBondi"` (a FSLTL
 title, not one copied from the sim's AI).

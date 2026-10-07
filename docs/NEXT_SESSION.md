@@ -56,8 +56,9 @@ Fix what comes back before step 3.
   10 kt tailwind; the taxi clearance pins the pilot's runway (session.runway_requests).
 - MSFS AI taxis through the user in the holding-point queue (it ignores this ATC). Valen OK'd building OWN traffic
   if viable. Step 0 = `python tools/probe_inject.py` (UNTESTED: create a non-ATC aircraft, AIReleaseControl +
-  freeze events, move it with SetDataOnSimObject at 20 Hz, remove it). Full plan (phases, FSLTL / FS Traffic model
-  matching and schedules found on his PC, voices track): docs/OWN_TRAFFIC_PLAN.md.
+  freeze events, move it with SetDataOnSimObject at 20 Hz, remove it): PASSED in MSFS. Phase 1 (departures) is
+  built and tested in the fake sim: `--own-traffic`. Full plan, status and the in-sim watch list:
+  docs/OWN_TRAFFIC_PLAN.md. Next: Valen flies with it at SABE; then phase 2 (arrivals); voices track (V1 compare tool).
 
 ## 2. Questions for Valen (don't guess)
 - SARC approach: the sim's db gives APP 118.1 / 118.7 "Resistencia"; the VATSIM manual has SARE_APP 119.4

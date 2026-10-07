@@ -101,6 +101,9 @@ class Airport:
     # [{"arrival": ["28L", "28R"], "departure": ["1L", "1R"]}, {"arrival": ["19L", "19R"], "departure": ["10L", "10R"]}].
     # Empty = one runway for everything (the best headwind), like SABE.
     runway_configs: list[dict] = field(default_factory=list)
+    # Hand field: how much of our own traffic (--own-traffic) moves here, departures + arrivals per hour. None =
+    # from FS Traffic's schedule for today (atc.own.schedule.movements_per_hour).
+    traffic_per_hour: float | None = None
 
     @property
     def faa(self) -> bool:

@@ -119,7 +119,14 @@ def handle(
     if reply is None and plan is not None:  # IFR clearance is code's job: issue, readback check, correction
         reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
     if reply is None:
-        reply = handle_push(session, airport, facility, pilot_text)
+        def push_way() -> str | None:  # "tail left": where the tug leaves them, from the taxi map
+            from atc.own.airport import user_push_words
+
+            rwy_dep = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "departure")
+            return user_push_words(world.taxi.get(airport.icao), airport, rwy_dep, own.lat, own.lon, own.heading_deg,
+                                   f"{airport.icao}{session.callsign}")
+
+        reply = handle_push(session, airport, facility, pilot_text, push_way)
     if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
         reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
     if reply is None and _SAY_AGAIN.search(_normalize(pilot_text)) and history \
@@ -461,6 +468,8 @@ class _Callbacks:
             else:
                 self.speaker.say(text)
             self.last_chatter.append((who, text))
+        if ex.on_said is not None:  # our own traffic: its pilot moves now that the clearance was heard
+            ex.on_said()
         print(self.prompt, end="", flush=True)
         self.bus.heard(now)
         return True
@@ -587,6 +596,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--simbrief", type=Path, help="SimBrief OFP json (tools/probe_simbrief.py saves simbrief_last.json)")
     p.add_argument("--standby", type=float, default=0.3,
                    help="chance (0-1) Delivery says 'standby' and calls back with the clearance 10-25 s later")
+    p.add_argument("--own-traffic", action="store_true",
+                   help="our own traffic that obeys this ATC (docs/OWN_TRAFFIC_PLAN.md; set the sim's traffic OFF)")
+    p.add_argument("--own-factor", type=float, default=1.0,
+                   help="own traffic: x the airport's usual amount (from FS Traffic's schedule; YAML traffic_per_hour)")
+    p.add_argument("--own-max", type=int, help="own traffic: at most this many aircraft at once (default: by airport)")
     args = p.parse_args(argv)
 
     plan = load_simbrief(args.simbrief) if args.simbrief else None
@@ -672,24 +686,80 @@ def main(argv: list[str] | None = None) -> None:
         if args.ptt:
             _run_ptt(args, world, sim, llm, speaker, history, session)
         else:
-            _run_text(world, sim, llm, speaker, history, session)
+            _run_text(world, sim, llm, speaker, history, session, args)
     except KeyboardInterrupt:
         pass
     finally:
+        if _OWN[0] is not None:
+            _OWN[0].close()  # our aircraft leave the sim with us
         sim.close()
 
 
-def _run_text(world, sim, llm, speaker, history, session) -> None:
+_OWN: list = [None]  # the own-traffic manager of this run, closed on exit
+
+
+def _start_own_traffic(args, world, sim, cb):
+    """--own-traffic: our own aircraft (atc.own), moved by a thread at 20 Hz, talking on the chatter radio."""
+    if not getattr(args, "own_traffic", False):
+        return None
+    from atc.own.manager import OwnTraffic
+
+    if args.sim:
+        from atc.own.injector import SimInjector
+
+        injector = SimInjector(Path(args.dll) if args.dll else None)
+    else:
+        from atc.own.injector import FakeInjector
+
+        injector = FakeInjector()
+
+    def wind(airport):
+        known = cb.session.surface_wind.get(airport.icao)
+        if known:
+            return known
+        u = mgr.user
+        return (u.wind_dir_deg, u.wind_kt) if u is not None else (None, None)
+
+    mgr = OwnTraffic(world, sim, injector, bus=cb.bus, wind=wind, factor=args.own_factor, max_alive=args.own_max,
+                     auto=True)
+    from atc.own import schedule
+
+    here = world.airports[0]
+    rate = schedule.movements_per_hour(here, mgr.community, args.own_factor)
+    print(f"own traffic: on, ~{rate:.0f} movements an hour at {here.icao} (--own-factor {args.own_factor:g}); "
+          "models: " + (f"{len(mgr.catalog.fsltl)} FSLTL rules, {len(mgr.catalog.fst)} FS Traffic" if len(mgr.catalog)
+                        else "none found (ATC_COMMUNITY_DIR)") + ". Set the sim's AI traffic and parked aircraft OFF.")
+    mgr.start()
+    _OWN[0] = mgr
+    return mgr
+
+
+def _run_text(world, sim, llm, speaker, history, session, args=None) -> None:
     airport = world.airports[0]
     print(f"{airport.icao} {airport.name}. Type your radio calls. /quit to exit.")
     cb = _Callbacks(world, sim, speaker, history, session, prompt="YOU> ")
     cb.start()
+    own_mgr = _start_own_traffic(args, world, sim, cb)
     while True:
         try:
             line = input("YOU> ").lstrip("\ufeff").strip()  # piped input from PowerShell starts with a BOM
         except EOFError:
             break
         if not line:
+            continue
+        if line.split()[0] in ("/owndep", "/ownarr"):  # one of ours now: "/owndep [ARG B738]", "/ownarr [ga]"
+            if own_mgr is None:
+                print("start with --own-traffic")
+                continue
+            from atc.own.schedule import Departure
+
+            parts = line.split()
+            dep = Departure(parts[1].upper(), str(random.randint(1000, 4999)), parts[2].upper()) \
+                if len(parts) == 3 else None
+            ga = len(parts) == 2 and parts[1].lower() == "ga"
+            apt = world.nearest(sim.own()) or airport
+            spawn = own_mgr.spawn_departure if parts[0] == "/owndep" else own_mgr.spawn_arrival
+            print(spawn(apt, dep=dep, ga=ga))
             continue
         if line.startswith("/"):
             with cb.lock:
@@ -771,6 +841,7 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
     print(f"{airport.icao} {airport.name}. Hold {ptt.describe()} to talk. Ctrl+C to exit.")
     cb = _Callbacks(world, sim, speaker, history, session, ptt=ptt)
     cb.start()
+    _start_own_traffic(args, world, sim, cb)
     while True:
         audio = ptt.record_once()
         if len(audio) < 4800:  # under 0.3 s: a tap, not a call

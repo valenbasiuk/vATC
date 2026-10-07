@@ -59,6 +59,10 @@ $env:ATC_LLM_MODEL = "gemini:gemini-flash-lite-latest,nvidia:nvidia/nemotron-3-s
 python -m atc --airport SABE --simbrief simbrief_last.json  # /freq 129.3 = Delivery, 121.9 Ground; fake sim starts on Ground
 ```
 In the sim `--airport` can be left out: the airport you are on is found (and its YAML written the first time).
+Own traffic (departures + arrivals): add `--own-traffic [--own-factor 1.5] [--own-max N]`, sim AI traffic and
+parked aircraft OFF; REPL `/owndep [ARG B738]`, `/ownarr [ga]`. Env: ATC_OWN_MODELS=fsltl, ATC_OWN_TUG=off|<title>,
+ATC_OWN_PITCH_SIGN, ATC_OWN_TUG_YAW. `tools/probe_inject.py` = the injection probe (passed in MSFS 2026-10-07).
+High Piper voices: `python tools/download_voices.py --high` (done 2026-10-07: cori, lessac, ljspeech, ryan + es).
 Accent voices: `python tools/download_voices.py` once (done on Valen's PC 2026-10-06; `--list` shows the pools).
 Preset (not live) weather in the sim: `$env:ATC_METAR = "off"` so the ATIS doesn't read the real METAR.
 Voice in the sim: add `--sim --voice voices/en_US-libritts-high.onnx --ptt` (keyboard F9, or `--ptt-key f10`,
@@ -135,6 +139,14 @@ src/atc/phrase.py        ICAO/FAA pronunciation (digits, niner, "decimal"/"point
 src/atc/readback.py      taxi/takeoff/landing readback check + is_acknowledgement() (silence on "roger"/correct readbacks)
 src/atc/sequence.py      runway status (on runway / on final) -> Tower may or may not clear takeoff/landing; guard()
 src/atc/scenarios.py     scripted scenario replay with content checks (python -m atc.scenarios)
+src/atc/own/             OUR OWN TRAFFIC (--own-traffic, docs/OWN_TRAFFIC_PLAN.md): catalog.py (FS Traffic / FSLTL
+                         titles, GSX tug), schedule.py (FS Traffic schedules, movements per hour per airport),
+                         airport.py (stands, push/taxi/line-up paths, exits + taxi-in), motion.py (kinematics:
+                         taxi controller, takeoff, approach/landing), pilot.py (Departure/ArrivalPilot state
+                         machines, stop behind traffic), injector.py (SimConnect create/release/freeze/set position
+                         per sim frame, pause, gear heights; FakeInjector), manager.py (read + move threads, spawning,
+                         clearances and radio for our aircraft); __init__ = registry merged into every traffic list
+                         (own.merge), ignored by the tracker
 src/atc/sim/             base.py (interface), fake.py (works), simconnect_source.py (own aircraft, UNTESTED),
                          ai_traffic.py (raw ctypes AI traffic, parsing tested, DLL calls UNTESTED)
 src/atc/airports/        gen.py (OurAirports CSV -> YAML), schema.py (load/save/validate)
@@ -158,7 +170,8 @@ tests/                   230 tests (test_whole_flight.py: SABE -> SAAR end to en
 Verified on Valen's PC: tests, own telemetry (squawk fixed), AI traffic, airport generation, Piper voice, OpenRouter LLM
 calls, the SABE IFR departure flow in the text REPL (Delivery -> Ground -> taxi) with nemotron.
 Real sim (Valen, 2026-10-05/06): taxi at SABE, Ground -> Tower -> Approach handoffs, squawk handling, AI airline +
-flight number in chatter, KSFO Ground after the auto-airport fix.
+flight number in chatter, KSFO Ground after the auto-airport fix. 2026-10-07: IFR departure at SABE (Delivery,
+push, taxi), ground conflicts "give way", aircraft injection (tools/probe_inject.py).
 Not reported yet: faster-whisper STT and push-to-talk (`--ptt`), radio filter by ear, sentence-streamed Piper playback,
 accent voices by ear, ATIS by ear (COM2 receive simvar unverified), callsign from the sim's ATC settings, spawn
 detection writing a new YAML, radar monitoring/go-around in a real flight, any VFR pattern work at SABE/SARC,

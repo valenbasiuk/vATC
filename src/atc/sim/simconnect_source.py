@@ -115,7 +115,9 @@ class SimConnectSource:
                 t = to_traffic(rec)
                 if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm:
                     out.append(t)
-            return out
+            from atc import own as own_traffic
+
+            return own_traffic.merge(out, center_lat, center_lon, radius_nm)  # ours, with their real speed
         except Exception as exc:  # noqa: BLE001 - never crash the radio loop over traffic
             self._ai_failed = True
             print(f"[traffic disabled: {exc}]", file=sys.stderr)

@@ -31,11 +31,10 @@ class FakeSim:
         return self._own
 
     def traffic(self, center_lat: float, center_lon: float, radius_nm: float) -> list[Traffic]:
-        return [
-            t
-            for t in self._traffic
-            if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm
-        ]
+        from atc import own
+
+        near = [t for t in self._traffic if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm]
+        return own.merge(near, center_lat, center_lon, radius_nm)  # plus our own traffic (atc.own)
 
     def close(self) -> None:
         pass
