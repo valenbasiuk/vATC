@@ -1,6 +1,9 @@
 """Every place a flight talks to: the airports in the plan (origin, destination, alternate, --airport) plus
 area control files (airspace/*.yaml). One run covers the whole flight; the tuned frequency decides who answers.
 
+Area control anywhere: the Center sector at the aircraft's position and level from data/centers.json (atc.centers,
+tools/build_centers.py: VATSIM sectors + hand research), else the nearest airspace/*.yaml, else the navdata FIR.
+
 Airports load themselves: spawn somewhere that isn't in the plan (or start without --airport) and the airport
 you are at is found from the sim's scenery (Little Navmap db) or OurAirports, its YAML is written the first time
 (never over an existing file), and its frequencies, taxi map and magvar come from the sim. Tuning a frequency
@@ -35,6 +38,7 @@ class World:
     data_dir: Path = Path("data")
     use_navdb: bool = True
     _tried: set = field(default_factory=set)
+    _tuned_tried: set = field(default_factory=set)
 
     def get(self, icao: str | None) -> Airport | None:
         return next((a for a in self.airports if icao and a.icao == icao.upper()), None)
@@ -52,6 +56,8 @@ class World:
             self.discover(own)  # spawned at an airport that isn't loaded yet
         matches = self._matches(own)
         if not matches and self.discover(own, mhz=own.com1_mhz):
+            matches = self._matches(own)
+        if not matches and self._tuned_center(own):
             matches = self._matches(own)
         if not matches:
             return None
@@ -168,6 +174,10 @@ class World:
         """Area control for where the aircraft is: the first CTR frequency of the nearest airspace file in reach,
         else the FIR the aircraft is in from the navdata boundaries (anywhere in the world: "Oakland Center",
         "Los Angeles Center"), else a CTR frequency the sim lists for the departure airport."""
+        if own is not None:
+            found = self._sector(own, near)
+            if found is not None:
+                return found
         hand = [s for s in self.airspaces if not s.icao.startswith(FIR_PREFIX)]
         spaces = hand if own is None else sorted(
             (s for s in self._airspaces_near(own) if s in hand), key=lambda s: distance_nm(own.lat, own.lon, s.lat, s.lon))
@@ -184,6 +194,40 @@ class World:
                     return a, resolve_facility(a, f.mhz)
         return None
 
+
+    def _sector(self, own: OwnState, near: Airport | None, sec=None) -> tuple[Airport, Facility] | None:
+        """The Center sector of data/centers.json at the aircraft's position and level (or `sec`), kept in
+        `airspaces` like a navdata FIR so its frequency answers when tuned."""
+        from atc import centers
+        from atc.models import Frequency
+
+        sec = sec or centers.sector_at(own.lat, own.lon, own.alt_msl_ft)
+        if sec is None:
+            return None
+        key = FIR_PREFIX + sec.pid
+        a = next((s for s in self.airspaces if s.icao == key), None)
+        if a is None:
+            ref = near or self.nearest(own)
+            same = ref is not None and ref.country == sec.country
+            a = Airport(key, f"{sec.name} ({sec.fir or sec.pid})", own.lat, own.lon, 0.0, country=sec.country,
+                        towered=True, needs_review=False, spoken_name=sec.name,
+                        trans_alt_ft=ref.trans_alt_ft if same else None)
+            desc = f"{sec.callsign}, {sec.source}" + (f"; {sec.note}" if sec.note else "")
+            a.frequencies.append(Frequency("CTR", sec.mhz, desc, sec.callsign))
+            self.airspaces.append(a)
+        a.lat, a.lon = own.lat, own.lon
+        return a, resolve_facility(a, sec.mhz)
+
+    def _tuned_center(self, own: OwnState) -> bool:
+        """A Center frequency tuned before anyone handed it over: the nearest sector on it answers."""
+        from atc import centers
+
+        key = (round(own.lat), round(own.lon), round(own.com1_mhz, 3))
+        if key in self._tuned_tried:
+            return False
+        self._tuned_tried.add(key)
+        sec = centers.by_frequency(own.com1_mhz, own.lat, own.lon)
+        return sec is not None and self._sector(own, None, sec) is not None
 
     def _fir(self, own: OwnState, near: Airport | None) -> tuple[Airport, Facility] | None:
         """The navdata FIR at the aircraft's position, kept in `airspaces` (so its frequency answers when tuned)

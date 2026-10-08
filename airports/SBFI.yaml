@@ -1,0 +1,50 @@
+# Foz do Iguacu / Cataratas (Brazil). Sources 2026-10-08: DECEA AISWEB ROTAER (Torre Foz 118.800, D-ATIS only:
+# no voice ATIS), VATSIM Brasil via VATGlasses (Torre Foz 118.800, Controle Foz 120.300), MSFS navdata (APP 120.300 and
+# 129.100). No Ground: Tower does the ground work. English call signs: "Foz Tower", "Foz Control" (approach unit,
+# Portuguese "Controle Foz"). Single runway 15/33.
+icao: SBFI
+name: Cataratas International Airport
+lat: -25.594167
+lon: -54.489444
+elevation_ft: 786.0
+country: BR
+towered: true
+language: en
+runways:
+- ident: '15'
+  heading_deg: 130.0
+  length_ft: 8875.0
+  surface: ASP
+  lat: -25.585848
+  lon: -54.500118
+- ident: '33'
+  heading_deg: 311.0
+  length_ft: 8875.0
+  surface: ASP
+  lat: -25.601755
+  lon: -54.47971
+frequencies:
+- kind: TWR
+  mhz: 118.8
+  description: Torre Foz (ROTAER)
+  spoken: Foz Tower
+- kind: APP
+  mhz: 120.3
+  description: Controle Foz (VATSIM, navdata)
+  spoken: Foz Control
+- kind: APP
+  mhz: 129.1
+  description: APP secondary (MSFS navdata)
+  spoken: Foz Control
+- kind: APP
+  mhz: 119.15
+  description: APP (OurAirports, older)
+  spoken: Foz Control
+notes:
+- 'D-ATIS only (datalink): no ATIS on the radio. Tower gives wind and QNH.'
+- 'Iguazu (SARI, Argentina) and Guarani (SGES, Paraguay) are within 10 NM: watch the border.'
+needs_review: false
+spoken_name: Foz
+taxi_routes: {}
+mag_var_deg: -17.5
+trans_alt_ft: 4000

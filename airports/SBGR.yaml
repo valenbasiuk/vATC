@@ -1,0 +1,96 @@
+# Sao Paulo / Guarulhos (Brazil). Sources 2026-10-08: DECEA AISWEB ROTAER (Torre Guarulhos 118.400 / 132.750 /
+# 135.200, Solo Guarulhos 121.700 / 126.900, Trafego Guarulhos (clearance) 121.000, ATIS 127.750, Operacoes 122.500),
+# VATSIM Brasil via VATGlasses (Torre Guarulhos 132.750, Controle Sao Paulo 119.600), MSFS navdata (21 Sao Paulo APP
+# channels: they all answer when tuned). English call signs: "Guarulhos Tower / Ground / Clearance", "Sao Paulo Control"
+# (approach unit, Portuguese "Controle Sao Paulo").
+# Runways: 10L/28R (3700 m) and 10R/28L (3000 m). ASSUMED (usual practice, not from the AIP): departures on the long
+# 10L/28R, arrivals on 10R/28L.
+icao: SBGR
+name: Sao Paulo/Guarulhos International Airport
+lat: -23.431274
+lon: -46.469954
+elevation_ft: 2461.0
+country: BR
+towered: true
+language: en
+runways:
+- ident: 10L
+  heading_deg: 74.0
+  length_ft: 12139.0
+  surface: ASP
+  lat: -23.434059
+  lon: -46.482548
+- ident: 28R
+  heading_deg: 254.0
+  length_ft: 12139.0
+  surface: ASP
+  lat: -23.425043
+  lon: -46.449203
+- ident: 10R
+  heading_deg: 74.0
+  length_ft: 9843.0
+  surface: ASP
+  lat: -23.438801
+  lon: -46.487
+- ident: 28L
+  heading_deg: 254.0
+  length_ft: 9843.0
+  surface: ASP
+  lat: -23.4312
+  lon: -46.4589
+frequencies:
+- kind: ATIS
+  mhz: 127.75
+  description: ATIS (ROTAER)
+- kind: CLD
+  mhz: 121.0
+  description: Trafego Guarulhos (ROTAER)
+  spoken: Guarulhos Clearance
+- kind: GND
+  mhz: 121.7
+  description: Solo Guarulhos (ROTAER)
+  spoken: Guarulhos Ground
+- kind: GND
+  mhz: 126.9
+  description: Solo Guarulhos (ROTAER)
+  spoken: Guarulhos Ground
+- kind: TWR
+  mhz: 132.75
+  description: Torre Guarulhos (ROTAER, VATSIM)
+  spoken: Guarulhos Tower
+- kind: TWR
+  mhz: 118.4
+  description: Torre Guarulhos (ROTAER)
+  spoken: Guarulhos Tower
+- kind: TWR
+  mhz: 135.2
+  description: Torre Guarulhos (ROTAER)
+  spoken: Guarulhos Tower
+- kind: APP
+  mhz: 119.6
+  description: Controle Sao Paulo (VATSIM, navdata)
+  spoken: Sao Paulo Control
+- kind: APP
+  mhz: 119.8
+  description: APP (OurAirports, older)
+  spoken: Sao Paulo Control
+notes:
+- 'Sao Paulo TMA is busy: speed control and vectors are normal; Congonhas (SBSP) is 12 NM south-west.'
+needs_review: false
+spoken_name: Guarulhos
+taxi_routes: {}
+mag_var_deg: -21.9
+trans_alt_ft: 8000
+runway_configs:
+- arrival:
+  - 10R
+  - 10L
+  departure:
+  - 10L
+  - 10R
+- arrival:
+  - 28L
+  - 28R
+  departure:
+  - 28R
+  - 28L

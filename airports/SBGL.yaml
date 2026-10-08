@@ -1,0 +1,107 @@
+# Rio de Janeiro / Galeao (Brazil). Sources 2026-10-08: DECEA AISWEB ROTAER (Torre Galeao 118.000 / 118.200,
+# Solo Galeao 121.650 / 128.350, Trafego Galeao (clearance) 121.000 / 135.100, ATIS 127.600, Patio Galeao (apron)
+# 121.950 / 130.675 / 131.050), VATSIM Brasil via VATGlasses (Torre Galeao 118.200, Controle Rio 119.000, Galeao sector
+# 128.900), MSFS navdata (21 Rio APP channels). English call signs: "Galeao Tower / Ground / Clearance / Apron",
+# "Rio Control" (approach unit).
+# Runways 10/28 (4000 m, main) and 15/33 (3180 m). Only 10/28 is in runway_configs: 15/33 is used on request.
+icao: SBGL
+name: Rio de Janeiro/Galeao International Airport
+lat: -22.809999
+lon: -43.250557
+elevation_ft: 28.0
+country: BR
+towered: true
+language: en
+runways:
+- ident: '10'
+  heading_deg: 74.0
+  length_ft: 13123.0
+  surface: CON
+  lat: -22.8018
+  lon: -43.255199
+- ident: '28'
+  heading_deg: 254.0
+  length_ft: 13123.0
+  surface: CON
+  lat: -22.7922
+  lon: -43.217701
+- ident: '15'
+  heading_deg: 125.0
+  length_ft: 10433.0
+  surface: ASP
+  lat: -22.812401
+  lon: -43.263699
+- ident: '33'
+  heading_deg: 305.0
+  length_ft: 10433.0
+  surface: ASP
+  lat: -22.8291
+  lon: -43.238499
+frequencies:
+- kind: ATIS
+  mhz: 127.6
+  description: ATIS (ROTAER)
+- kind: CLD
+  mhz: 121.0
+  description: Trafego Galeao (ROTAER)
+  spoken: Galeao Clearance
+- kind: CLD
+  mhz: 135.1
+  description: Trafego Galeao (ROTAER)
+  spoken: Galeao Clearance
+- kind: GND
+  mhz: 121.65
+  description: Solo Galeao (ROTAER)
+  spoken: Galeao Ground
+- kind: GND
+  mhz: 128.35
+  description: Solo Galeao (ROTAER)
+  spoken: Galeao Ground
+- kind: RMP
+  mhz: 121.95
+  description: Patio Galeao (ROTAER)
+  spoken: Galeao Apron
+- kind: RMP
+  mhz: 130.675
+  description: Patio Galeao (ROTAER)
+  spoken: Galeao Apron
+- kind: RMP
+  mhz: 131.05
+  description: Patio Galeao (ROTAER)
+  spoken: Galeao Apron
+- kind: TWR
+  mhz: 118.2
+  description: Torre Galeao (ROTAER, VATSIM)
+  spoken: Galeao Tower
+- kind: TWR
+  mhz: 118.0
+  description: Torre Galeao (ROTAER)
+  spoken: Galeao Tower
+- kind: APP
+  mhz: 128.9
+  description: Controle Rio, Galeao sector (VATSIM)
+  spoken: Rio Control
+- kind: APP
+  mhz: 119.0
+  description: Controle Rio (VATSIM, navdata)
+  spoken: Rio Control
+- kind: APP
+  mhz: 119.35
+  description: APP (OurAirports, older)
+  spoken: Rio Control
+notes:
+- 'Santos Dumont (SBRJ) is 5 NM south: its traffic shares Rio Control.'
+needs_review: false
+spoken_name: Galeao
+taxi_routes: {}
+mag_var_deg: -22.9
+trans_alt_ft: 7000
+runway_configs:
+- arrival:
+  - '10'
+  departure:
+  - '10'
+- arrival:
+  - '28'
+  departure:
+  - '28'

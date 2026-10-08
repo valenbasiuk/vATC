@@ -4,7 +4,17 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-08, evening)
+## Where we are (2026-10-08, night)
+- Area control for the whole world: data/centers.json (built on this PC by `python tools/build_centers.py`, weekly
+  cache in data/cache/centers/, not committed: CC BY-NC-SA) = every VATSIM Center/oceanic sector with polygon, levels,
+  callsign and frequency (VATGlasses + vNAS for US ARTCCs + VATSpy outlines with Navigraph AIRAC 1801 frequencies),
+  hand research in data/centers_extra.yaml (North Atlantic 131.9 Shanwick/Gander Radio, Argentine "Control" names,
+  Amman). src/atc/centers.py looks a position+level up; world.control() uses it first (then airspace/*.yaml, then the
+  navdata FIR), a tuned Center frequency nearby answers. Gaps: Manila, Port-au-Prince (no source found).
+- New airports, researched (sources in each file's header): SGAS, SVMI (needs_review: runway use assumed), SBFI,
+  SBGR, SBGL, SAEZ (rewritten), ENGM, ENBR, BIKF ("IKFL" asked: no such code). Sim-added channels take the hand
+  spoken name of their kind (navdb.enrich).
+
 - Fixes from Valen's SABE flight (ROADMAP "WATCH IN THE SIM 2026-10-08, second round"; 298 tests): no Ground->Tower
   handoff at a gate, AI reader backs off instead of dying on a SimConnect exception, warm start for our traffic,
   no two speakers share a voice (pitch variants, voices.PITCHES), lights on our aircraft (tools/probe_lights.py to
@@ -135,9 +145,10 @@ src/atc/runway.py        runway in use from wind (headwind, calm -> longest); us
 src/atc/facility.py      COM1 frequency -> which controller answers (None / ATIS / CTAF = silent)
 src/atc/main.py          handle() = one transmission -> one reply (code-owned replies first, then LLM + fact check);
                          text/PTT loops; _Callbacks = watcher thread for controller-initiated calls (standby, handoffs)
+src/atc/centers.py       world Center sectors (data/centers.json): sector_at(lat, lon, alt), by_frequency
 src/atc/world.py         all airports of the plan + airspace/*.yaml; tuned frequency -> (airport, facility);
-                         discover(): loads/writes the airport you spawned at or tuned; control(): Center near you
-                         (airspace file in reach, else the navdata FIR at your position: navdb.fir_at)
+                         discover(): loads/writes the airport you spawned at or tuned; control(): the Center
+                         sector under you (centers.py), else an airspace file in reach, else the navdata FIR
 src/atc/atis.py          ATIS text (ICAO/FAA) + letter state + "information X is now current" check
 src/atc/weather.py       METAR from aviationweather.gov (cached, background thread; ATC_METAR=off)
 src/atc/ground.py        taxi conflicts with moving AI: give way / hold position / continue taxi (watcher)
@@ -182,7 +193,7 @@ src/atc/airports/        gen.py (OurAirports CSV -> YAML), schema.py (load/save/
 src/atc/llm/             prompt.py (where quality work happens), client.py (stub + OpenAI-compatible)
 src/atc/audio/           tts.py (Piper; voice bank, models cached + preloaded), stt.py, ptt.py (keyboard + joystick),
                          joystick.py (WinMM buttons), radio_fx.py (band-pass, hiss, squelch tail)
-tools/                   check_env.py, probe_own.py, probe_traffic.py, probe_voice.py, probe_stt.py, probe_ptt.py,
+tools/                   build_centers.py (world Centers -> data/centers.json), check_env.py, probe_own.py, probe_traffic.py, probe_voice.py, probe_stt.py, probe_ptt.py,
                          probe_simbrief.py (fetch OFP), compare_models.py (score LLM-owned turns),
                          download_voices.py (accent voices -> voices/), voice_samples.py (one WAV per voice, for
                          voices/blacklist.txt), list_models.py,

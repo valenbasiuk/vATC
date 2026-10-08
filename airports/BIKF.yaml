@@ -1,0 +1,90 @@
+# Keflavik (Iceland). Sources 2026-10-08: VATSIM Scandinavia wiki "BIKF Keflavik International Airport" (ATIS 128.300,
+# Delivery 121.000, Ground 121.900, Tower 118.300, Approach 119.300, Reykjavik Control 119.700), VATGlasses (the same,
+# plus Keflavik Approach 119.150), OurAirports (the same). The sim's navdata also lists TWR 126.200 (kept: answers).
+# Runways 10/28 (primary) and 01/19 (crosswind). Requested as "IKFL" (no such ICAO code): BIKF assumed.
+icao: BIKF
+name: Keflavik International Airport
+lat: 63.985001
+lon: -22.6056
+elevation_ft: 171.0
+country: IS
+towered: true
+language: en
+runways:
+- ident: '01'
+  heading_deg: 14.0
+  length_ft: 10020.0
+  surface: ASP
+  lat: 63.964487
+  lon: -22.605428
+- ident: '19'
+  heading_deg: 194.0
+  length_ft: 10020.0
+  surface: ASP
+  lat: 63.99186
+  lon: -22.605407
+- ident: '10'
+  heading_deg: 104.0
+  length_ft: 10056.0
+  surface: ASP
+  lat: 63.985026
+  lon: -22.654977
+- ident: '28'
+  heading_deg: 284.0
+  length_ft: 10056.0
+  surface: ASP
+  lat: 63.985031
+  lon: -22.592365
+frequencies:
+- kind: ATIS
+  mhz: 128.3
+  description: ATIS
+- kind: CLD
+  mhz: 121.0
+  description: Delivery
+  spoken: Keflavik Delivery
+- kind: GND
+  mhz: 121.9
+  description: Ground
+  spoken: Keflavik Ground
+- kind: TWR
+  mhz: 118.3
+  description: Tower
+  spoken: Keflavik Tower
+- kind: APP
+  mhz: 119.3
+  description: Approach
+  spoken: Keflavik Approach
+- kind: APP
+  mhz: 119.15
+  description: Approach / final (VATGlasses)
+  spoken: Keflavik Approach
+- kind: TWR
+  mhz: 126.2
+  description: TWR (MSFS navdata)
+  spoken: Keflavik Tower
+notes:
+- Strong crosswinds and low visibility procedures are common in winter; intersection departures may be offered when busy.
+- Area control is Reykjavik Control (BIRD); oceanic is Iceland Radio.
+needs_review: false
+spoken_name: Keflavik
+taxi_routes: {}
+mag_var_deg: -11.4
+trans_alt_ft: 7000
+runway_configs:
+- arrival:
+  - '28'
+  departure:
+  - '28'
+- arrival:
+  - '10'
+  departure:
+  - '10'
+- arrival:
+  - '01'
+  departure:
+  - '01'
+- arrival:
+  - '19'
+  departure:
+  - '19'

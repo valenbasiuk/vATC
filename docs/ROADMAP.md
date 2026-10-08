@@ -34,6 +34,17 @@ below. The rest, in this order (codes as in docs/IMPROVEMENT_PLAN.md):
    - J1 voice comparison tool (Piper high voices downloaded / Kokoro / Edge neural) -> pick.
    - J2 Spanish ATC (Spanish speech model, phraseology tables, es_AR daniela voice: downloaded).
 
+## WATCH IN THE SIM 2026-10-08, world Centers and nine airports (fake sim + tests; 302 tests)
+- Center handoffs now follow the real sector under you (data/centers.json): more frequency changes than before
+  (Polaris splits, Brazil's sectors, "Baires Control" before "Ezeiza Control" out of SABE). Too many? Wrong name?
+  The frequency description says where each one came from (VATGlasses / vNAS / Navigraph AIRAC 1801 / hand).
+- Oceanic: Shanwick Radio / Gander Radio 131.9 (VATSIM NAT_FSS), New York Radio, Santa Maria, Iceland Radio, Bodo
+  Oceanic, San Francisco Radio 131.95, Atlantico. Real HF families are in the notes (MSFS radios are VHF only).
+- 8.33 kHz channel names in Norway (118.305, 119.105 ...): check the COM shows the same and the right station answers.
+- New airport files: SGAS, SVMI, SBFI, SBGR, SBGL, SAEZ, ENGM, ENBR, BIKF. Runway configs: SBGR departs 10L/28R and
+  lands 10R/28L (ASSUMED), SBGL 10/28 only, ENGM lands 01R/19R and departs 01L/19L, BIKF prefers 28/10.
+- Rebuild the Centers now and then: `python tools/build_centers.py` (downloads once a week at most).
+
 ## WATCH IN THE SIM 2026-10-08, second round (Valen's SABE flight; fake sim + tests; 298 tests)
 - Ground -> Tower handoff now needs Ground's taxi clearance and not being at a stand (SABE gates 27-29 lie inside
   the runway-13 handoff box: parked there, "contact Tower" came twice unasked).

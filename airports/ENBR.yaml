@@ -1,0 +1,65 @@
+# Bergen / Flesland (Norway). Sources 2026-10-08: VATSIM Scandinavia wiki "ENBR Bergen Flesland" (ATIS 125.250,
+# Delivery 123.400, Ground 121.900, Tower 119.100, Approach West 121.000, East 125.000, Director 118.850), VATGlasses
+# (Flesland Tower 119.105, Approach 121.005 / 126.105, Director 118.855), MSFS navdata (TWR 119.105, CLD 123.405,
+# APP 118.855 / 126.105). 8.33 kHz channel names where the sim uses them. Single runway 17/35.
+icao: ENBR
+name: Bergen Airport Flesland
+lat: 60.2934
+lon: 5.21814
+elevation_ft: 170.0
+country: 'NO'
+towered: true
+language: en
+runways:
+- ident: '17'
+  heading_deg: 170.5
+  length_ft: 9810.0
+  surface: ASP
+  lat: 60.30659866333008
+  lon: 5.213699817657471
+- ident: '35'
+  heading_deg: 350.5
+  length_ft: 9810.0
+  surface: ASP
+  lat: 60.28010177612305
+  lon: 5.2225799560546875
+frequencies:
+- kind: ATIS
+  mhz: 125.25
+  description: ATIS
+- kind: CLD
+  mhz: 123.405
+  description: Delivery
+  spoken: Flesland Delivery
+- kind: GND
+  mhz: 121.9
+  description: Ground
+  spoken: Flesland Ground
+- kind: TWR
+  mhz: 119.105
+  description: Tower
+  spoken: Flesland Tower
+- kind: APP
+  mhz: 121.005
+  description: Approach West
+  spoken: Flesland Approach
+- kind: APP
+  mhz: 125.0
+  description: Approach East
+  spoken: Flesland Approach
+- kind: APP
+  mhz: 126.105
+  description: Approach (VATGlasses, navdata)
+  spoken: Flesland Approach
+- kind: APP
+  mhz: 118.855
+  description: Director
+  spoken: Flesland Director
+notes:
+- 'Mountains east of the field: RNAV approaches with curved segments; strong winds and turbulence common.'
+- Area control is Polaris Control (Norway ACC).
+needs_review: false
+spoken_name: Flesland
+taxi_routes: {}
+mag_var_deg: 3.0
+trans_alt_ft: 7000

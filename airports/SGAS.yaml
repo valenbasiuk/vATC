@@ -1,0 +1,60 @@
+# Asuncion / Silvio Pettirossi (Paraguay). Sources 2026-10-08: OurAirports frequencies, VATGlasses (VATSIM
+# Paraguay: Asuncion Tower 118.100, Asuncion Approach 119.700, Asuncion Control 128.400), MSFS 2024 navdata (also lists
+# TWR 118.800, APP 120.000, ATIS 127.600: secondary channels, kept so they answer when tuned). Single runway 02/20.
+icao: SGAS
+name: Silvio Pettirossi International Airport
+lat: -25.240156
+lon: -57.519227
+elevation_ft: 292.0
+country: PY
+towered: true
+language: en
+runways:
+- ident: '02'
+  heading_deg: 10.0
+  length_ft: 10997.0
+  surface: ASP
+  lat: -25.254600524902344
+  lon: -57.522701263427734
+- ident: '20'
+  heading_deg: 190.0
+  length_ft: 10997.0
+  surface: ASP
+  lat: -25.225099563598633
+  lon: -57.515499114990234
+frequencies:
+- kind: ATIS
+  mhz: 127.6
+  description: ATIS
+- kind: GND
+  mhz: 121.9
+  description: GND
+  spoken: Asuncion Ground
+- kind: TWR
+  mhz: 118.1
+  description: TWR (VATSIM, OurAirports)
+  spoken: Asuncion Tower
+- kind: TWR
+  mhz: 118.8
+  description: TWR secondary (MSFS navdata)
+  spoken: Asuncion Tower
+- kind: APP
+  mhz: 119.7
+  description: APP (VATSIM, OurAirports)
+  spoken: Asuncion Approach
+- kind: APP
+  mhz: 120.0
+  description: APP secondary (MSFS navdata)
+  spoken: Asuncion Approach
+- kind: CTR
+  mhz: 128.4
+  description: ACC (VATSIM SGFA, Navigraph)
+  spoken: Asuncion Control
+notes:
+- 'No Delivery: the clearance comes from Ground (or Tower).'
+- 'Pattern 1000 ft AGL left is the generator''s ICAO placeholder: not checked against the AIP.'
+needs_review: false
+spoken_name: Asuncion
+taxi_routes: {}
+mag_var_deg: -15.7
+trans_alt_ft: 3000

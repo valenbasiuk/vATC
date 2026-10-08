@@ -1,0 +1,71 @@
+# Hand research for tools/build_centers.py (wins over the VATSIM and Navigraph data it merges).
+#
+# positions: a VATGlasses position id ("<file>/<key>", see the --report output) -> frequency and/or callsign.
+# firs: a VATSpy FIR id (ICAO, or ICAO-sector) with no VATSIM data -> frequency and callsign.
+# Keys: mhz, callsign (what the controller says in English), source, note (shown in the frequency description).
+#
+# MSFS radios are VHF only (118-136.975): oceanic positions that are HF in the real world get the VHF frequency
+# VATSIM uses for them; the real HF families go in the note.
+
+positions:
+  # --- North Atlantic (VATGlasses nat.json has the sectors, no frequencies) ---
+  # VATSIM live feed 2026-10-08: NAT_FSS 131.900 '"Shanwick Radio" or "Gander Radio" | CPDLC (NATX)'
+  nat/S:
+    mhz: 131.9
+    callsign: Shanwick Radio
+    source: VATSIM NAT_FSS (live data feed, 2026-10-08)
+    note: "real: VHF 127.900 / 124.175, HF families A 3016/5598/8906/13306, B 2899/5616/8864/13291, C 2872/5649/8879/11336, D 2971/4675/8891/13291, F 3476/6622/8831/13291 (AirNav Ireland); CPDLC EGGX"
+  nat/G:
+    mhz: 131.9
+    callsign: Gander Radio
+    source: VATSIM NAT_FSS (live data feed, 2026-10-08)
+    note: "real: HF NAT families through Gander Radio, CPDLC CZQX"
+
+  # --- Argentina: the ACC is "<FIR> Control" in English (AIP GEN 3.4 "EZEIZA CONTROL" / Spanish "Centro"), as in
+  # airspace/SA*.yaml; VATGlasses says "Ezeiza Radar" / "Resistencia Center". Frequencies are VATGlasses' (the same
+  # as the VATSIM Argentina operations manual v1.2.1).
+  sa/EZC: {callsign: Ezeiza Control}
+  sa/EZN: {callsign: Ezeiza Control}
+  sa/EZS: {callsign: Ezeiza Control}
+  sa/REC: {callsign: Resistencia Control}
+  sa/COR: {callsign: Cordoba Control}
+  sa/CON: {callsign: Cordoba Control}
+  sa/COS: {callsign: Cordoba Control}
+  sa/MEC: {callsign: Mendoza Control}
+  sa/CMC: {callsign: Comodoro Rivadavia Control}
+  sa/CMN: {callsign: Comodoro Rivadavia Control}
+  sa/CMS: {callsign: Comodoro Rivadavia Control}
+  nodata/OJAC:
+    mhz: 128.3
+    callsign: Amman Control
+    source: Jordan AIP ENR 2.1 (CARC)
+    note: "Amman ACC west sector 128.3, east sector 128.5"
+
+firs:
+  # VATSpy outlines VATGlasses leaves uncovered, with no Navigraph frequency either
+  CZQO:
+    mhz: 131.9
+    callsign: Gander Radio
+    source: VATSIM NAT_FSS (live data feed, 2026-10-08)
+    note: "real: HF NAT families through Gander Radio, CPDLC CZQX"
+  NAT:
+    mhz: 131.9
+    callsign: Shanwick Radio
+    source: VATSIM NAT_FSS (live data feed, 2026-10-08)
+  EGGX:
+    mhz: 131.9
+    callsign: Shanwick Radio
+    source: VATSIM NAT_FSS (live data feed, 2026-10-08)
+    note: "real: VHF 127.900 / 124.175, HF families A-D, F (AirNav Ireland); CPDLC EGGX"
+  KZAK:
+    mhz: 131.95
+    callsign: San Francisco Radio
+    source: VATSIM ZAK_FSS (live data feed, 2026-10-08)
+    note: "Oakland Oceanic: ATC by Oakland Center, HF relay by San Francisco ARINC; CPDLC KZAK"
+  OJAC:
+    mhz: 128.3
+    callsign: Amman Control
+    source: Jordan AIP ENR 2.1 (CARC)
+    note: "Amman ACC west sector 128.3, east sector 128.5"
+  # Still without a frequency (nothing public found, 2026-10-08): MTEG Port-au-Prince, RPHI Manila (and its
+  # VATSpy sectors), XVCL. world.py then falls back to the navdata FIR, which has none there either.

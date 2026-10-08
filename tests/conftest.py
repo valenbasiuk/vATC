@@ -47,3 +47,16 @@ def _no_atis_question(monkeypatch):
 def _offline_weather(monkeypatch):
     """No METAR downloads in tests (tests seed atc.weather with weather.put when they need one)."""
     monkeypatch.setenv("ATC_METAR", "off")
+
+
+@pytest.fixture(autouse=True)
+def _no_world_centers(request):
+    """Tests use the airspace/*.yaml files and the navdata FIRs, never data/centers.json of whoever runs them
+    (tests/test_centers.py loads a small made-up one)."""
+    from pathlib import Path
+
+    from atc import centers
+
+    centers.reset(Path("Z:/no/such/centers.json"))
+    yield
+    centers.reset(Path("data/centers.json"))

@@ -1,0 +1,117 @@
+# Oslo / Gardermoen (Norway). Sources 2026-10-08: VATSIM Scandinavia wiki "ENGM Oslo lufthavn" (Delivery West 121.680,
+# East 121.930; Ground West 121.605, East 121.905, Planner 121.730, De-ice 121.855; Tower West 118.305 (01L/19R), East
+# 120.105 (01R/19L); Approach West 120.455, East 118.480; Director 136.405; Final 128.905; Arrival ATIS 126.130,
+# Departure ATIS 127.155), VATGlasses (the same), MSFS navdata (the same TWR/GND/DEL/APP channels). Frequencies are
+# 8.33 kHz channel names, as the COM radio shows them.
+# Runways 01L/19R (3600 m, west) and 01R/19L (2950 m, east). Configuration as the winter/segregated mode in the
+# VATSIM Scandinavia wiki: landings 01R / 19R, departures 01L / 19L (both runways mixed at peaks).
+icao: ENGM
+name: Oslo Gardermoen Airport
+lat: 60.193901
+lon: 11.1004
+elevation_ft: 681.0
+country: 'NO'
+towered: true
+language: en
+runways:
+- ident: 01L
+  heading_deg: 16.0
+  length_ft: 11811.0
+  surface: ASP
+  lat: 60.185001373291016
+  lon: 11.073699951171875
+- ident: 19R
+  heading_deg: 196.0
+  length_ft: 11811.0
+  surface: ASP
+  lat: 60.21609878540039
+  lon: 11.091699600219727
+- ident: 01R
+  heading_deg: 16.0
+  length_ft: 9678.0
+  surface: ASP
+  lat: 60.17580032348633
+  lon: 11.107799530029297
+- ident: 19L
+  heading_deg: 196.0
+  length_ft: 9678.0
+  surface: ASP
+  lat: 60.20119857788086
+  lon: 11.1225004196167
+frequencies:
+- kind: ATIS
+  mhz: 127.155
+  description: Departure ATIS
+- kind: ATIS
+  mhz: 126.13
+  description: Arrival ATIS
+- kind: CLD
+  mhz: 121.68
+  description: Delivery West
+  spoken: Gardermoen Delivery
+- kind: CLD
+  mhz: 121.93
+  description: Delivery East
+  spoken: Gardermoen Delivery
+- kind: GND
+  mhz: 121.605
+  description: Ground West
+  spoken: Gardermoen Ground
+- kind: GND
+  mhz: 121.905
+  description: Ground East
+  spoken: Gardermoen Ground
+- kind: GND
+  mhz: 121.73
+  description: Ground Planner
+  spoken: Gardermoen Ground
+- kind: GND
+  mhz: 121.855
+  description: De-ice Coordinator
+  spoken: Gardermoen De-ice
+- kind: TWR
+  mhz: 118.305
+  description: Tower West (01L/19R)
+  spoken: Gardermoen Tower
+- kind: TWR
+  mhz: 120.105
+  description: Tower East (01R/19L)
+  spoken: Gardermoen Tower
+- kind: APP
+  mhz: 120.455
+  description: Approach West
+  spoken: Oslo Approach
+- kind: APP
+  mhz: 118.48
+  description: Approach East
+  spoken: Oslo Approach
+- kind: APP
+  mhz: 136.405
+  description: Director
+  spoken: Oslo Director
+- kind: APP
+  mhz: 128.905
+  description: Final
+  spoken: Oslo Final
+notes:
+- Runway 01R departures from full length (B1/B2) for noise abatement.
+- 'Winter: de-icing pads before departure (Gardermoen De-ice 121.855); low visibility procedures common.'
+- Area control is Polaris Control (Norway ACC).
+needs_review: false
+spoken_name: Gardermoen
+taxi_routes: {}
+mag_var_deg: 5.5
+trans_alt_ft: 7000
+runway_configs:
+- arrival:
+  - 01R
+  - 01L
+  departure:
+  - 01L
+  - 01R
+- arrival:
+  - 19R
+  - 19L
+  departure:
+  - 19L
+  - 19R

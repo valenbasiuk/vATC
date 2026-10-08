@@ -14,3 +14,7 @@ voice_samples/
 # made from FSLTL / FS Traffic on this PC (atc.own.catalog): third-party data, never committed
 data/model_catalog.json
 data/gear_heights.json
+
+# derived from VATGlasses (CC BY-NC-SA) / VATSpy / vNAS: tools/build_centers.py makes it on this PC
+data/centers.json
+data/cache/

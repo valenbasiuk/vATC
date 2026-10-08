@@ -87,8 +87,14 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
                 if f.spoken is None:
                     f.spoken = _spoken(airport, f.kind, name, own_name)
             continue
-        airport.frequencies.append(Frequency(kind, mhz, f"{name or ''} (sim)".strip(),
-                                             _spoken(airport, kind, name, own_name)))
+        spoken = _spoken(airport, kind, name, own_name)
+        # a hand-named position of this kind in the YAML ("Sao Paulo Control", "Oslo Approach") names the sim's
+        # extra channels too, unless the sim names another station ("NorCal" at an airport whose APP is SoCal)
+        hand = next((f.spoken for f in airport.frequencies if f.kind == kind and f.spoken
+                     and not f.description.endswith("(sim)")), None)
+        if hand and (spoken is None or spoken.split()[0].lower() == hand.split()[0].lower()):
+            spoken = hand
+        airport.frequencies.append(Frequency(kind, mhz, f"{name or ''} (sim)".strip(), spoken))
         added.append(f"{kind} {mhz:.3f}")
     if airport.mag_var_deg is None:
         row = con.execute("select mag_var from airport where airport_id=?", (aid,)).fetchone()
