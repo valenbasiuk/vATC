@@ -28,6 +28,7 @@ class OwnState:
     com2_mhz: float | None = None  # only when COM2 is heard (receive on): the ATIS is often listened to there
     zulu_s: float | None = None  # sim clock, seconds since 00:00 UTC
     ias_kt: float | None = None  # indicated airspeed (speed control); None = unknown, ground speed is used instead
+    visibility_m: float | None = None  # the sim's visibility at the aircraft (AMBIENT VISIBILITY); None = unknown
 
 
 @dataclass
@@ -104,6 +105,9 @@ class Airport:
     # Hand field: how much of our own traffic (--own-traffic) moves here, departures + arrivals per hour. None =
     # from FS Traffic's schedule for today (atc.own.schedule.movements_per_hour).
     traffic_per_hour: float | None = None
+    # Hand field: who clears runway crossings: "ground", "tower", or None / "auto" = Ground in good visibility,
+    # Tower when it is reduced (visibility < 5 km or ceiling < 1500 ft; Valen, 2026-10-07).
+    crossings_by: str | None = None
 
     @property
     def faa(self) -> bool:

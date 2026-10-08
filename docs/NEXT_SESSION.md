@@ -60,6 +60,14 @@ Fix what comes back before step 3.
   built and tested in the fake sim: `--own-traffic`. Full plan, status and the in-sim watch list:
   docs/OWN_TRAFFIC_PLAN.md. Next: Valen flies with it at SABE; then phase 2 (arrivals); voices track (V1 compare tool).
 
+## 1c. Improvement plan (2026-10-07/08): blocks 1-3 BUILT, blocks 4-7 in docs/ROADMAP.md "NEXT"
+Built (fake sim + tests): ATIS/weather (A1-A4), Tower crossings (B1), backtrack (B2), the launcher (I1-I3), the
+shared runway controller (B3-B5), Ground re-routing for our traffic. First: Valen flies with the launcher at SABE
+and SARC and brings the log (Flight tab) -> match it against docs/ROADMAP.md "WATCH IN THE SIM 2026-10-08".
+Then block 4 (approach: visual approach, ATC holding, MVA, missed approach, deviations).
+Notes: patch scripts written to files (not bash heredocs: they eat backslashes); the SABE/SARC traffic simulation
+harness used this session sets `departures.CLOCK` to the manager's clock (it runs faster than real time).
+
 ## 2. Questions for Valen (don't guess)
 - SARC approach: the sim's db gives APP 118.1 / 118.7 "Resistencia"; the VATSIM manual has SARE_APP 119.4
   "Resistencia Control". Which does MSFS show at SARC? Only then change SARC.yaml.

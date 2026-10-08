@@ -1,8 +1,59 @@
 # Roadmap
 
-Ordered. Each item has a "done when" so it can be checked. Status as of 2026-10-06.
+Ordered. Each item has a "done when" so it can be checked. Status as of 2026-10-08.
 Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
-The plan for the next session is in docs/NEXT_SESSION.md.
+The plan for the next session is in docs/NEXT_SESSION.md; the improvement plan (with the SayIntentions.AI
+comparison) is docs/IMPROVEMENT_PLAN.md.
+
+## NEXT: improvement plan blocks 4-7 (Valen, 2026-10-08: "leave the next four in a roadmap")
+Blocks 1-3 (ATIS/weather, the launcher, the shared runway controller) are built; see "WATCH IN THE SIM 2026-10-08"
+below. The rest, in this order (codes as in docs/IMPROVEMENT_PLAN.md):
+4. Approach (TODO)
+   - C1 visual approach: "report field in sight" -> "cleared visual approach runway one three" (VFR and IFR).
+     Done when: a VFR or IFR arrival at SABE in VMC gets it without the LLM.
+   - C2 ATC-initiated holding when the runway is blocked or the sequence is full (holding.py has the phrasing).
+     Done when: with our traffic queued, an IFR arrival is told "hold at ... as published, expect further clearance".
+   - C4 minimum vectoring altitude: vectors / descents never below the sector MSA (Navigraph MSA records) or a
+     terrain sample; "climb immediately" below it. Done when: no vector below MSA in a SARC / SAMR test.
+   - C5 missed approach: the published one or "climb straight ahead, three thousand, contact Approach", then vectors
+     for another approach. Done when: a go-around at SABE ends in a second approach without the LLM.
+   - D1 weather deviations: "request deviation twenty degrees left" -> approved, "report back on course".
+5. Controller behaviour and emergencies (TODO)
+   - G1 readback mode strict / relaxed (a launcher setting). G2 "blocked, say again" when the user talks over
+     chatter. G3 a busy controller says "standby" and answers seconds later.
+   - F1 mayday / pan pan follow-ups (souls on board, fuel, runway of choice, our traffic held or sent around).
+   - A5 low-visibility procedures (vis < 550 m or ceiling < 200 ft): ATIS "LVP in operation", CAT II/III phrasing,
+     wider spacing of our arrivals, crossings by Tower only. (atis.Conditions.low_visibility exists.)
+6. Own traffic extras (TODO)
+   - H1 turnarounds (an arrival leaves again from its stand after 45-90 min); H2 arrivals from the STAR / downwind
+     and departures on the SID's first legs; H3 GA circuits and CTAF calls at small fields (E3).
+   - C3 side-step (KSFO/JFK), E1 Class B/C transitions (US), D2 ride reports by code, D3 traffic information on our
+     departures/arrivals en route, G4 closures by hand in the airport YAML, B6 intersection departures on request.
+7. Voices and language (TODO)
+   - J1 voice comparison tool (Piper high voices downloaded / Kokoro / Edge neural) -> pick.
+   - J2 Spanish ATC (Spanish speech model, phraseology tables, es_AR daniela voice: downloaded).
+
+## WATCH IN THE SIM 2026-10-08 (blocks 1-3, fake sim + tests only; 286 tests)
+- ATIS on a clock: the letter changes with the METAR; a QNH or runway change is broadcast "all stations" on the
+  position you are tuned to (main._atis_clock, once a minute). Too chatty? wrong station name?
+- Sim's own weather detected (atis.sim_weather: QNH off the METAR by > 3 hPa or wind speed by > 15 kt): with preset
+  weather the ATIS drops the METAR's clouds / visibility and uses the sim's visibility (AMBIENT_VISIBILITY: VERIFY
+  it comes back in metres). A "[weather at SABE: ...]" line says which.
+- No ATIS (SARC): the first reply adds "runway two zero in use, wind ..., temperature ..., QNH ..." (departing) or
+  "expect ILS approach runway two zero, wind ..., QNH ..." (arriving). Remember to read the QNH back.
+- "Confirm information X" when the first call has no letter; "affirm" ends it, "negative" gets the current one.
+- Runway crossings by Tower when visibility < 5 km / ceiling < 1500 ft (YAML `crossings_by: tower|ground|auto`).
+- Backtrack at SARC: "backtrack runway two zero, line up and wait", the takeoff clearance once lined up at the end
+  (flow.lined_up_at_end: on the runway, < 0.15 NM from the threshold, aligned, < 3 kt). Ours backtrack and turn
+  round 60 m in; does the turn look right on SARC's 45 m runway?
+- Shared runway controller: "number two for departure" behind ours (whoever reported ready first), 1 / 2 / 3 min
+  departure intervals (wake), "caution wake turbulence", "cleared for immediate takeoff" with an arrival at 3-5 NM;
+  your push held ("expect push and start in two minutes, number three, I'll call you") with 4+ of ours busy.
+- Our traffic: Tower sends a cleared one of ours around if the runway gets occupied inside 2.5 NM (you lining up);
+  Ground re-routes ours round one that is stuck ("change of routing, taxi via ..."); a rare last resort lets one
+  pass through another (printed "[own traffic: X passes Y (deadlock)]": tell me if you see it).
+- Launcher: `vATC.bat` (pythonw -m atc.gui). Device lists, yoke-button detection, voice test, SimBrief fetch, the
+  live panel (status file in %TEMP%\\vatc_status.json), typed calls while using push-to-talk (--stdin).
 
 ## WATCH IN THE SIM: built 2026-10-06 against the fake sim only (possible in-sim issues)
 Nothing below has been flown in MSFS. Each line: what might go wrong, what to look for, where the knob is.

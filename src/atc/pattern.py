@@ -114,10 +114,23 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
             session.vfr_departure = True  # leaves the zone on its own: no handoff to Departure
         if wind:
             bits.append(wind)
-        bits.append(f"runway {rw}, cleared for takeoff")
+        from atc.flow import takeoff_words
+
+        bits.append(takeoff_words(session, airport, rwy, own, runway_status(airport, rwy, own, traffic)))
         if session.in_circuit and not faa:
             bits.append("report downwind")
-        wait = wait_for_takeoff(st, airport, own)
+        from atc.flow import _backtrack_blocked, needs_backtrack
+
+        if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end, the takeoff once lined up
+            session.takeoff_waiting = (rwy.ident, ", ".join(bits))
+            why = _backtrack_blocked(st, airport)
+            session.backtrack = "pending" if why else "lining"
+            return f"{pre}, hold position, {why}." if why else f"{pre}, backtrack runway {rw}, line up and wait."
+        from atc import departures
+        from atc.flow import departure_hold
+
+        departures.ready(airport.icao, departures.USER, rwy.ident)
+        wait = wait_for_takeoff(st, airport, own) or departure_hold(session, airport, rwy, own, st)
         if wait:  # the takeoff clearance (with the turn-out / circuit) follows once the runway is free
             session.takeoff_waiting = (rwy.ident, ", ".join(bits))
             return f"{pre}, {wait}."

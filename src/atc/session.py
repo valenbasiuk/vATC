@@ -92,6 +92,12 @@ class Session:
     progressive: list = field(default_factory=list)  # taxi.py: turns still to call (lat, lon, text)
     crossings: list = field(default_factory=list)  # taxi.py: runways still to cross (ident, lat, lon)
     takeoff_waiting: tuple | None = None  # (runway, clearance text) Tower gives when the runway is free
+    # backtrack before the takeoff (no taxiway to the runway end, SARC): None, "pending" (the "backtrack runway two
+    # zero, line up and wait" is still to be given) or "lining" (given: the takeoff clearance once lined up at the end)
+    backtrack: str | None = None
+    # push delayed at a busy time (improvement plan B5): {"icao", "at" (latest time), "text" (the approval)}; the
+    # watcher gives the approval when the apron gets quieter or at "at"
+    push_waiting: dict | None = None
     following: bool = False  # VFR flight following / flight information service (following.py)
     runway_requests: dict[str, str] = field(default_factory=dict)  # "ICAO:departure" -> runway the pilot got
     holding: str | None = None  # fix the pilot is holding at (holding.py): no descent or vectors meanwhile

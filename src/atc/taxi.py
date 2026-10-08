@@ -480,6 +480,20 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
 
 
 CROSSING_NEAR_NM = 0.25  # holding short of a crossing: this close to where the route crosses that runway
+
+
+def crossing_by_tower(airport: Airport, own: OwnState, surface_wind=None) -> bool:
+    """Who clears a runway crossing: the YAML's `crossings_by`, else Tower when the visibility is reduced (under
+    5 km or a ceiling under 1500 ft) and Ground otherwise. Always Ground if the airport has no separate Ground."""
+    from atc import atis
+    from atc.clearance import _freq
+
+    if _freq(airport, "GND", "RMP") is None or _freq(airport, "TWR") is None:
+        return False
+    rule = (airport.crossings_by or "auto").lower()
+    if rule in ("tower", "ground"):
+        return rule == "tower"
+    return atis.conditions(airport, own, surface_wind).reduced
 _HOLDING_SHORT = re.compile(r"\b(?:holding short|hold short|short of|request(?:ing)? (?:to )?cross|ready to cross)\b")
 
 
@@ -491,6 +505,8 @@ def handle_crossing(session, airport: Airport, facility, own: OwnState, pilot_te
     from atc.readback import _normalize
     from atc.sequence import runway_status
 
+    from atc.clearance import _freq
+
     if facility.role not in ("ground", "tower") or not own.on_ground or not session.crossings:
         return None
     norm = _normalize(pilot_text)
@@ -499,6 +515,10 @@ def handle_crossing(session, airport: Airport, facility, own: OwnState, pilot_te
         return None
     faa = airport.faa
     cs = session.spoken_callsign
+    by_tower = crossing_by_tower(airport, own, session.surface_wind.get(airport.icao))
+    if by_tower and facility.role == "ground":  # reduced visibility: Tower clears it
+        twr = _freq(airport, "TWR")
+        return f"{cs}, hold short of runway {phrase.runway(ident, faa)}, contact Tower {phrase.frequency(twr.mhz, faa)}."
     whys = []
     for r in next((s for s in strips(airport) if any(e.ident == ident for e in s)), []):  # both directions
         st = runway_status(airport, r, own, traffic)
@@ -509,6 +529,9 @@ def handle_crossing(session, airport: Airport, facility, own: OwnState, pilot_te
         return f"{cs}, hold short of runway {phrase.runway(ident, faa)}, {min(whys)[1]}."
     session.crossings.pop(0)
     nxt = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
+    gnd = _freq(airport, "GND", "RMP")
+    if by_tower and facility.role == "tower" and not session.crossings and gnd is not None:
+        nxt += f", then contact Ground {phrase.frequency(gnd.mhz, faa)}"
     return f"{cs}, cross runway {phrase.runway(ident, faa)}{nxt}."
 
 

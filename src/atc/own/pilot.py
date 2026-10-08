@@ -19,13 +19,14 @@ from dataclasses import dataclass
 from atc.geo import distance_nm
 from atc.models import Airport, Traffic
 from atc.own.airport import ArrivalPaths, Crossing, DeparturePaths, Stand, arrival_paths, path_crossings
-from atc.own.motion import KT, MAX_TAXI_KT, PUSH_KT, Approach, GroundMover, Path, Perf, Pose, Takeoff
+from atc.own.motion import EXIT_KT, KT, MAX_TAXI_KT, PUSH_KT, Approach, GroundMover, Path, Perf, Pose, Takeoff
 
 RADIO_WAIT_S = 17.0  # chatter goes stale after 15 s (chatter.STALE_S): then go anyway
 ENGINE_START_S = 45.0
 LOOK_AHEAD_M = 150.0
 CONFLICT_M = 30.0  # somebody this close to a point of our path ahead blocks it (at least; wingspans can add)
 WINGTIP_MARGIN_M = 6.0
+STANDING_M = 22.0  # an aircraft standing still blocks the path only this close to it (on it, not parked beside)
 STOP_BEHIND_M = 60.0  # stop this far before them (two 737s nose to tail: ~20 m between them)
 SELF_M = 12.0
 LINEUP_KT = 12.0
@@ -71,6 +72,9 @@ class _Pilot:
         self.crossings: list[Crossing] = []  # runways the current taxi path crosses
         self.resume: str | None = None  # the state to go back to once a crossing is cleared
         self.yielding: set[str] = set()  # ours stopped for this one (the manager fills it): this one goes first
+        self.parked_ids: set[str] = set()  # aircraft parked at a stand (the manager fills it): never in the way
+        self.blocked_since: float | None = None  # stopped for `blocked_by` since (sim clock)
+        self.ignore: set[str] = set()  # last resort after a deadlock: passes these (never set otherwise)
 
     def clear(self, what: str, now: float, said: bool = False) -> None:
         """ATC gave `what`. `said` = the exchange is already heard (tests); else `heard()` comes from the radio."""
@@ -137,6 +141,15 @@ class _Pilot:
             return True
         return False
 
+    def take_route(self, points: list[tuple[float, float]], limits: list[float], runway) -> None:
+        """Ground's change of routing: the same taxi state on a new path from where it is."""
+        path = Path(points, limits_kt=limits)
+        if self.paths is not None and hasattr(self.paths, "clear_s"):  # an arrival: it is clear of the runway now
+            self.paths.clear_s = 0.0
+        self.mover = GroundMover(path, v=0.0)
+        self.crossings = [c for c in path_crossings(self.airport, path, self.perf.length_m, runway)]
+        self.blocked_since, self.blocked_by = None, None
+
     @property
     def next_crossing(self) -> Crossing | None:
         return next((c for c in self.crossings if not c.cleared), None)
@@ -153,12 +166,17 @@ class _Pilot:
 
         # (within SELF_M: our own sim object under another name, never something to stop for; `yielding`: ours that
         # are already stopped for this one, so it goes first instead of both waiting for each other)
-        # moving aircraft: wingtip clearance; standing ones (parked at a stand beside the lane, the user at their gate)
-        # only when they are on the path itself (the scenery keeps parked aircraft clear of the lanes)
-        near = [(t, max(CONFLICT_M, (self.perf.wingspan_m + perf(t.type).wingspan_m) / 2 + WINGTIP_MARGIN_M)
-                 if t.gs_kt > 1.0 else CONFLICT_M)
-                for t in others if t.on_ground and t.callsign != self.flight.callsign
-                and t.callsign not in self.yielding and SELF_M < gap(t) < LOOK_AHEAD_M + 60.0]
+        # wingtip clearance from anybody on a taxiway, moving or standing; aircraft parked at a stand are never in
+        # the way (the scenery keeps them clear of the lanes); `yielding` ones (stopped for this one) only when they
+        # are on the path itself: passed alongside, never driven into
+        def radius(t: Traffic) -> float:
+            if t.callsign in self.yielding:
+                return STANDING_M
+            return max(STANDING_M, (self.perf.wingspan_m + perf(t.type).wingspan_m) / 2 + WINGTIP_MARGIN_M)
+
+        near = [(t, radius(t)) for t in others if t.on_ground and t.callsign != self.flight.callsign
+                and t.callsign not in self.parked_ids and t.callsign not in self.ignore
+                and SELF_M < gap(t) < LOOK_AHEAD_M + 60.0]
         self.blocked_by = None
         if not near:
             return None
@@ -194,6 +212,8 @@ class DeparturePilot(_Pilot):
         self.takeoff: Takeoff | None = None
         self.handed_off = False
         self.rolling = False
+        self.immediate = False  # "cleared for immediate takeoff": no stop on the centerline
+        self.reported_airborne = False
 
     def _cleared_in_place(self, what: str, now: float) -> bool:
         if what == "handoff":  # "contact Departure": nothing changes in how it flies
@@ -218,7 +238,7 @@ class DeparturePilot(_Pilot):
             self.mover = GroundMover(Path(self.paths.push), backwards=True)
             self._go("pushing", now)
         elif s == "pushing":
-            self.mover.step(dt, PUSH_KT, self._stop_for_traffic(others))  # the tug stops for whoever comes by
+            self.mover.step(dt, PUSH_KT, self._stop_for_traffic(others))  # the tug stops for whoever is in the way
             self.pose = self.mover.pose()
             if self.mover.done:
                 self._go("starting", now)
@@ -242,7 +262,7 @@ class DeparturePilot(_Pilot):
                 self._go("holding", now)
         elif s == "takeoff_radio" and self._ready(now, "takeoff"):
             here = (self.pose.lat, self.pose.lon)
-            self.rolling = self.rng.random() < ROLLING_TAKEOFF_SHARE
+            self.rolling = self.immediate or self.rng.random() < ROLLING_TAKEOFF_SHARE
             self.mover = GroundMover(Path([here] + self.paths.lineup), v=0.0, run_through=self.rolling)
             self._go("lining_up", now)
         elif s == "lining_up":
@@ -294,6 +314,14 @@ class ArrivalPilot(_Pilot):
     def final_nm(self) -> float:
         return self.approach.dist_nm
 
+    def order_go_around(self, now: float) -> None:
+        """Tower: "go around" (the runway got occupied after the landing clearance)."""
+        if self.state == "final" and not self.approach.on_ground:
+            self.approach.go_around()
+            self.landing_cleared = False
+            self.wants = None
+            self._go("go_around", now)
+
     def step(self, now: float, dt: float, others: list[Traffic]) -> None:
         s = self.state
         a = self.approach
@@ -325,7 +353,7 @@ class ArrivalPilot(_Pilot):
                 if self.paths is None:  # nowhere to go: it vanishes off the runway end (rare: no map)
                     self._go("gone", now)
                     return
-                path = Path(self.paths.points, limits_kt=self.paths.limits)
+                path = Path(self.paths.points, limits_kt=self.paths.limits, cap_kt=EXIT_KT)
                 self.mover = GroundMover(path, v=a.v)
                 self.crossings = [c for c in path_crossings(self.airport, path, self.perf.length_m, self.runway)
                                   if c.s_hold > self.paths.clear_s]
@@ -333,7 +361,7 @@ class ArrivalPilot(_Pilot):
         elif s == "vacating":
             block = self._stop_for_traffic(others)
             stop = self.paths.clear_s if block is None else min(block, self.paths.clear_s)
-            self.mover.step(dt, MAX_TAXI_KT, stop)
+            self.mover.step(dt, EXIT_KT, stop)
             self.pose = self.mover.pose()
             if self.mover.s >= self.paths.clear_s - 0.5 and self.mover.v < 0.3:
                 self.wants = "ground"  # Tower: "contact Ground"; then the taxi-in request

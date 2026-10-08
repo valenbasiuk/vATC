@@ -71,13 +71,22 @@ def track(session, world, own: OwnState, now: float | None = None) -> None:
         return
     near = world.nearest(own)
     close = distance_nm(own.lat, own.lon, near.lat, near.lon) <= 5.0
+    from atc import departures
+
+    user_type = session.plan.aircraft_type if session.plan else own.aircraft_type
     if not own.on_ground and close:
         session.departed_from, session.airborne_at, session.landed = near.icao, now, False
+        rwy = session_runway(near, own.wind_dir_deg, own.wind_kt, session, "departure")
+        if rwy is not None:  # behind the user, the next departure waits its wake turbulence interval
+            departures.airborne(near.icao, rwy.ident, departures.USER, user_type)
     elif not own.on_ground:
         session.airborne_at = now
     elif close and session.airborne_at is not None \
             and (session.departed_from != near.icao or now - session.airborne_at > 120):
         session.landed, session.landed_at = True, near.icao
+        rwy = session_runway(near, own.wind_dir_deg, own.wind_kt, session, "arrival")
+        if rwy is not None:
+            departures.landed(near.icao, rwy.ident, departures.USER, user_type)
 
 
 def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
@@ -154,13 +163,101 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     return None
 
 
+BACKTRACK_NM = 0.08  # a departure holding this far down the runway (no taxiway to the end) backtracks first
+BACKTRACK_FINAL_NM = 8.0  # backtracking takes minutes: nobody on final inside this
+LINED_UP_NM = 0.15  # "lined up at the end": this close to the threshold, on the runway, pointing along it
+
+
+IMMEDIATE_NM = 5.0  # an arrival between short final and this: "cleared for immediate takeoff"
+
+
+def user_type(session, own: OwnState) -> str | None:
+    return session.plan.aircraft_type if session.plan else own.aircraft_type
+
+
+def departure_hold(session, airport: Airport, rwy, own: OwnState, st, now: float | None = None) -> str | None:
+    """Shared runway controller (improvement plan B3/B4): what Tower says instead of the takeoff clearance when
+    the runway itself is free but the user must still wait: somebody reported ready before them ("number two for
+    departure", "expect departure in about four minutes" from number three), or the wake turbulence interval
+    behind the last departure ("line up and wait" / "hold position")."""
+    from atc import departures
+
+    ahead = departures.ahead(airport.icao, departures.USER, rwy.ident, now)
+    if ahead:
+        n = len(ahead) + 1
+        text = f"number {phrase.digits(str(n))} for departure"
+        if n >= 3:
+            text += f", expect departure in about {departures.minutes_words(len(ahead) * 90.0)}"
+        return text
+    gap = departures.gap_left(airport.icao, rwy.ident, user_type(session, own), now)
+    if gap > 0:
+        if not on_runway(airport, rwy, own):
+            return f"runway {phrase.runway(rwy.ident, airport.faa)}, line up and wait" if airport.faa else \
+                f"line up and wait runway {phrase.runway(rwy.ident, airport.faa)}"
+        return "hold position" + (", wake turbulence" if departures.wake_caution(
+            airport.icao, rwy.ident, user_type(session, own), now) else "")
+    return None
+
+
+def takeoff_clearance(session, airport: Airport, rwy, own: OwnState, st, now: float | None = None) -> str:
+    """'wind ..., runway one three, cleared for (immediate) takeoff(, caution wake turbulence)'."""
+    wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, airport.faa)
+    return (f"{wind}, " if wind else "") + takeoff_words(session, airport, rwy, own, st, now)
+
+
+def takeoff_words(session, airport: Airport, rwy, own: OwnState, st, now: float | None = None) -> str:
+    """'runway one three, cleared for (immediate) takeoff(, caution wake turbulence)', without the wind."""
+    from atc import departures
+
+    rw = phrase.runway(rwy.ident, airport.faa)
+    close = [d for _, d in st.finals if d <= IMMEDIATE_NM]
+    text = f"runway {rw}, cleared for {'immediate ' if close else ''}takeoff"
+    caution = departures.wake_caution(airport.icao, rwy.ident, user_type(session, own), now)
+    return text + (f", {caution}" if caution else "")
+
+
+def needs_backtrack(airport: Airport, rwy, own: OwnState, norm: str = "") -> bool:
+    """At a holding point part way down the runway (SARC 02/20: the taxiways join it in the middle): the takeoff
+    starts at the end, so Tower clears a backtrack first. Not for an intersection departure the pilot asked for."""
+    from atc.taxi import _signed
+
+    if "intersection" in norm or rwy.heading_deg is None:
+        return False
+    along, cross = _signed(airport, rwy, own.lat, own.lon)
+    length = (rwy.length_ft or 0.0) / 6076.1
+    return BACKTRACK_NM < along < length - BACKTRACK_NM and abs(cross) < 0.15 and not on_runway(airport, rwy, own)
+
+
+def lined_up_at_end(airport: Airport, rwy, own: OwnState) -> bool:
+    from atc.geo import heading_diff
+    from atc.taxi import _signed
+
+    along, _ = _signed(airport, rwy, own.lat, own.lon)
+    return on_runway(airport, rwy, own) and along < LINED_UP_NM and own.gs_kt < 3 and \
+        heading_diff(own.heading_deg, rwy.heading_deg or 0.0) < 25
+
+
+def _backtrack_blocked(st, airport: Airport) -> str | None:
+    why = st.takeoff_blocked()
+    if why:
+        return why
+    far = [(c, d) for c, d in st.finals if d <= BACKTRACK_FINAL_NM]
+    if far:
+        return f"{st._what(far[0][0])} on {phrase.digits(str(max(1, round(far[0][1]))))} mile final"
+    return None
+
+
 def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) -> str | None:
     """The takeoff clearance Tower held back ("hold position, traffic on two mile final" / "behind the landing
-    ..., line up and wait"), said as soon as the runway is free: nobody on it, nobody on short final."""
+    ..., line up and wait"), said as soon as the runway is free: nobody on it, nobody on short final. With a
+    backtrack: first "backtrack runway two zero, line up and wait" when there is room for it, then the takeoff
+    clearance once the aircraft is lined up at the end."""
     if session.takeoff_waiting is None:
+        session.backtrack = None
         return None
     if not own.on_ground:  # took off anyway, or the flight moved on
         session.takeoff_waiting = None
+        session.backtrack = None
         return None
     picked = world.pick(own)
     if picked is None or picked[1].role != "tower":
@@ -170,11 +267,45 @@ def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) ->
     rwy = next((r for r in airport.runways if r.ident == ident), None)
     if rwy is None:
         session.takeoff_waiting = None
+        session.backtrack = None
         return None
-    if runway_status(airport, rwy, own, traffic).takeoff_blocked():
+    st = runway_status(airport, rwy, own, traffic)
+    if session.backtrack == "pending":
+        if _backtrack_blocked(st, airport):
+            return None
+        session.backtrack = "lining"
+        return f"{session.spoken_callsign}, backtrack runway {phrase.runway(rwy.ident, airport.faa)}, line up and wait."
+    if session.backtrack == "lining" and not lined_up_at_end(airport, rwy, own):
+        return None
+    if st.takeoff_blocked() or departure_hold(session, airport, rwy, own, st) is not None:
         return None
     session.takeoff_waiting = None
-    return f"{session.spoken_callsign}, {clearance}."
+    session.backtrack = None
+    if clearance:  # the VFR one (turn-out, circuit): its takeoff words as of now
+        clearance = re.sub(r"runway [a-z ]+?, cleared for (?:immediate )?takeoff(?:, caution wake turbulence)?",
+                           takeoff_words(session, airport, rwy, own, st), clearance)
+    return f"{session.spoken_callsign}, {clearance or takeoff_clearance(session, airport, rwy, own, st)}."
+
+
+def push_when_ready(session, world, own: OwnState, now: float) -> str | None:
+    """A push held back at a busy time: approved as soon as the apron is quieter (our traffic) or the time given
+    has passed, on the Ground frequency of that airport."""
+    from atc import own as own_traffic
+    from atc.clearance import push_delay
+
+    w = session.push_waiting
+    if w is None:
+        return None
+    picked = world.pick(own)
+    if not own.on_ground or picked is None or picked[0].icao != w["icao"]:
+        session.push_waiting = None  # moved on (or left the airport)
+        return None
+    if picked[1].role != "ground":
+        return None
+    if now < w["at"] and push_delay(own_traffic.APRON.get(w["icao"], 0)) is not None:
+        return None
+    session.push_waiting = None
+    return f"{session.spoken_callsign}, {w['text']}."
 
 
 def squawk_now_correct(session, own: OwnState, world=None) -> str | None:
@@ -479,12 +610,23 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
 
         print(debug_line(airport, st, traffic))
         session.first_contact(facility.role)
-        clearance = (f"{wind}, " if wind else "") + f"runway {rw}, cleared for takeoff"
-        wait = wait_for_takeoff(st, airport, own)
+        from atc import departures
+
+        departures.ready(airport.icao, departures.USER, rwy.ident)  # its place in the departure queue
+        clearance = None  # made when it is given: "immediate", "caution wake turbulence" depend on that moment
+        if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end first, then the takeoff
+            session.takeoff_waiting = (rwy.ident, clearance)
+            why = _backtrack_blocked(st, airport)
+            if why:
+                session.backtrack = "pending"
+                return f"{pre}, hold position, {why}."
+            session.backtrack = "lining"
+            return f"{pre}, backtrack runway {rw}, line up and wait."
+        wait = wait_for_takeoff(st, airport, own) or departure_hold(session, airport, rwy, own, st)
         if wait:  # the takeoff clearance follows by itself once the runway is free (takeoff_when_clear)
             session.takeoff_waiting = (rwy.ident, clearance)
             return f"{pre}, {wait}."
-        return f"{pre}, {clearance}."
+        return f"{pre}, {takeoff_clearance(session, airport, rwy, own, st)}."
 
     on_final = st.own_final_nm is not None
     if not own.on_ground and (on_final or (arriving and first)) and not is_transit(norm) and \
@@ -495,6 +637,10 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
             return f"{pre}, {why}, continue approach." if why.startswith("number") else \
                 f"{pre}, continue approach, {why}."
         if on_final:
-            return f"{pre}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared to land."
+            from atc import departures
+
+            caution = departures.wake_caution(airport.icao, rwy.ident, user_type(session, own), landing=True)
+            return f"{pre}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared to land" + \
+                (f", {caution}." if caution else ".")
         return f"{pre}, continue approach runway {rw}, report final."
     return None

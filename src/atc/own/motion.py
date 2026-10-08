@@ -24,6 +24,7 @@ NM = 1852.0
 TAXI_KT = 15.0  # on a named taxiway
 APRON_KT = 10.0  # apron lanes and lead-in lines (unnamed in the sim's data)
 MAX_TAXI_KT = 20.0  # never faster on the ground, whatever a segment says (Valen: "not above 20 kt")
+EXIT_KT = 30.0  # after landing, on the runway to the exit (not a taxiway: the 20 kt cap doesn't apply there)
 TURN_KT = 7.0  # through a corner of more than TURN_DEG
 TURN_DEG = 35.0
 PUSH_KT = 2.5
@@ -126,7 +127,7 @@ class Path:
     segment (len(points) - 1), default TAXI_KT."""
 
     def __init__(self, points: list[tuple[float, float]], frame: Frame | None = None,
-                 limits_kt: list[float] | None = None) -> None:
+                 limits_kt: list[float] | None = None, cap_kt: float = MAX_TAXI_KT) -> None:
         limits = list(limits_kt) if limits_kt is not None else [TAXI_KT] * (len(points) - 1)
         pts, lims = [points[0]], []
         for p, lim in zip(points[1:], limits):
@@ -137,7 +138,7 @@ class Path:
             raise ValueError("a path needs two different points")
         self.frame = frame or Frame(*pts[0])
         self.xy = [self.frame.xy(*p) for p in pts]
-        self.limits = [min(MAX_TAXI_KT, x) for x in lims]
+        self.limits = [min(cap_kt, x) for x in lims]
         self.cum = [0.0]
         for (x1, y1), (x2, y2) in zip(self.xy, self.xy[1:]):
             self.cum.append(self.cum[-1] + math.hypot(x2 - x1, y2 - y1))

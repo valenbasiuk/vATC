@@ -72,6 +72,7 @@ class SimConnectSource:
             com2_mhz=self._com2(),
             zulu_s=self._get_opt("ZULU_TIME"),
             ias_kt=self._get_opt("AIRSPEED_INDICATED"),  # VERIFY: knots through Python-SimConnect
+            visibility_m=self._get_opt("AMBIENT_VISIBILITY"),  # VERIFY: metres through Python-SimConnect
         )
 
     def _com2(self) -> float | None:

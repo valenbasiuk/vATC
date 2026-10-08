@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import time
 import zlib
+from dataclasses import dataclass
 
 from atc import phrase, weather
 from atc.geo import distance_nm
@@ -146,9 +147,40 @@ def _zulu(own: OwnState | None, metar: weather.Metar | None) -> str:
     return time.strftime("%H%M", time.gmtime())
 
 
+# --- which weather: the real METAR, or the sim's own (preset) weather -------------------------------------------
+SIM_WX: dict[str, bool] = {}  # ICAO -> the sim flies its own weather there (the METAR doesn't match it)
+QNH_TOL_HPA = 3.0
+WIND_KT_TOL = 15.0
+
+
+def sim_weather(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None) -> bool:
+    """True when the sim isn't on live weather at this airport: near it, its QNH or wind disagree with the METAR
+    (improvement plan A4: no more ATC_METAR=off by hand). Far from it, the last verdict stands."""
+    icao = airport.icao
+    metar = weather.get(icao)
+    near = distance_nm(own.lat, own.lon, airport.lat, airport.lon) <= LOCAL_NM
+    if metar is None or not near:
+        return SIM_WX.get(icao, False)
+    differ = False
+    if own.qnh_hpa is not None and metar.qnh_hpa is not None and abs(own.qnh_hpa - metar.qnh_hpa) > QNH_TOL_HPA:
+        differ = True
+    if surface_wind is not None and metar.wind_kt is not None:  # (direction varies too much with live weather)
+        _, wkt = surface_wind
+        if wkt is not None and abs(wkt - metar.wind_kt) > WIND_KT_TOL:
+            differ = True
+    if differ != SIM_WX.get(icao):
+        print(f"[weather at {icao}: " + ("the sim's own weather (it doesn't match the METAR)" if differ
+                                         else "live METAR") + "]")
+    SIM_WX[icao] = differ
+    return differ
+
+
 def facts(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None, preferred: str | None):
-    """What the ATIS says, as values: (wind_true, wind_kt, qnh, runway, metar, local)."""
+    """What the ATIS says, as values: (wind_true, wind_kt, qnh, runway, metar, local). metar is None when the sim
+    flies its own weather here: then clouds / visibility / present weather come from the sim or are left out."""
     metar = weather.get(airport.icao)
+    if metar is not None and sim_weather(airport, own, surface_wind):
+        metar = None
     local = distance_nm(own.lat, own.lon, airport.lat, airport.lon) <= LOCAL_NM
     if surface_wind is not None:
         wdir, wkt = surface_wind
@@ -159,6 +191,77 @@ def facts(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | N
     qnh = own.qnh_hpa if local and own.qnh_hpa is not None else (metar.qnh_hpa if metar else own.qnh_hpa)
     rwy = runway_in_use(airport, wdir, wkt, preferred, use="arrival")
     return wdir, wkt, qnh, rwy, metar, local
+
+
+@dataclass
+class Conditions:
+    visibility_m: float | None  # None = unknown
+    ceiling_ft: int | None  # lowest broken / overcast / vertical visibility; None = none or unknown
+    weather: list[str]  # METAR present weather groups
+
+    @property
+    def reduced(self) -> bool:
+        """Below VMC-ish: visibility under 5 km or a ceiling under 1500 ft (Tower crosses runways, weather said)."""
+        return (self.visibility_m is not None and self.visibility_m < 5000) or \
+            (self.ceiling_ft is not None and self.ceiling_ft < 1500)
+
+    @property
+    def low_visibility(self) -> bool:
+        """Low-visibility procedures: under 550 m or a ceiling under 200 ft."""
+        return (self.visibility_m is not None and self.visibility_m < 550) or \
+            (self.ceiling_ft is not None and self.ceiling_ft < 200)
+
+
+def conditions(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None = None) -> Conditions:
+    """Visibility, ceiling and weather at the airport: the METAR's, or the sim's visibility on its own weather."""
+    _, _, _, _, metar, local = facts(airport, own, surface_wind, None)
+    if metar is not None:
+        vis = 9999.0 if metar.cavok else metar.visibility_m
+        ceil = min((c.base_ft for c in metar.clouds if c.cover in ("BKN", "OVC", "VV") and c.base_ft is not None),
+                   default=None)
+        return Conditions(vis, ceil, list(metar.weather))
+    return Conditions(own.visibility_m if local else None, None, [])
+
+
+def controller_weather(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None,
+                       preferred: str | None, departing: bool, reply: str) -> str | None:
+    """Where there is no ATIS (SARC), the controller gives the weather on first contact, VATSIM style:
+    departing "runway two zero in use, wind ..., visibility ..., temperature two four, QNH ..."; arriving "expect
+    ILS approach runway two zero, wind ..., QNH ...", visibility and ceiling only when below VMC. Items the reply
+    already has (the runway, the QNH) are not said twice."""
+    from atc.navdb import approach_type
+
+    faa = airport.faa
+    wdir, wkt, qnh, rwy, metar, local = facts(airport, own, surface_wind, preferred)
+    cond = conditions(airport, own, surface_wind)
+    low = reply.lower()
+    parts: list[str] = []
+    rw = phrase.runway(rwy.ident, faa) if rwy else None
+    if rw and f"runway {rw}" not in low:
+        if departing:
+            parts.append(f"runway {rw} in use" if not faa else f"runway {rw}")
+        else:
+            app = approach_type(airport, rwy.ident)
+            parts.append(f"expect {app} approach runway {rw}" if app else f"expect runway {rw}")
+    wind = phrase.wind(magnetic(airport, wdir), wkt, faa) if wkt is not None else None
+    if wind and "wind" not in low:
+        parts.append(wind)
+    if cond.visibility_m is not None and (cond.visibility_m < 10000 or not departing and cond.reduced):
+        if cond.visibility_m < 9999:
+            parts.append(_visibility(int(cond.visibility_m), faa))
+    if metar is not None and (cond.reduced or any("TS" in w or "FG" in w for w in cond.weather)):
+        wx = ", ".join(spoken_weather(w) for w in metar.weather)
+        if wx:
+            parts.append(wx)
+        sky = _clouds(metar, faa)
+        if sky:
+            parts.append(sky)
+    temp = metar.temp_c if metar and metar.temp_c is not None else (own.temp_c if local else None)
+    if departing and temp is not None:
+        parts.append(f"temperature {_temp(temp, faa)}")
+    if qnh and "qnh" not in low and "altimeter" not in low:
+        parts.append(f"altimeter {phrase.digits(f'{qnh * 0.02953:.2f}')}" if faa else f"QNH {phrase.digits(f'{qnh:.0f}')}")
+    return ", ".join(parts) if parts else None
 
 
 def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None = None,
@@ -221,6 +324,8 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
                 s.append((f"{app} approach, runway in use {rw}." if app else f"Runway in use {rw}."))
         if wind:
             s.append(f"{wind[:1].upper()}{wind[1:]}.")
+        if metar is None and local and own.visibility_m is not None:  # the sim's own weather: its visibility
+            s.append(f"{_visibility(int(min(own.visibility_m, 9999)), False).capitalize()}.")
         if metar and metar.cavok:
             s.append("CAVOK.")
         elif metar:
@@ -288,7 +393,9 @@ def current_note(state: AtisState, airport: Airport, own: OwnState, surface_wind
     return f"information {word} is {'now ' if now else ''}current{alt}"
 
 
-ENFORCE = True  # ask for the ATIS letter when a first call has none (tests turn it off unless they test it)
+# ask for the ATIS letter when a first call has none (tests turn it off; the launcher: ATC_ATIS_QUESTION=0)
+ENFORCE = __import__("os").environ.get("ATC_ATIS_QUESTION", "1") != "0"
+CONTROLLER_WEATHER = True  # no ATIS: the controller gives the weather on first contact (tests: off)
 
 
 def confirm_question(word: str, faa: bool) -> str:

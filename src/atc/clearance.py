@@ -203,10 +203,24 @@ def deliver_after_standby(session: Session, airport: Airport, facility: Facility
     return f"{session.spoken_callsign}, {_issue(session, airport, dest_name)}."
 
 
+PUSH_BUSY = 4  # this many of our departures between push and takeoff: the user's push waits
+PUSH_WAIT_PER_S = 75.0  # ... about this long for each one beyond PUSH_BUSY - 1
+
+
+def push_delay(load: int) -> tuple[int, float] | None:
+    """(number for push, seconds) when the apron is busy, else None."""
+    if load < PUSH_BUSY:
+        return None
+    extra = load - PUSH_BUSY + 1
+    return extra + 1, extra * PUSH_WAIT_PER_S
+
+
 def handle_push(session: Session, airport: Airport, facility: Facility, pilot_text: str,
-                direction=None) -> str | None:
+                direction=None, busy=None) -> str | None:
     """Push/start request on Ground: approve it, or send an IFR flight without clearance back to Delivery.
-    `direction`: a function giving "tail left" / "tail east" / "facing west" for this stand, or None."""
+    `direction`: a function giving "tail left" / "tail east" / "facing west" for this stand, or None.
+    `busy`: a function giving (number, seconds) when the apron is busy: "hold position, expect push and start in
+    two minutes, number two, I'll call you"; the watcher gives the approval later (flow.push_when_ready)."""
     norm = _normalize(pilot_text)
     if facility.role != "ground" or not re.search(r"\b(push|pushback|start up|startup|start)\b", norm):
         return None
@@ -225,7 +239,19 @@ def handle_push(session: Session, airport: Airport, facility: Facility, pilot_te
     station = f", {callsign_for(airport, facility)}" if session.first_contact(facility.role) else ""
     way = direction() if direction is not None else None
     way = f", {way}" if way else ""
-    return f"{cs}{station}, push back approved{way}." if airport.faa else f"{cs}{station}, push and start approved{way}."
+    approval = f"push back approved{way}" if airport.faa else f"push and start approved{way}"
+    delay = busy() if busy is not None else None
+    if delay is not None:
+        import time
+
+        from atc.departures import minutes_words
+
+        n, secs = delay
+        session.push_waiting = {"icao": airport.icao, "at": time.monotonic() + secs, "text": approval}
+        what = "push back" if airport.faa else "push and start"
+        return (f"{cs}{station}, hold position, expect {what} in {minutes_words(secs)}, "
+                f"number {phrase.digits(str(n))}, I'll call you.")
+    return f"{cs}{station}, {approval}."
 
 
 def context_lines(session: Session, airport: Airport, facility: Facility) -> list[str]:

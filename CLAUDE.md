@@ -4,7 +4,16 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-07)
+## Where we are (2026-10-08)
+- Improvement plan blocks 1-3 built (docs/IMPROVEMENT_PLAN.md; fake sim + tests, 286 tests): ATIS on a clock with
+  "all stations" on a QNH/runway change, the sim's own weather detected vs the METAR, controller weather where there
+  is no ATIS (SARC), "confirm information X", crossings by Tower in reduced visibility, backtrack (SARC); the
+  launcher window (`vATC.bat` / `python -m atc.gui`, settings in %APPDATA%\vATC\config.json); one runway controller
+  for the user and our traffic (departures.py: queue "number two for departure", wake intervals and cautions,
+  "immediate takeoff", push delays), Ground re-routing / head-on deconfliction for our traffic. Next: blocks 4-7 in
+  docs/ROADMAP.md "NEXT"; in-sim checks in "WATCH IN THE SIM 2026-10-08".
+
+## 2026-10-07
 - Real-sim flights at SABE: IFR departure fixes (landing glitch, code-owned "holding point" call, Tower remembers
   the AI it put on a runway, runway in use follows the sim's AI), push direction ("tail left"), then OUR OWN TRAFFIC
   (src/atc/own, docs/OWN_TRAFFIC_PLAN.md: departures + arrivals that obey this ATC, verified smooth in MSFS), ATIS
@@ -65,6 +74,10 @@ $env:ATC_LLM_MODEL = "gemini:gemini-flash-lite-latest,nvidia:nvidia/nemotron-3-s
 python -m atc --airport SABE --simbrief simbrief_last.json  # /freq 129.3 = Delivery, 121.9 Ground; fake sim starts on Ground
 ```
 In the sim `--airport` can be left out: the airport you are on is found (and its YAML written the first time).
+Launcher (2026-10-08): double-click `vATC.bat` (or `pythonw -m atc.gui`): Setup tab (sim, airport, SimBrief fetch,
+voice + test, PTT key / yoke button detection, mic / headset, LLM providers with key check, weather, own traffic) and
+Flight tab (transcript, typed calls, live panel). It runs `python -m atc` with the same options as by hand
+(`--status-file`, `--stdin` added). Settings: %APPDATA%\vATC\config.json (atc/config.py).
 Own traffic (departures + arrivals): add `--own-traffic [--own-factor 1.5] [--own-max N]`, sim AI traffic and
 parked aircraft OFF; REPL `/owndep [ARG B738]`, `/ownarr [ga]`. Env: ATC_OWN_MODELS=fsltl, ATC_OWN_TUG=off|<title>,
 ATC_OWN_PITCH_SIGN, ATC_OWN_TUG_YAW. `tools/probe_inject.py` = the injection probe (passed in MSFS 2026-10-07).
@@ -143,7 +156,10 @@ src/atc/clearance.py     IFR clearance issued + readback-checked by code, standb
 src/atc/phrase.py        ICAO/FAA pronunciation (digits, niner, "decimal"/"point", levels by transition altitude,
                          climb/descend forms, FAA group-form callsigns, SID names, wind rounded to 10 degrees)
 src/atc/readback.py      taxi/takeoff/landing readback check + is_acknowledgement() (silence on "roger"/correct readbacks)
-src/atc/sequence.py      runway status (on runway / on final) -> Tower may or may not clear takeoff/landing; guard()
+src/atc/sequence.py      runway status (on runway / on final / head-on final) -> Tower may clear takeoff/landing; guard()
+src/atc/departures.py    one runway controller for the user and our traffic: departure queue, wake intervals/cautions
+src/atc/config.py        launcher settings (JSON in AppData) -> the usual command line + environment
+src/atc/gui.py           the launcher window (tkinter): Setup + Flight tabs, runs `python -m atc` as a process
 src/atc/scenarios.py     scripted scenario replay with content checks (python -m atc.scenarios)
 src/atc/own/             OUR OWN TRAFFIC (--own-traffic, docs/OWN_TRAFFIC_PLAN.md): catalog.py (FS Traffic / FSLTL
                          titles, GSX tug), schedule.py (FS Traffic schedules, movements per hour per airport),

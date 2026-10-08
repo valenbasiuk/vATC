@@ -434,3 +434,23 @@ def test_the_rest_of_the_app_sees_our_aircraft_but_the_tracker_leaves_them_alone
     assert st.occupied_by == ["ARG1216"] and st.departing == ["ARG1216"]
     tr = TrafficTracker(APT)
     assert tr.update(seen, 0.0) == [] and tr.tracks == {}
+
+
+def test_change_of_routing_round_somebody_stuck_in_the_way():
+    """A square of taxiways: from node 1 to node 3 the short way is past node 2; with somebody stuck at node 2,
+    Ground's new route goes round by node 4. A single lane has no way round: None."""
+    from atc.geo import distance_nm
+    from atc.own.airport import reroute
+
+    net = TaxiNetwork()
+    base = (-34.56, -58.41)
+    net.nodes = {1: base, 2: moved(*base, 90.0, 300.0), 3: moved(*moved(*base, 90.0, 300.0), 0.0, 300.0),
+                 4: moved(*base, 0.0, 300.0)}
+    for a, b, name in ((1, 2, "A"), (2, 3, "B"), (1, 4, "C"), (4, 3, "D")):
+        m = distance_nm(*net.nodes[a], *net.nodes[b]) * 1852
+        net.edges.setdefault(a, []).append((b, m, name))
+        net.edges.setdefault(b, []).append((a, m, name))
+    pts, _, via = reroute(net, *net.nodes[1], {3}, [net.nodes[2]])
+    assert via == "Charlie, Delta" and pts[-1] == net.nodes[3]
+    line = TaxiNetwork(nodes={1: base, 2: net.nodes[2]}, edges={1: [(2, 300.0, "A")], 2: [(1, 300.0, "A")]})
+    assert reroute(line, *base, {2}, [net.nodes[2]]) is None

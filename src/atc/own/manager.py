@@ -28,17 +28,19 @@ from atc.models import Airport, OwnState, Traffic
 from atc.own import catalog as catalog_mod
 from atc.own import schedule
 from atc.own.airport import departure_paths, free_stand, push_words, stands
-from atc.own.motion import perf
-from atc.own.pilot import LINEUP_PAUSE_S, ArrivalPilot, DeparturePilot, Flight, _Pilot
+from atc.own.motion import APRON_KT, perf
+from atc.own.pilot import LINEUP_PAUSE_S, REACT_S, ArrivalPilot, DeparturePilot, Flight, _Pilot
 
 USER = "(you)"
 SEPARATION_NM = 1.5  # the previous departure this far out (and airborne) before the next takeoff clearance
 ARRIVAL_SPAWN_NM = 12.0
-ARRIVAL_SPACING_NM = 6.0
-ARRIVAL_SPACING_DEP_NM = 8.0  # with departures waiting: a gap for one between two arrivals
+ARRIVAL_SPACING_NM = 7.0  # the one before has vacated by the time the next is at 1 NM
+ARRIVAL_SPACING_DEP_NM = 9.0  # with departures waiting: a gap for one between two arrivals
 DEPARTURE_MARGIN_S = 25.0  # the departure is off the runway this long before the arrival reaches the threshold
 MAX_DEPARTURE_QUEUE = 3  # no new departure while this many are taxiing out / holding
 CROSS_FINAL_S = 90.0  # no runway crossing with somebody this close to landing on it
+IMMEDIATE_NM = 5.0  # an arrival inside this (but far enough): "cleared for immediate takeoff"
+GO_AROUND_ORDER_NM = 2.5  # a cleared arrival of ours is sent around if the runway gets occupied inside this
 ATIS_FORGET_SHARE = 0.1  # pilots whose first call has no ATIS letter (ATC asks them to confirm it)
 BUBBLE_NM = 25.0  # new traffic only at an airport the user is this close to
 ATC_EVERY_S = 1.0
@@ -46,6 +48,13 @@ READ_EVERY_S = 0.5
 
 
 PUSH_CLEAR_M = 100.0  # nobody taxiing this close to a pushback's path when it is approved
+PUSH_TAIL_CLEAR_M = 70.0  # nobody at all this close to where the tug leaves it on the taxiway
+TAXI_PUSH_CLEAR_M = 150.0  # no taxi clearance / second push with a pushback this close
+GROUND_WAITING = ("clear_of_runway", "taxi_in_radio", "starting", "ask_taxi", "taxi_radio")
+REROUTE_AFTER_S = 40.0  # stopped this long for one that can't move: a new route round it
+DEADLOCK_S = 120.0  # ... and if there is none, after this long the last resort
+HEAD_ON_DEG = 135.0  # two taxi routes this far apart in direction where they meet: head-on
+HEAD_ON_M = 25.0
 NOSE_GEAR_SHARE = 0.38  # the nose gear sits this share of the length ahead of the reference point
 TUG_AHEAD_M = 2.0
 TUG_YAW = float(os.environ.get("ATC_OWN_TUG_YAW", "180"))  # VERIFY: the tug faces the aircraft
@@ -84,6 +93,7 @@ class OwnTraffic:
         self.user: OwnState | None = None
         self.sim_traffic: list[Traffic] = []
         self.tugs: dict[str, dict] = {}
+        self._stand_cache: dict[str, list] = {}
         self.atis_letter = atis_letter  # airport -> the current ATIS letter word ("Bravo"), or None (no ATIS)
 
     # --- spawning ------------------------------------------------------------------------------------------
@@ -213,16 +223,27 @@ class OwnTraffic:
         others = list(self.sim_traffic) + [p.traffic(p.airport.elevation_ft) for p in pilots]
         if self.user is not None:
             others.append(_user_traffic(self.user))
+        parked = self._parked_ids(pilots, others)
         for p in pilots:  # who is already stopped for whom: the one waited for goes first (no deadlock)
             p.yielding = {q.flight.callsign for q in pilots if q.blocked_by == p.flight.callsign}
+            p.parked_ids = parked
         for p in pilots:
             p.step(t, dt, others)
+            if p.blocked_by and p.mover is not None and p.mover.v < 0.1:
+                p.blocked_since = p.blocked_since if p.blocked_since is not None else t
+            else:
+                p.blocked_since = None
         if t - self.last_atc >= ATC_EVERY_S:
+            for p in pilots:
+                self._unstick(p, t)
             self.last_atc = t
             for p in pilots:
                 if p.wants:
                     self._answer(p, t, others)
+                elif isinstance(p, ArrivalPilot):
+                    self._check_cleared_arrival(p, t, others)
         own.publish({p.flight.callsign: p.traffic(p.airport.elevation_ft) for p in pilots if not p.done})
+        self._shared_runway_state(pilots)
         for p in pilots:
             if p.done:
                 self.injector.remove(p.flight.callsign)
@@ -237,6 +258,31 @@ class OwnTraffic:
         self.injector.pump()
         if self.auto:
             self._auto_spawn(t)
+
+    def _shared_runway_state(self, pilots: list[_Pilot]) -> None:
+        """What the user's clearances need to know about ours (departures.py, own.APRON): who is in the departure
+        queue, who just got airborne or landed (wake turbulence intervals), how busy the apron is."""
+        from atc import departures
+
+        load: dict[str, int] = {}
+        for p in pilots:
+            icao, cs = p.airport.icao, p.flight.callsign
+            if isinstance(p, DeparturePilot):
+                rwy = p.paths.runway.ident
+                if p.state in ("holding", "takeoff_radio", "lining_up", "lined_up"):
+                    departures.ready(icao, cs, rwy)
+                if p.state == "takeoff" and p.pose.agl_ft > 0 and not p.reported_airborne:
+                    p.reported_airborne = True
+                    departures.airborne(icao, rwy, cs, p.flight.type_icao)
+                if p.state in ("pushing", "starting", "ask_taxi", "taxi_radio", "taxiing", "hold_short", "cross_radio",
+                               "holding", "takeoff_radio", "lining_up", "lined_up"):
+                    load[icao] = load.get(icao, 0) + 1
+                if p.done:
+                    departures.gone(icao, cs)
+            elif isinstance(p, ArrivalPilot) and p.state == "rollout" and not getattr(p, "reported_landed", False):
+                p.reported_landed = True
+                departures.landed(icao, p.runway.ident, cs, p.flight.type_icao)
+        own.APRON = load
 
     def _tug(self, p: DeparturePilot, t: float) -> None:
         """A pushback tug under the nose while it is pushed (GSX's TPX if installed), gone TUG_STAYS_S after."""
@@ -322,6 +368,10 @@ class OwnTraffic:
                           "request push and start"),
                 ("ATC", "{cs}, " + ok + ask), ("pilot", ok[:1].upper() + ok[1:] + ack + ", {cs}")])
         elif p.wants == "taxi":
+            from atc.own.motion import Path
+
+            if self._taxi_blocked(p, Path(p.paths.taxi)):
+                return
             rw = phrase.runway(p.paths.runway.ident, a.faa)
             via = f" via {p.paths.via}" if p.paths.via else ""
             clr = f"runway {rw}, taxi{via}" if a.faa else f"taxi to holding point runway {rw}{via}"
@@ -330,13 +380,23 @@ class OwnTraffic:
         elif p.wants == "takeoff":
             if self._runway_blocked(p, others):
                 return  # holds at the holding point; asked again next second
-            rw = phrase.runway(p.paths.runway.ident, a.faa)
+            from atc import departures
+            from atc.sequence import final_distance
+
+            rwy = p.paths.runway
+            rw = phrase.runway(rwy.ident, a.faa)
             wind = self._wind_words(a)
+            close = [t for t in others if t.callsign != p.flight.callsign
+                     and (d := final_distance(a, rwy, t)) is not None and d <= IMMEDIATE_NM]
+            p.immediate = bool(close)
+            what = "immediate takeoff" if close else "takeoff"
+            caution = departures.wake_caution(a.icao, rwy.ident, p.flight.type_icao)
+            tail = f", {caution}" if caution else ""
             self._say(p, now, "takeoff", "tower", [
                 ("pilot", f"{{station}}, {{cs}}, holding point runway {rw}, ready for departure" if not a.faa
                  else f"{{station}}, {{cs}}, holding short runway {rw}, ready for departure"),
-                ("ATC", "{cs}, {station}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared for takeoff"),
-                ("pilot", f"Cleared for takeoff runway {rw}, {{cs}}")], priority=0)
+                ("ATC", "{cs}, {station}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared for {what}{tail}"),
+                ("pilot", f"Cleared for {what} runway {rw}, {{cs}}")], priority=0)
         elif p.wants == "cross":
             self._answer_cross(p, now, others)
         elif p.wants == "handoff":
@@ -383,6 +443,13 @@ class OwnTraffic:
         elif p.wants == "cross":
             self._answer_cross(p, now, others)
         elif p.wants == "taxi_in" and p.paths is not None:
+            from atc.own.motion import Path
+
+            rest = [p.mover.path.latlon(x) for x in _every(p.mover.path.length, 10.0) if x >= p.mover.s]
+            if len(rest) >= 2 and self._taxi_blocked(p, Path(rest)):
+                facing = self._head_on(p, Path(rest))
+                if facing is None or facing.blocked_by != p.flight.callsign or not self._route_round(p, facing):
+                    return  # waits clear of the runway until the one coming the other way has passed
             st = phrase.spell(p.stand.ref).lower()
             via = f" via {p.paths.via}" if p.paths.via else ""
             out = f" via {p.paths.exit}" if p.paths.exit else ""
@@ -416,6 +483,15 @@ class OwnTraffic:
             if q.state in ("takeoff_radio", "lining_up", "lined_up") or (q.state == "takeoff" and q.pose.on_ground):
                 return
         rw = phrase.runway(c.ident, a.faa)
+        from atc.taxi import crossing_by_tower
+
+        if self.user is not None and crossing_by_tower(a, self.user, self.wind(a)):  # reduced visibility: Tower
+            gnd = _freq(a, "GND", "RMP")
+            back = f", then contact ground {phrase.frequency(gnd.mhz, a.faa)}" if gnd else ""
+            self._say(p, now, "cross", "tower", [("pilot", f"{{station}}, {{cs}}, holding short runway {rw}"),
+                                                 ("ATC", f"{{cs}}, cross runway {rw}{back}"),
+                                                 ("pilot", f"Crossing runway {rw}{back}, {{cs}}")])
+            return
         self._say(p, now, "cross", "ground", [("pilot", f"{{station}}, {{cs}}, holding short runway {rw}"),
                                               ("ATC", f"{{cs}}, cross runway {rw}"),
                                               ("pilot", f"Crossing runway {rw}, {{cs}}")])
@@ -431,6 +507,28 @@ class OwnTraffic:
         from atc.atis import confirm_question
 
         return "", f", {confirm_question(letter, p.airport.faa)}", f", affirm, information {letter}"
+
+    def _check_cleared_arrival(self, p: ArrivalPilot, now: float, others: list[Traffic]) -> None:
+        """Cleared to land, and now somebody is on the runway (the user lined up or backtracking, a sim AI) inside
+        GO_AROUND_ORDER_NM: Tower sends it around."""
+        if not p.landing_cleared or p.state != "final" or p.final_nm > GO_AROUND_ORDER_NM:
+            return
+        from atc.sequence import runway_status
+
+        rest = [t for t in others if t.callsign != p.flight.callsign]
+        user = self.user or OwnState(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True, 0.0)
+        st = runway_status(p.airport, p.runway, user, rest)
+        rolling = {q.flight.callsign for q in self.pilots.values()  # ours on the takeoff roll: gone in time
+                   if isinstance(q, DeparturePilot) and q.state == "takeoff"}
+        blocking = [c for c in st.occupied_by
+                    if p.final_nm <= 1.0 or (c not in st.departing and c not in rolling)]
+        if not blocking and not st.opposite:  # a departure rolling away ahead of it is fine until 1 NM
+            return
+        p.order_go_around(now)
+        a = p.airport
+        climb = "climb and maintain three thousand" if a.faa else "climb straight ahead to altitude three thousand feet"
+        self._radio(p, now, "tower", [("ATC", f"{{cs}}, go around, I say again, go around, traffic on the runway, {climb}"),
+                                      ("pilot", "Going around, {cs}")], priority=0)
 
     def _approach_words(self, p: ArrivalPilot) -> str:
         try:
@@ -461,20 +559,164 @@ class OwnTraffic:
                 continue
             if t.gs_kt > 1.0 and min(distance_nm(t.lat, t.lon, *q) for q in pts) * 1852.0 < PUSH_CLEAR_M:
                 return True
-            if min(distance_nm(t.lat, t.lon, *q) for q in tail) * 1852.0 < 35.0:
+            if min(distance_nm(t.lat, t.lon, *q) for q in tail) * 1852.0 < PUSH_TAIL_CLEAR_M \
+                    and not self._parked(p.airport, t):
+                return True  # standing on the taxiway (or about to move) where the tug leaves it
+        for q in self.pilots.values():  # one of ours pushing close by: one push at a time there
+            if q is not p and q.state == "pushing" and \
+                    distance_nm(q.pose.lat, q.pose.lon, p.pose.lat, p.pose.lon) * 1852.0 < TAXI_PUSH_CLEAR_M:
                 return True
+            # an arrival of ours about to taxi in, or taxiing in, through where the tug leaves this one
+            if q is not p and isinstance(q, ArrivalPilot) and q.paths is not None and q.state in (
+                    "vacating", "clear_of_runway", "taxi_in_radio", "taxiing_in"):
+                ahead = [q.mover.path.latlon(x) for x in _every(q.mover.path.length, 10.0) if x >= q.mover.s]
+                if any(min(distance_nm(*a, *b) for b in tail) * 1852.0 < PUSH_TAIL_CLEAR_M for a in ahead):
+                    return True
         return False
+
+    def _parked(self, airport: Airport, t: Traffic) -> bool:
+        """Parked at a stand: ours by their state (small aprons put stands close to the lanes), others by place."""
+        q = self.pilots.get(t.callsign)
+        if q is not None:
+            return q.state in ("parked", "ask_push", "push_radio", "parked_in")
+        return t.gs_kt <= 1.0 and self._at_stand(airport, t)
+
+    def _route_round(self, p: "ArrivalPilot", facing: _Pilot) -> bool:
+        """An arrival waiting clear of the runway, nose to nose with a departure stopped for it: a route to its stand
+        round that one, if the map has one (then its taxi clearance names the new route)."""
+        from atc.own.airport import reroute
+
+        net = self.world.taxi.get(p.airport.icao)
+        if net is None:
+            return False
+        found = reroute(net, p.pose.lat, p.pose.lon, {net.nearest(p.stand.lat, p.stand.lon)},
+                        [(facing.pose.lat, facing.pose.lon)], p.pose.heading_deg)
+        if found is None:
+            return False
+        pts, lims, via = found
+        p.take_route(pts + [(p.stand.lat, p.stand.lon)], lims + [APRON_KT], p.runway)
+        p.paths.via = via or p.paths.via
+        return True
+
+    def _unstick(self, p: _Pilot, now: float) -> None:
+        """Stopped for the same aircraft for REROUTE_AFTER_S while taxiing: Ground finds a route round it ("change
+        of routing, taxi via ..."). None after DEADLOCK_S, and the one in the way is stuck too: the last resort,
+        this one passes it (rare: a single-lane apron with two aircraft nose to nose)."""
+        from atc.own.airport import reroute
+        from atc.taxi import _holding_points, _signed
+
+        if p.blocked_since is None or p.state not in ("taxiing", "taxiing_in"):
+            return
+        stuck_for = now - p.blocked_since
+        if stuck_for < REROUTE_AFTER_S:
+            return
+        other = self.pilots.get(p.blocked_by)
+        other_stuck = other is not None and (other.pose.gs_kt < 0.5)
+        if not other_stuck and p.blocked_by != USER:
+            return
+        blocker = other.pose if other is not None else self.user
+        if blocker is None:
+            return
+        net = self.world.taxi.get(p.airport.icao)
+        if net is not None and not getattr(p, "rerouted", False):
+            if isinstance(p, DeparturePilot):
+                rwy = p.paths.runway
+                goals = _holding_points(net, p.airport, rwy, side=_signed(p.airport, rwy, p.pose.lat, p.pose.lon)[1])
+            else:
+                goals = {net.nearest(p.stand.lat, p.stand.lon)}
+                rwy = p.runway
+            found = reroute(net, p.pose.lat, p.pose.lon, goals, [(blocker.lat, blocker.lon)], p.pose.heading_deg)
+            if found is not None:
+                pts, lims, via = found
+                if isinstance(p, ArrivalPilot):
+                    pts, lims = pts + [(p.stand.lat, p.stand.lon)], lims + [APRON_KT]
+                p.take_route(pts, lims, rwy)
+                p.rerouted = True
+                if via:
+                    self._radio(p, now, "ground", [("ATC", f"{{cs}}, change of routing, taxi via {via}"),
+                                                   ("pilot", f"Taxi via {via}, {{cs}}")])
+                return
+        waiting = other is not None and other.state in GROUND_WAITING  # parked on a taxiway for Ground's word
+        if stuck_for >= DEADLOCK_S and other is not None and (other.blocked_by == p.flight.callsign or waiting):
+            p.ignore.add(other.flight.callsign)  # nose to nose and nowhere else to go
+            print(f"[own traffic: {p.flight.callsign} passes {other.flight.callsign} (deadlock)]")
+
+    def _parked_ids(self, pilots: list[_Pilot], others: list[Traffic]) -> set[str]:
+        """Who is parked at a stand: ours by their state, the user and the sim's AI by standing still on one."""
+        out = {q.flight.callsign for q in pilots if q.state in ("parked", "ask_push", "push_radio", "parked_in")}
+        ours = {q.flight.callsign for q in pilots}
+        apts = {q.airport.icao: q.airport for q in pilots}
+        for t in others:
+            if t.callsign in ours or not t.on_ground or t.gs_kt > 1.0:
+                continue
+            if any(self._at_stand(a, t) for a in apts.values()):
+                out.add(t.callsign)
+        return out
+
+    def _at_stand(self, airport: Airport, t: Traffic) -> bool:
+        """Parked at a stand (not standing on a taxiway)."""
+        net = self.world.taxi.get(airport.icao)
+        if net is None:
+            return False
+        if airport.icao not in self._stand_cache:
+            self._stand_cache[airport.icao] = stands(airport.icao, net)
+        return any(distance_nm(t.lat, t.lon, st.lat, st.lon) * 1852.0 < 30.0 for st in self._stand_cache[airport.icao])
+
+    def _taxi_blocked(self, p: _Pilot, route=None) -> bool:
+        """Ground doesn't send one taxiing while another is pushed back right by it, nor head-on into one of ours
+        already taxiing the other way along the same taxiway (it waits until that one has passed)."""
+        if any(q is not p and q.state == "pushing" and q.blocked_by != p.flight.callsign and
+               distance_nm(q.pose.lat, q.pose.lon, p.pose.lat, p.pose.lon) * 1852.0 < TAXI_PUSH_CLEAR_M
+               for q in self.pilots.values()):
+            return True
+        return route is not None and self._head_on(p, route) is not None
+
+    def _head_on(self, p: _Pilot, route) -> _Pilot | None:
+        """`route` (a motion.Path, from where p is) meets the rest of a taxiing aircraft's path going the other way
+        (for an arrival: also the route of a departure that has pushed back and is about to taxi out)."""
+        from atc.geo import heading_diff
+        from atc.own.motion import Path
+
+        mine = [(route.latlon(x), route.heading(x)) for x in _every(route.length, 10.0)]
+        for q in self.pilots.values():
+            if q is p:
+                continue
+            if q.mover is not None and q.state in ("taxiing", "taxiing_in", "vacating"):
+                path, start = q.mover.path, q.mover.s
+            elif isinstance(p, ArrivalPilot) and isinstance(q, DeparturePilot) and \
+                    q.state in ("starting", "ask_taxi", "taxi_radio"):
+                path, start = Path(q.paths.taxi), 0.0  # pushed back, about to taxi out: it goes first
+            else:
+                continue
+            theirs = [(path.latlon(x), path.heading(x)) for x in _every(path.length, 10.0) if x >= start - 20.0]
+            for (a, ha) in mine:
+                for (b, hb) in theirs:
+                    if heading_diff(ha, hb) > HEAD_ON_DEG and distance_nm(*a, *b) * 1852.0 < HEAD_ON_M:
+                        return q
+        return None
 
     def _runway_blocked(self, p: DeparturePilot, others: list[Traffic]) -> bool:
         """Somebody on the runway (either end) or landing the other way, an arrival too close to be gone before it
         lands, or our previous departure still close."""
-        from atc.sequence import final_distance, runway_status
+        from atc.sequence import final_distance, on_runway, runway_status
 
         rwy = p.paths.runway
         rest = [t for t in others if t.callsign != p.flight.callsign]
         user = self.user or OwnState(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True, 0.0)
         st = runway_status(p.airport, rwy, user, rest)
         if st.occupied_by or st.opposite:  # on it, or landing the other way (the sim's AI can)
+            return True
+        from atc import departures
+
+        before = departures.ahead(p.airport.icao, p.flight.callsign, rwy.ident)  # the user (or one of ours) was first
+        if departures.USER in before and self.user is not None:  # only while the user is really there, waiting
+            u = self.user
+            near = distance_nm(u.lat, u.lon, p.pose.lat, p.pose.lon) * 1852.0 < 600.0
+            if not u.on_ground or not (near or on_runway(p.airport, rwy, _user_traffic(u))):
+                before = [c for c in before if c != departures.USER]
+        if before:
+            return True
+        if departures.gap_left(p.airport.icao, rwy.ident, p.flight.type_icao) > 0:  # wake turbulence interval
             return True
         needs_s = self._departure_time_s(p)
         for t in rest:  # anybody on final: time to the threshold against the time this one needs to be gone
@@ -491,13 +733,15 @@ class OwnTraffic:
                 return True
         return False
 
-    @staticmethod
-    def _departure_time_s(p: DeparturePilot) -> float:
+    def _departure_time_s(self, p: DeparturePilot) -> float:
         """From the holding point until it is airborne: line up (~5 m/s), spool up, the takeoff roll."""
         from atc.own.motion import KT, Path
 
         lineup = Path(p.paths.lineup).length / 5.0 + 6.0
-        return lineup + LINEUP_PAUSE_S[1] + p.perf.vr_kt * KT / p.perf.accel + 6.0
+        climb_200ft = 200.0 / (p.perf.climb_fpm / 60.0)  # until then it still counts as on the runway
+        radio = (12.0 if self.bus is not None else 0.0) + REACT_S["takeoff"][1]  # said, read back, brakes off
+        spool = 3.0  # the thrust builds up (motion.SPOOL_S)
+        return radio + lineup + LINEUP_PAUSE_S[1] + p.perf.vr_kt * KT / p.perf.accel + 6.0 + spool + climb_200ft
 
     def _landing_blocked(self, p: ArrivalPilot, others: list[Traffic]) -> str | None:
         """Why this arrival may not be cleared to land now ("traffic on the runway", "number two"), or None."""

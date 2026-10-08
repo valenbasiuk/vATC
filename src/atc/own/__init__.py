@@ -18,6 +18,7 @@ from atc.geo import distance_nm
 from atc.models import Traffic
 
 OWN: dict[str, Traffic] = {}  # callsign -> current state; the manager replaces the whole dict each update
+APRON: dict[str, int] = {}  # ICAO -> our departures between push and takeoff (the user's push waits if many)
 
 
 def publish(states: dict[str, Traffic]) -> None:

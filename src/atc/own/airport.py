@@ -20,6 +20,9 @@ from atc.taxi import TaxiNetwork, _holding_points, _signed, route_path, spoken_r
 PUSH_ON_TAXIWAY_M = 38.0  # how far the tug pushes along the taxiway past the lead-in
 LINEUP_ALONG_NM = 0.02  # line up this far into the runway past the holding point's abeam (or the threshold)
 LINEUP_STRAIGHT_M = 60.0  # straight bit on the centerline, so the takeoff starts aligned
+BACKTRACK_M = 150.0  # a holding point further than this down the runway: backtrack to the end, turn round
+UTURN_R_M = 17.0  # the 180 degree turn at the end, within a 45 m runway
+UTURN_AT_M = 60.0  # ... centered this far in from the threshold
 GATE_TYPES = ("GH", "GM", "GS", "RGAL", "RGAM", "RC", "RMCL", "RMCM")  # preference order for airliners
 GA_TYPES_FIRST = ("RGAS", "RGA", "RGAM", "RGAL", "GS")
 EXIT_ON_RUNWAY_M = 25.0  # a graph node this close to the centerline is where an exit taxiway meets the runway
@@ -81,8 +84,8 @@ def free_stand(all_stands: list[Stand], occupied: list[Traffic], wingspan_m: flo
     the runways. GA aircraft prefer GA ramps, airliners gates."""
     from atc.sequence import along_cross
 
-    def free(s: Stand) -> bool:
-        clear = max(30.0, s.radius_m) / 1852.0
+    def free(s: Stand) -> bool:  # nobody within a wingspan (small GA stands are packed close together)
+        clear = max(30.0, s.radius_m, wingspan_m) / 1852.0
         return not any(t.on_ground and distance_nm(s.lat, s.lon, t.lat, t.lon) < clear for t in occupied) \
             and not any(r.ref == s.ref for r in reserved)
 
@@ -174,10 +177,38 @@ def departure_paths(net: TaxiNetwork, airport: Airport, rwy: Runway, stand: Stan
         push = []
     hold = net.nodes[nodes[-1]]
     along, _ = _signed(airport, rwy, *hold)
-    on = max(along, 0.0) + LINEUP_ALONG_NM
-    p = _centerline(airport, rwy, on)
-    q = _centerline(airport, rwy, on + LINEUP_STRAIGHT_M / 1852.0)
-    return DeparturePaths(stand, push, taxi, [hold, p, q], spoken_route(names), rwy, limits)
+    if along * 1852.0 > BACKTRACK_M:  # joins the runway part way down (SARC): backtrack, turn round at the end
+        lineup = [hold] + backtrack_points(airport, rwy, along * 1852.0)
+    else:
+        on = max(along, 0.0) + LINEUP_ALONG_NM
+        lineup = [hold, _centerline(airport, rwy, on), _centerline(airport, rwy, on + LINEUP_STRAIGHT_M / 1852.0)]
+    return DeparturePaths(stand, push, taxi, lineup, spoken_route(names), rwy, limits)
+
+
+def _runway_point(airport: Airport, rwy: Runway, along_m: float, right_m: float) -> tuple[float, float]:
+    """A point by its distance along the runway from the threshold and to the right of the centerline."""
+    lat, lon = _centerline(airport, rwy, along_m / 1852.0)
+    return moved(lat, lon, (rwy.heading_deg or 0.0) + 90.0, right_m) if right_m else (lat, lon)
+
+
+def backtrack_points(airport: Airport, rwy: Runway, entry_m: float) -> list[tuple[float, float]]:
+    """Onto the runway at `entry_m` from the threshold, back along it toward the threshold on the right half, a
+    180 degree turn of UTURN_R_M round UTURN_AT_M, then straight on the centerline: lined up for the takeoff."""
+    import math
+
+    r, a0 = UTURN_R_M, UTURN_AT_M
+    pts = [_runway_point(airport, rwy, entry_m, 0.0)]
+    d = entry_m - 40.0
+    while d > a0:  # backtracking (heading opposite to the runway), on the right half seen from the takeoff
+        pts.append(_runway_point(airport, rwy, d, r))
+        d -= 60.0
+    for k in range(0, 13):  # the turn: (a0, +r) round the threshold side to (a0, -r)
+        phi = math.pi * k / 12
+        pts.append(_runway_point(airport, rwy, a0 - r * math.sin(phi), r * math.cos(phi)))
+    pts.append(_runway_point(airport, rwy, a0 + 30.0, -r / 3))
+    pts.append(_runway_point(airport, rwy, a0 + 60.0, 0.0))
+    pts.append(_runway_point(airport, rwy, a0 + 60.0 + LINEUP_STRAIGHT_M, 0.0))
+    return pts
 
 
 def arrival_paths(net: TaxiNetwork, airport: Airport, rwy: Runway, lat: float, lon: float, v_kt: float,
@@ -203,14 +234,16 @@ def arrival_paths(net: TaxiNetwork, airport: Airport, rwy: Runway, lat: float, l
         if found is None:
             continue
         names, nodes = found
-        seq = [(_centerline(airport, rwy, here), None), (_centerline(airport, rwy, along), TAXI_KT),
+        from atc.own.motion import EXIT_KT
+
+        seq = [(_centerline(airport, rwy, here), None), (_centerline(airport, rwy, along), EXIT_KT),
                (net.nodes[node], TAXI_KT)]
         seq += [(net.nodes[b], TAXI_KT if edge_name.get((a, b)) else APRON_KT) for a, b in zip(nodes, nodes[1:])]
         seq += [((stand.lat, stand.lon), APRON_KT)]
         pts, lims = _limited(seq)
         if len(pts) < 2:
             continue
-        path = Path(pts, limits_kt=lims)
+        path = Path(pts, limits_kt=lims, cap_kt=EXIT_KT)
         clear = next((s for s in _samples(path) if abs(_signed(airport, rwy, *path.latlon(s))[1]) * 1852.0
                       > CLEAR_OF_RUNWAY_M), None)
         if clear is None:
@@ -223,6 +256,39 @@ def arrival_paths(net: TaxiNetwork, airport: Airport, rwy: Runway, lat: float, l
             return out
         best = best or out
     return best
+
+
+REROUTE_AVOID_M = 45.0  # graph nodes this close to the aircraft in the way are left out of a new route
+
+
+def reroute(net: TaxiNetwork, lat: float, lon: float, goals: set[int], avoid: list[tuple[float, float]],
+            heading: float | None = None) -> tuple[list[tuple[float, float]], list[float], str] | None:
+    """A new taxi route from (lat, lon) to `goals` that keeps away from `avoid` (somebody stuck in the way):
+    (points, limits, spoken route), or None if there is none. Ground's "change of routing"."""
+    banned = {n for n, (la, lo) in net.nodes.items()
+              if any(distance_nm(la, lo, a, b) * 1852.0 < REROUTE_AVOID_M for a, b in avoid)}
+    sub = TaxiNetwork(nodes={n: xy for n, xy in net.nodes.items() if n not in banned},
+                      edges={n: [e for e in es if e[0] not in banned] for n, es in net.edges.items() if n not in banned})
+    if not sub.edges:
+        return None
+    ok = [n for n in sub.edges if n not in banned]
+    # start ahead of the aircraft (not back through the one in the way): nearest node in front of it
+    if heading is not None:
+        ahead = [n for n in ok if heading_diff(bearing_deg(lat, lon, *sub.nodes[n]), heading) < 100.0]
+        ok = ahead or ok
+    start = sub.nearest(lat, lon, ok)
+    goal = goals - banned
+    if start is None or not goal:
+        return None
+    found = route_path(sub, start, goal)
+    if found is None:
+        return None
+    names, nodes = found
+    edge_name = _edge_names(sub)
+    seq = [((lat, lon), None), (sub.nodes[nodes[0]], APRON_KT)]
+    seq += [(sub.nodes[b], TAXI_KT if edge_name.get((a, b)) else APRON_KT) for a, b in zip(nodes, nodes[1:])]
+    pts, lims = _limited(seq)
+    return (pts, lims, spoken_route(names)) if len(pts) >= 2 else None
 
 
 HOLD_SHORT_OF_RUNWAY_M = 75.0  # crossing a runway: the nose stops this far from its centerline (the hold line)

@@ -46,6 +46,8 @@ TRAFFIC_RADIUS_NM = 15.0
 ATIS_PAUSE_S = 3.0  # between two loops of the ATIS broadcast
 ATIS_TEXT_PAUSE_S = 60.0  # text mode: print it once a minute, not in a loop
 ATIS_VOICE = 12  # libritts speaker for the ATIS, not the controller's voice
+ATIS_CLOCK_S = 60.0  # the ATIS of the airports in play is rebuilt this often (improvement plan A1)
+ATIS_IN_PLAY_NM = 60.0
 
 
 def handle(
@@ -112,8 +114,17 @@ def handle(
         word, _ = atis.build(session.atis, airport, own, session.surface_wind.get(airport.icao), preferred)
         session.atis_asked[airport.icao] = word
         atis_note = atis.confirm_question(word, airport.faa)
+    # no ATIS here (SARC): the controller gives the weather on the first contact at this airport, VATSIM style
+    no_atis_weather = atis.CONTROLLER_WEATHER and first_here and _freq(airport, "ATIS") is None \
+        and airport.icao not in session.atis_confirmed
 
     def say(reply: str, llm_s: float = 0.0) -> str:
+        nonlocal atis_note
+        if no_atis_weather and atis_note is None and not reply.startswith("Station calling"):
+            departing = own.on_ground and not session.landed
+            atis_note = atis.controller_weather(airport, own, session.surface_wind.get(airport.icao), preferred,
+                                                departing, reply)
+            session.atis_confirmed.add(airport.icao)
         instruction = reply  # what a readback is checked against: the ATIS question is not part of it
         if atis_note and "now current" not in reply:
             reply = reply.rstrip(".") + f". {atis_note[:1].upper()}{atis_note[1:]}."
@@ -153,7 +164,13 @@ def handle(
             return user_push_words(world.taxi.get(airport.icao), airport, rwy_dep, own.lat, own.lon, own.heading_deg,
                                    f"{airport.icao}{session.callsign}")
 
-        reply = handle_push(session, airport, facility, pilot_text, push_way)
+        def apron_busy():  # our traffic between push and takeoff at this airport
+            from atc import own as own_traffic
+            from atc.clearance import push_delay
+
+            return push_delay(own_traffic.APRON.get(airport.icao, 0))
+
+        reply = handle_push(session, airport, facility, pilot_text, push_way, apron_busy)
     if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
         reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
     if reply is None and _SAY_AGAIN.search(_normalize(pilot_text)) and history \
@@ -345,6 +362,7 @@ class _Callbacks:
         self.trackers: dict[str, TrafficTracker] = {}
         self.last_chatter: list[tuple[str, str]] = []  # (who, text) of the last exchange, for tests
         self.atis_play: dict | None = None  # the ATIS being broadcast: airport, sentences, position
+        self.atis_clock_at = -1e9  # last time the ATIS of the airports in play was rebuilt
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="atc-watcher").start()
@@ -380,7 +398,8 @@ class _Callbacks:
             if near is not None:  # keep the airport's surface wind current (ATIS, chatter, runway in use)
                 _surface_wind(own, near, self.session)
             flow.track(self.session, self.world, own, now)
-            text = flow.squawk_now_correct(self.session, own, self.world) or flow.repeat_or_clear(self.session, own, now)
+            text = flow.squawk_now_correct(self.session, own, self.world) or flow.repeat_or_clear(self.session, own, now) \
+                or flow.push_when_ready(self.session, self.world, own, now)
             if text is None:  # "hold position, traffic on short final" earlier: the takeoff clearance, now free
                 text = flow.takeoff_when_clear(self.session, self.world, own,
                                                self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
@@ -414,9 +433,57 @@ class _Callbacks:
                 self._transmit(text, "(controller call)")
                 self.bus.heard(now, to_user=True)
                 return text
+            change = self._atis_clock(own, now)
+            if change is not None:  # "all stations, ..., information Charlie now current, QNH ..."
+                return change
             if not self._chatter(own, now):
                 self._atis(own, now)
             return None
+
+    def _atis_clock(self, own, now: float) -> str | None:
+        """Improvement plan A1/A2: rebuild the ATIS of the airports in play once a minute, so its letter changes
+        when the weather does (not only when somebody asks). A change of QNH or runway is broadcast on the position
+        the user is tuned to at that airport: "all stations, Aeroparque Tower, information Charlie now current,
+        QNH one zero zero niner". Not a readback target: it doesn't go into the history."""
+        if now - self.atis_clock_at < ATIS_CLOCK_S:
+            return None
+        self.atis_clock_at = now
+        picked = self.world.pick(own)
+        plan = self.session.plan
+        said = None
+        for a in self.world.airports:
+            if _freq(a, "ATIS") is None:
+                continue
+            in_play = distance_nm(own.lat, own.lon, a.lat, a.lon) <= ATIS_IN_PLAY_NM or \
+                (plan is not None and a.icao in (plan.origin, plan.destination))
+            if not in_play:
+                continue
+            prev = self.session.atis.letters.get(a.icao)
+            pref = plan.planned_runway if plan and plan.origin == a.icao and own.on_ground else \
+                plan.dest_runway if plan and plan.destination == a.icao else None
+            word, _ = atis.build(self.session.atis, a, own, self.session.surface_wind.get(a.icao), pref)
+            new = self.session.atis.letters.get(a.icao)
+            if prev is None or new is None or prev[0] == new[0]:
+                continue
+            runway_changed, qnh_changed = prev[1][1] != new[1][1], prev[1][2] != new[1][2]
+            tuned = picked is not None and picked[0].icao == a.icao and picked[1].can_reply and \
+                picked[1].role in ("clearance", "ground", "tower", "approach", "departure")
+            if not (runway_changed or qnh_changed) or not tuned:
+                continue
+            station = callsign_for(a, picked[1])
+            bits = [f"Attention all aircraft, information {word} now current" if a.faa else
+                    f"All stations, {station}, information {word} now current"]
+            if qnh_changed and new[1][2]:
+                q = new[1][2]
+                bits.append(f"altimeter {phrase.digits(f'{q * 0.02953:.2f}')}" if a.faa else f"QNH {phrase.digits(str(q))}")
+            if runway_changed and new[1][1]:
+                bits.append(f"runway in use {phrase.runway(new[1][1], a.faa)}")
+            said = ", ".join(bits) + "."
+            print()
+            _say_timed(self.speaker, said, None, 0.0, _atc_voice(self.speaker, a, picked[1].role))
+            print(self.prompt, end="", flush=True)
+            self.bus.heard(now)
+        return said
 
     def _atis(self, own, now: float) -> str | None:
         """One sentence of the ATIS per tick while COM1 (or a COM2 that is heard) is on an ATIS frequency, so
@@ -467,6 +534,10 @@ class _Callbacks:
         tracker = self.trackers.setdefault(apt.icao, TrafficTracker(apt))
         wind = self.session.surface_wind.get(apt.icao) or (own.wind_dir_deg, own.wind_kt)
         for ev in tracker.update(traffic, now):
+            if ev.kind == "takeoff_roll" and ev.runway is not None:  # the next departure's wake interval
+                from atc import departures
+
+                departures.airborne(apt.icao, ev.runway.ident, ev.traffic.callsign, ev.traffic.type)
             ex = exchange_for(ev, own, traffic, wind, self.world.taxi.get(apt.icao))
             if ex is not None:
                 self.bus.offer(ex)
@@ -628,6 +699,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--own-factor", type=float, default=1.0,
                    help="own traffic: x the airport's usual amount (from FS Traffic's schedule; YAML traffic_per_hour)")
     p.add_argument("--own-max", type=int, help="own traffic: at most this many aircraft at once (default: by airport)")
+    p.add_argument("--status-file", help="write the live status (JSON) here every 1.5 s (the launcher's panel)")
+    p.add_argument("--stdin", action="store_true", help="with --ptt: typed calls and /commands on stdin too")
     args = p.parse_args(argv)
 
     plan = load_simbrief(args.simbrief) if args.simbrief else None
@@ -770,41 +843,131 @@ def _start_own_traffic(args, world, sim, cb):
     return mgr
 
 
+def _typed_line(line: str, world, sim, llm, speaker, history, session, cb, own_mgr) -> bool:
+    """One typed line: a radio call or a /command. False = /quit."""
+    airport = world.airports[0]
+    if line.split()[0] in ("/owndep", "/ownarr"):  # one of ours now: "/owndep [ARG B738]", "/ownarr [ga]"
+        if own_mgr is None:
+            print("start with --own-traffic")
+            return True
+        from atc.own.schedule import Departure
+
+        parts = line.split()
+        dep = Departure(parts[1].upper(), str(random.randint(1000, 4999)), parts[2].upper()) \
+            if len(parts) == 3 else None
+        ga = len(parts) == 2 and parts[1].lower() == "ga"
+        apt = world.nearest(sim.own()) or airport
+        spawn = own_mgr.spawn_departure if parts[0] == "/owndep" else own_mgr.spawn_arrival
+        print(spawn(apt, dep=dep, ga=ga))
+        return True
+    if line.startswith("/"):
+        with cb.lock:
+            return _repl_command(line, sim, world)
+    import sys
+
+    if not sys.stdin.isatty():  # typed in the launcher (a terminal shows what was typed already)
+        print(f"YOU> {line}")
+    with cb.lock:
+        reply = handle(airport, sim, llm, speaker, history, line, session=session, world=world)
+    cb.after_turn(replied=reply is not None)
+    return True
+
+
 def _run_text(world, sim, llm, speaker, history, session, args=None) -> None:
+    import sys
+
     airport = world.airports[0]
     print(f"{airport.icao} {airport.name}. Type your radio calls. /quit to exit.")
-    cb = _Callbacks(world, sim, speaker, history, session, prompt="YOU> ")
+    prompt = "YOU> " if sys.stdin.isatty() else ""  # no prompt glued to the next line in the launcher's log
+    cb = _Callbacks(world, sim, speaker, history, session, prompt=prompt)
     cb.start()
     own_mgr = _start_own_traffic(args, world, sim, cb)
+    _start_status(args, world, sim, cb)
     while True:
         try:
-            line = input("YOU> ").lstrip("\ufeff").strip()  # piped input from PowerShell starts with a BOM
+            line = input(prompt).lstrip("\ufeff").strip()  # piped input from PowerShell starts with a BOM
         except EOFError:
             break
-        if not line:
-            continue
-        if line.split()[0] in ("/owndep", "/ownarr"):  # one of ours now: "/owndep [ARG B738]", "/ownarr [ga]"
-            if own_mgr is None:
-                print("start with --own-traffic")
-                continue
-            from atc.own.schedule import Departure
+        if line and not _typed_line(line, world, sim, llm, speaker, history, session, cb, own_mgr):
+            break
 
-            parts = line.split()
-            dep = Departure(parts[1].upper(), str(random.randint(1000, 4999)), parts[2].upper()) \
-                if len(parts) == 3 else None
-            ga = len(parts) == 2 and parts[1].lower() == "ga"
-            apt = world.nearest(sim.own()) or airport
-            spawn = own_mgr.spawn_departure if parts[0] == "/owndep" else own_mgr.spawn_arrival
-            print(spawn(apt, dep=dep, ga=ga))
-            continue
-        if line.startswith("/"):
-            with cb.lock:
-                if not _repl_command(line, sim, world):
-                    break
-            continue
-        with cb.lock:
-            reply = handle(airport, sim, llm, speaker, history, line, session=session, world=world)
-        cb.after_turn(replied=reply is not None)
+
+def _start_stdin(world, sim, llm, speaker, history, session, cb, own_mgr) -> None:
+    """--stdin with push-to-talk (the launcher): typed calls and /commands come in on stdin too."""
+    import sys
+
+    def loop() -> None:
+        for raw in sys.stdin:
+            line = raw.lstrip("\ufeff").strip()
+            try:
+                if line and not _typed_line(line, world, sim, llm, speaker, history, session, cb, own_mgr):
+                    import os
+
+                    os._exit(0)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[typed call: {exc}]")
+
+    threading.Thread(target=loop, daemon=True, name="stdin").start()
+
+
+STATUS_EVERY_S = 1.5
+
+
+def status_snapshot(world, sim, session, own_mgr=None) -> dict:
+    """What the launcher's live panel shows: where you are, who you talk to, the ATIS, our traffic."""
+    from atc import own as own_traffic
+
+    own = sim.own()
+    picked = world.pick(own)
+    near = world.nearest(own)
+    out: dict = {"t": time.time(), "callsign": session.spoken_callsign, "com1": own.com1_mhz,
+                 "on_ground": own.on_ground, "clearance": session.clearance}
+    if picked is not None:
+        a, fac = picked
+        out["station"] = {"icao": a.icao, "role": fac.role, "name": callsign_for(a, fac) if fac.can_reply else fac.role}
+    if near is not None:
+        out["airport"] = {"icao": near.icao, "name": near.name,
+                          "frequencies": [{"kind": f.kind, "mhz": f.mhz} for f in near.frequencies]}
+        rwy = session_runway(near, own.wind_dir_deg, own.wind_kt, session,
+                             "departure" if own.on_ground and not session.landed else "arrival")
+        out["runway"] = rwy.ident if rwy else None
+        if _freq(near, "ATIS") is not None:
+            try:
+                word, lines = atis.build(session.atis, near, own, session.surface_wind.get(near.icao))
+                out["atis"] = {"letter": word, "text": " ".join(lines)}
+            except Exception:  # noqa: BLE001 - weather not there yet
+                pass
+        out["sim_weather"] = atis.SIM_WX.get(near.icao, False)
+    if own_mgr is not None:
+        out["own"] = [{"callsign": p.flight.callsign, "type": p.flight.type_icao, "kind": p.kind, "state": p.state}
+                      for p in list(own_mgr.pilots.values())]
+        out["apron"] = dict(own_traffic.APRON)
+    return out
+
+
+def _start_status(args, world, sim, cb) -> None:
+    """--status-file PATH: the live panel's data, written every STATUS_EVERY_S (atomically: write, then rename)."""
+    target = getattr(args, "status_file", None) if args is not None else None
+    if not target:
+        return
+    import json
+    import os
+
+    def loop() -> None:
+        while not cb.stop.wait(STATUS_EVERY_S):
+            try:
+                with cb.lock:
+                    data = status_snapshot(world, sim, cb.session, _OWN[0])
+                tmp = f"{target}.tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh)
+                os.replace(tmp, target)
+            except PermissionError:  # Windows: the launcher was reading it just then; next time
+                pass
+            except Exception as exc:  # noqa: BLE001 - the panel is a nicety, never a crash
+                print(f"[status: {exc}]")
+
+    threading.Thread(target=loop, daemon=True, name="status").start()
 
 
 def _device(spec: str | None):
@@ -877,7 +1040,10 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
     print(f"{airport.icao} {airport.name}. Hold {ptt.describe()} to talk. Ctrl+C to exit.")
     cb = _Callbacks(world, sim, speaker, history, session, ptt=ptt)
     cb.start()
-    _start_own_traffic(args, world, sim, cb)
+    own_mgr = _start_own_traffic(args, world, sim, cb)
+    _start_status(args, world, sim, cb)
+    if getattr(args, "stdin", False):
+        _start_stdin(world, sim, llm, speaker, history, session, cb, own_mgr)
     while True:
         audio = ptt.record_once()
         if len(audio) < 4800:  # under 0.3 s: a tap, not a call

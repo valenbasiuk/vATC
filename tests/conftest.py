@@ -21,6 +21,11 @@ def _no_runway_users_left_over(monkeypatch):
     monkeypatch.setattr("atc.sequence.RUNWAY_USERS", {})
     monkeypatch.setattr("atc.runway.AI_FLOW", {})
     monkeypatch.setattr("atc.own.OWN", {})
+    monkeypatch.setattr("atc.own.APRON", {})
+    monkeypatch.setattr("atc.atis.SIM_WX", {})
+    from atc import departures
+
+    departures.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +40,7 @@ def _no_community_folder(monkeypatch):
 def _no_atis_question(monkeypatch):
     """Tests written before the ATIS check expect replies without 'confirm information X' (tests of it turn it on)."""
     monkeypatch.setattr("atc.atis.ENFORCE", False)
+    monkeypatch.setattr("atc.atis.CONTROLLER_WEATHER", False)
 
 
 @pytest.fixture(autouse=True)
