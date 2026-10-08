@@ -66,11 +66,15 @@ def test_traffic_far_out_allows_takeoff():
     assert st.finals and st.takeoff_blocked() is None
 
 
-def test_final_for_the_other_direction_does_not_count():
+def test_final_for_the_other_direction_is_head_on_traffic():
+    """Not "number two" (it isn't in our sequence), but nobody takes off or lands toward it (2026-10-07: Tower
+    cleared a sim AI onto 31 with one of ours on final for 13)."""
     sim = _sim()
     sim.add_on_final(2.0, "ARG1234", "13")
     st = runway_status(APT, R31, sim.own(), sim.traffic(APT.lat, APT.lon, 15))
-    assert st.finals == [] and st.takeoff_blocked() is None
+    assert st.finals == [] and st.opposite == [("ARG1234", st.opposite[0][1], "13")]
+    assert st.takeoff_blocked() == "traffic landing runway one three, two mile final"
+    assert st.landing_blocked() == "traffic landing runway one three, two mile final"
 
 
 def test_aircraft_on_runway_blocks_takeoff_and_landing():

@@ -32,6 +32,12 @@ def _no_community_folder(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_atis_question(monkeypatch):
+    """Tests written before the ATIS check expect replies without 'confirm information X' (tests of it turn it on)."""
+    monkeypatch.setattr("atc.atis.ENFORCE", False)
+
+
+@pytest.fixture(autouse=True)
 def _offline_weather(monkeypatch):
     """No METAR downloads in tests (tests seed atc.weather with weather.put when they need one)."""
     monkeypatch.setenv("ATC_METAR", "off")

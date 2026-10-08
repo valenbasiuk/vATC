@@ -225,6 +225,43 @@ def arrival_paths(net: TaxiNetwork, airport: Airport, rwy: Runway, lat: float, l
     return best
 
 
+HOLD_SHORT_OF_RUNWAY_M = 75.0  # crossing a runway: the nose stops this far from its centerline (the hold line)
+
+
+@dataclass
+class Crossing:
+    ident: str  # the end ATC names ("hold short of runway one three")
+    s_hold: float  # metres along the path where the reference point stops, nose short of the hold line
+    s_clear: float  # past this the tail is clear of the runway on the other side
+    cleared: bool = False
+
+
+def path_crossings(airport: Airport, path, length_m: float, in_use: Runway | None) -> list[Crossing]:
+    """The runways a taxi path crosses (2026-10-07: a GA of ours sat on SABE's runway during a takeoff), in order.
+    The path is followed side to side of each runway past the hold lines; along the runway itself or round its
+    ends it isn't a crossing."""
+    from atc.taxi import _named_end, strips
+
+    out: list[Crossing] = []
+    pts = [(s, path.latlon(s)) for s in _samples(path, 3.0)]
+    for strip in strips(airport):
+        r = strip[0]
+        length_nm = (r.length_ft or 0.0) / 6076.1
+        last_side, last_s = 0, None
+        for s, (lat, lon) in pts:
+            along, cross = _signed(airport, r, lat, lon)
+            side = 0 if abs(cross) * 1852.0 < HOLD_SHORT_OF_RUNWAY_M else (1 if cross > 0 else -1)
+            if side == 0:
+                continue
+            if last_side and side != last_side:
+                mid = _signed(airport, r, *path.latlon((last_s + s) / 2))[0]
+                if -0.01 <= mid <= length_nm + 0.01:
+                    out.append(Crossing(_named_end(strip, in_use, (None, None)).ident,
+                                        max(0.0, last_s - length_m / 2 - 5.0), s + length_m / 2 + 5.0))
+            last_side, last_s = side, s
+    return sorted(out, key=lambda c: c.s_hold)
+
+
 def _samples(path, step: float = 4.0):
     s = 0.0
     while s <= path.length:

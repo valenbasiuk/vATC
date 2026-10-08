@@ -77,6 +77,27 @@ quantity OFF, parked aircraft OFF (or low). Then every aircraft around is ours (
   - gear heights per type learned from ground spawns (data/gear_heights.json) for the ones created in the air.
   WATCH IN THE SIM next: smoothness per frame; arrivals (sunk/floating after touchdown = gear height guess); the
   tug (appears? faces right? moves with the nose?); the Pause event; exits taken / stands reached.
+- Second flight (2026-10-07, SABE): much smoother; Pause works; tug looks right. Seen: aircraft beside the runway
+  centerline in the sim and in Little Navmap; a "5151/B738/BONDI" (NOT ours: FS Traffic's own injector,
+  justflight-fstraffic-controlcentre, still injects with the sim's sliders OFF, also the parked ones) landed 31
+  head-on to one of ours on 13 after the chatter cleared it; too busy, the queue grew. Then built:
+  - runway ends from the sim's scenery replace the YAML's in memory (navdb.enrich; SABE's were 14 m east, 830 ft
+    long); taxi.crossings rewritten side-to-side (a node on the centerline broke it at KSFO).
+  - head-on: runway_status.opposite (final for the other end of the strip) blocks takeoff and landing clearances
+    for everybody (the user, chatter for the sim's AI, ours).
+  - capacity: max 20 movements/h on one runway (36 with runway_configs); arrivals 6 NM apart, 8 NM when departures
+    wait; departure released when it is airborne 25 s before the next arrival reaches the threshold (time, not
+    distance); no new departure with 3 taxiing / holding.
+  - reaction time after a clearance (push 6-12 s, taxi 3-8, line-up 2-5), rolling takeoff for half, the others stop
+    on the centerline 2-5 s; thrust spools up over 5 s; gentler start (jerk 0.3) and stops that fade out.
+  - wingtip clearance for moving traffic (half spans + 6 m), "the one waited for goes first" (no deadlocks);
+    runway crossings for ours (hold short at 75 m from the centerline, "holding short runway one three" ->
+    "cross runway one three" when nobody is on it or landing within 90 s).
+  - ATIS: ours say "information Bravo" in their first call, 1 in 10 forget and Ground/Tower asks "confirm information
+    Bravo" -> "affirm, information Bravo"; the user is asked the same on a first call without a letter
+    (atis.ENFORCE; "negative" -> "information Bravo is current, QNH ...").
+  Simulated 6 x 60 min at SABE: 0 runway conflicts, 0 landings without clearance, nothing stuck.
+  Valen should switch FS Traffic's injection off (keep the package: its models and schedules are used).
 
 ## Phases
 

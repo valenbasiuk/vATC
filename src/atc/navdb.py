@@ -106,20 +106,25 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
             approaches[str(rwy).zfill(2)].append(name)
     if approaches and not airport.approaches:
         airport.approaches = approaches
-    # Runway thresholds the YAML lacks (KSFO had none): without them every runway sits on the airport reference
-    # point, and "on final", "on the runway", vacate and taxi crossings can't tell parallel runways apart.
-    if any(r.lat is None or r.lon is None for r in airport.runways):
-        ends = {str(n).lstrip("0"): (la, lo, ln) for ln, _, _, pair in _runway_rows(con, aid)
-                for n, _, la, lo in pair if n and la is not None}
-        filled = 0
-        for r in airport.runways:
-            end = ends.get(r.ident.lstrip("0"))
-            if (r.lat is None or r.lon is None) and end is not None:
-                r.lat, r.lon = round(end[0], 6), round(end[1], 6)
-                r.length_ft = r.length_ft or end[2]
-                filled += 1
-        if filled:
-            added.append(f"{filled} runway thresholds")
+    # Runway ends as the sim's scenery has them (in memory; the YAML is not rewritten). The YAML's come from
+    # OurAirports and can be off: SABE's were 14 m east of the sim's runway and 830 ft too long, which put our own
+    # traffic beside the centerline (2026-10-07). Missing ones (KSFO had none) get filled the same way.
+    ends = {str(n).lstrip("0").upper(): (la, lo, ln, hd) for ln, _, _, pair in _runway_rows(con, aid)
+            for n, hd, la, lo in pair if n and la is not None}
+    moved = 0
+    for r in airport.runways:
+        end = ends.get(r.ident.lstrip("0").upper())
+        if end is None:
+            continue
+        la, lo, ln, hd = end
+        off_m = distance_nm(r.lat, r.lon, la, lo) * M_PER_NM if r.lat is not None and r.lon is not None else 1e9
+        if off_m > 3.0 or (ln and r.length_ft and abs(ln - r.length_ft) > 50):
+            r.lat, r.lon = round(la, 7), round(lo, 7)
+            r.length_ft = ln or r.length_ft
+            r.heading_deg = round(hd, 1) if hd is not None else r.heading_deg
+            moved += 1
+    if moved:
+        added.append(f"{moved} runway ends")
     if airport.trans_alt_ft is None:
         row = con.execute("select transition_altitude from airport where airport_id=?", (aid,)).fetchone()
         if row and row[0]:

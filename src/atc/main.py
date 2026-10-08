@@ -22,7 +22,7 @@ from pathlib import Path
 
 from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, runway, \
     sequence, weather
-from atc.clearance import context_lines, deliver_after_standby, handle_clearance, handle_push
+from atc.clearance import _freq, context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
 from atc.flow import handle_flow
@@ -84,15 +84,42 @@ def handle(
                  else plan.dest_runway if plan and plan.destination == airport.icao else None)
 
     # first call on a position with an old ATIS letter: "information Charlie is now current, QNH ..."
-    atis_note = atis.check_letter(session.atis, airport, own, _normalize(pilot_text),
-                                  session.surface_wind.get(airport.icao), preferred) \
-        if session.is_first_contact(facility.role) and facility.role in ("clearance", "ground", "tower", "approach") \
-        else None
+    norm_call = _normalize(pilot_text)
+    first_here = session.is_first_contact(facility.role) and facility.role in ("clearance", "ground", "tower", "approach")
+    atis_note = atis.check_letter(session.atis, airport, own, norm_call, session.surface_wind.get(airport.icao),
+                                  preferred) if first_here else None
+    # ATIS enforcement (Valen: "if they don't have it, ATC asks"): no letter on the first call at an airport with an
+    # ATIS -> "confirm information Bravo"; "affirm" / the letter settles it, "negative" gets the current one + QNH
+    if atis.heard_letter(norm_call):
+        session.atis_confirmed.add(airport.icao)
+    asked = session.atis_asked.get(airport.icao)
+    if asked and airport.icao not in session.atis_confirmed:
+        if re.search(r"\b(negative|no)\b", norm_call):
+            session.atis_confirmed.add(airport.icao)
+            note = atis.current_note(session.atis, airport, own, session.surface_wind.get(airport.icao), preferred)
+            reply_text = f"{session.spoken_callsign}, {note}."
+            history.append((pilot_text, reply_text))
+            _say_timed(speaker, reply_text, stt_s, 0.0, _atc_voice(speaker, airport, facility.role))
+            return reply_text
+        if re.search(r"\b(affirm|affirmative|yes|have it|got it|copied)\b", norm_call):
+            session.atis_confirmed.add(airport.icao)
+            if not re.search(r"\b(request|requesting|ready|taxi|push|clearance|holding|runway|departure|start)\b",
+                             norm_call):
+                print("[ATC: no reply needed]")
+                return None
+    elif atis.ENFORCE and first_here and atis_note is None and airport.icao not in session.atis_confirmed \
+            and airport.icao not in session.atis_asked and _freq(airport, "ATIS") is not None:
+        word, _ = atis.build(session.atis, airport, own, session.surface_wind.get(airport.icao), preferred)
+        session.atis_asked[airport.icao] = word
+        atis_note = atis.confirm_question(word, airport.faa)
 
     def say(reply: str, llm_s: float = 0.0) -> str:
+        instruction = reply  # what a readback is checked against: the ATIS question is not part of it
         if atis_note and "now current" not in reply:
             reply = reply.rstrip(".") + f". {atis_note[:1].upper()}{atis_note[1:]}."
-        history.append((pilot_text, reply))
+            if not atis_note.startswith(("confirm information", "verify you have")):
+                instruction = reply
+        history.append((pilot_text, instruction))
         session.last_role = session._key(facility.role)
         _say_timed(speaker, reply, stt_s, llm_s, _atc_voice(speaker, airport, facility.role))
         return reply
@@ -720,8 +747,17 @@ def _start_own_traffic(args, world, sim, cb):
         u = mgr.user
         return (u.wind_dir_deg, u.wind_kt) if u is not None else (None, None)
 
+    def atis_letter(airport):  # the letter the user's ATIS gives now (None: no ATIS there)
+        if _freq(airport, "ATIS") is None:
+            return None
+        u = mgr.user or sim.own()
+        try:
+            return atis.build(cb.session.atis, airport, u, cb.session.surface_wind.get(airport.icao))[0]
+        except Exception:  # noqa: BLE001 - weather not there yet: no letter rather than a crash
+            return None
+
     mgr = OwnTraffic(world, sim, injector, bus=cb.bus, wind=wind, factor=args.own_factor, max_alive=args.own_max,
-                     auto=True)
+                     auto=True, atis_letter=atis_letter)
     from atc.own import schedule
 
     here = world.airports[0]

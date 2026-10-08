@@ -4,7 +4,13 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-06, second session)
+## Where we are (2026-10-07)
+- Real-sim flights at SABE: IFR departure fixes (landing glitch, code-owned "holding point" call, Tower remembers
+  the AI it put on a runway, runway in use follows the sim's AI), push direction ("tail left"), then OUR OWN TRAFFIC
+  (src/atc/own, docs/OWN_TRAFFIC_PLAN.md: departures + arrivals that obey this ATC, verified smooth in MSFS), ATIS
+  enforcement, head-on runway check, runway ends from the sim's scenery. 262 tests, 6/6 scenarios.
+
+## Before (2026-10-06, second session)
 - Second session 2026-10-06 (worked docs/NEXT_SESSION.md steps 1, 2, 4.1-4.6): VFR circuit wired in (a whole circuit
   at SABE makes no LLM call; zone transits stay with the model); one airspace file per Argentine FIR (SARC departures
   -> Resistencia Control) + worldwide Center from the Navigraph FIR boundaries + Center->Center handoffs; FAA

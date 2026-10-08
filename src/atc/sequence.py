@@ -96,6 +96,9 @@ class RunwayStatus:
     own_final_nm: float | None = None
     types: dict[str, str] = field(default_factory=dict)  # callsign -> spoken type, when the sim gives one
     departing: list[str] = field(default_factory=list)  # of occupied_by: on the takeoff roll in our direction
+    # on final for the OTHER end of this runway (head-on): nothing is cleared while one is there. The sim's AI
+    # (or FS Traffic's) can land the other way: Tower cleared one onto 31 with ours on final for 13 (2026-10-07).
+    opposite: list[tuple[str, float, str]] = field(default_factory=list)  # (callsign, NM, runway ident)
 
     def _what(self, callsign: str) -> str:
         return self.types.get(callsign) or "traffic"
@@ -104,6 +107,8 @@ class RunwayStatus:
         """Why the pilot may not take off now (spoken traffic info), or None."""
         if self.occupied_by:
             return f"{self._what(self.occupied_by[0])} on the runway"
+        if self.opposite:
+            return self._head_on()
         short = [(c, d) for c, d in self.finals if d <= SHORT_FINAL_NM]
         if short:
             return f"{self._what(short[0][0])} on {_miles(short[0][1])} final"
@@ -124,7 +129,13 @@ class RunwayStatus:
             return f"number {_number(len(ahead) + 1)}, {follow} on {_miles(nm)} final"
         if self.occupied_by:
             return f"{self._what(self.occupied_by[0])} on the runway"
+        if self.opposite:
+            return self._head_on()
         return None
+
+    def _head_on(self) -> str:
+        cs, nm, ident = self.opposite[0]
+        return f"{self._what(cs)} landing runway {phrase.runway(ident)}, {_miles(nm)} final"
 
 
 def wait_for_takeoff(st: RunwayStatus, airport: Airport, own: OwnState) -> str | None:
@@ -164,6 +175,7 @@ def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Tr
 
     st = RunwayStatus(runway=rwy, own_final_nm=final_distance(airport, rwy, own))
     users = RUNWAY_USERS.get(airport.icao, {})
+    reciprocal = [r for r in airport.runways if r is not rwy and r.ident != rwy.ident and same_strip(r.ident, rwy.ident)]
     for t in traffic:
         typ = spoken_type(getattr(t, "type", None))
         if typ:
@@ -178,7 +190,13 @@ def runway_status(airport: Airport, rwy: Runway, own: OwnState, traffic: list[Tr
         d = final_distance(airport, rwy, t)
         if d is not None:
             st.finals.append((t.callsign, d))
+            continue
+        for other in reciprocal:
+            d = final_distance(airport, other, t)
+            if d is not None:
+                st.opposite.append((t.callsign, d, other.ident))
     st.finals.sort(key=lambda x: x[1])
+    st.opposite.sort(key=lambda x: x[1])
     return st
 
 

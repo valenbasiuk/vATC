@@ -269,35 +269,48 @@ def crossings(net: TaxiNetwork, airport: Airport, nodes: list[int], in_use: Runw
               wind: tuple[float | None, float | None] = (None, None)) -> list[tuple[str, float, float]]:
     """Runways a taxi path crosses, in order: (ident as ATC says it, lat, lon of the crossing). Of the two ends
     of a crossed runway, the one with the best headwind is named, in calm wind the one parallel to the runway in
-    use (KSFO departing 1L: "hold short of runway two eight right")."""
+    use (KSFO departing 1L: "hold short of runway two eight right"). The path is followed side to side of each
+    runway: nodes on the runway itself don't count, so a crossing through a node on the centerline is found too."""
+    found: list[tuple[int, str, float, float]] = []  # (where in the path, ident, lat, lon)
+    pts = [net.nodes[n] for n in nodes]
+    for strip in strips(airport):
+        r = strip[0]
+        length = r.length_ft / 6076.1
+        sides = [_signed(airport, r, *p) for p in pts]
+        last_side, last_i = 0, None  # the side of the runway the path was last seen on (nodes on it don't count)
+        for i, (along, cross) in enumerate(sides):
+            side = 0 if abs(cross) < ON_RUNWAY_NM else (1 if cross > 0 else -1)
+            if side == 0:
+                continue
+            if last_side and side != last_side:  # from one side to the other: where it crossed the centerline
+                k = min(range(last_i, i + 1), key=lambda j: abs(sides[j][1]))
+                if abs(sides[k][1]) < ON_RUNWAY_NM:
+                    lat, lon, at = pts[k][0], pts[k][1], sides[k][0]
+                else:  # a straight segment across: interpolate
+                    k = next(j for j in range(last_i, i) if sides[j][1] * sides[j + 1][1] <= 0)
+                    (a1, c1), (a2, c2) = sides[k], sides[k + 1]
+                    t = c1 / (c1 - c2) if c1 != c2 else 0.0
+                    lat = pts[k][0] + t * (pts[k + 1][0] - pts[k][0])
+                    lon = pts[k][1] + t * (pts[k + 1][1] - pts[k][1])
+                    at = a1 + t * (a2 - a1)
+                if -0.01 <= at <= length + 0.01:
+                    found.append((k, _named_end(strip, in_use, wind).ident, lat, lon))
+                    break  # each runway is crossed (and cleared) once
+            last_side, last_i = side, i
+    return [(ident, lat, lon) for _, ident, lat, lon in sorted(found)]
+
+
+def _named_end(strip: list[Runway], in_use: Runway | None, wind: tuple[float | None, float | None]) -> Runway:
+    """Of the two ends of a crossed runway: the best headwind, in calm wind the one parallel to the runway in use."""
     from atc.geo import heading_diff
     from atc.runway import headwind_kt
 
-    out: list[tuple[str, float, float]] = []
-    done: set[int] = set()
-    all_strips = strips(airport)
-    for a, b in zip(nodes, nodes[1:]):
-        (lat1, lon1), (lat2, lon2) = net.nodes[a], net.nodes[b]
-        for i, strip in enumerate(all_strips):
-            r = strip[0]
-            a1, c1 = _signed(airport, r, lat1, lon1)
-            a2, c2 = _signed(airport, r, lat2, lon2)
-            c1, c2 = c1 or 1e-9, c2 or 1e-9
-            if i in done or c1 * c2 > 0 or max(abs(c1), abs(c2)) < ON_RUNWAY_NM:
-                continue
-            t = c1 / (c1 - c2)
-            if not -0.01 <= a1 + t * (a2 - a1) <= r.length_ft / 6076.1 + 0.01:
-                continue
-            done.add(i)
-            wdir, wkt = wind
-            if wdir is not None and wkt:
-                say = max(strip, key=lambda x: headwind_kt(wdir, wkt, x.heading_deg))
-            elif in_use is not None and in_use.heading_deg is not None:
-                say = min(strip, key=lambda x: heading_diff(x.heading_deg, in_use.heading_deg))
-            else:
-                say = strip[0]
-            out.append((say.ident, lat1 + t * (lat2 - lat1), lon1 + t * (lon2 - lon1)))
-    return out
+    wdir, wkt = wind
+    if wdir is not None and wkt:
+        return max(strip, key=lambda x: headwind_kt(wdir, wkt, x.heading_deg))
+    if in_use is not None and in_use.heading_deg is not None:
+        return min(strip, key=lambda x: heading_diff(x.heading_deg, in_use.heading_deg))
+    return strip[0]
 
 
 def free_stand(net: TaxiNetwork, traffic: list[Traffic], wanted: str | None) -> str | None:
@@ -486,10 +499,14 @@ def handle_crossing(session, airport: Airport, facility, own: OwnState, pilot_te
         return None
     faa = airport.faa
     cs = session.spoken_callsign
+    whys = []
     for r in next((s for s in strips(airport) if any(e.ident == ident for e in s)), []):  # both directions
-        why = runway_status(airport, r, own, traffic).takeoff_blocked()
-        if why:
-            return f"{cs}, hold short of runway {phrase.runway(ident, faa)}, {why}."
+        st = runway_status(airport, r, own, traffic)
+        why = st.takeoff_blocked()
+        if why:  # said as seen from the end the traffic is using ("on two mile final"), not as head-on
+            whys.append((bool(st.opposite) and not st.occupied_by and not st.finals, why))
+    if whys:
+        return f"{cs}, hold short of runway {phrase.runway(ident, faa)}, {min(whys)[1]}."
     session.crossings.pop(0)
     nxt = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
     return f"{cs}, cross runway {phrase.runway(ident, faa)}{nxt}."

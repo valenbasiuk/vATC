@@ -92,7 +92,8 @@ def _todays_cached(icao: str, community: Path | None) -> list[Departure]:
 # Movements per hour (departures + arrivals) of our own traffic, from FS Traffic's schedule for today, boosted at
 # small airports so something happens (Valen: Corrientes "occasional, every 10 min or so", JFK / Ezeiza "a lot").
 MIN_RATE = 6.0  # an airport with scheduled flights: at least one movement every 10 minutes
-MAX_RATE = 40.0
+MAX_RATE = 20.0  # one runway for everything (Valen at SABE: 22 an hour made the queue grow)
+MAX_RATE_SPLIT = 36.0  # separate arrival and departure runways (YAML runway_configs: KSFO, JFK)
 GA_RATE = {True: 3.0, False: 1.5}  # no airline schedule: GA only (towered field / not)
 GA_SHARE = 0.1  # at airline airports, this share of the movements is GA
 
@@ -111,7 +112,8 @@ def movements_per_hour(airport, community: Path | None, factor: float = 1.0) -> 
     boost = 3.0 if deps < 20 else 1.5 if deps < 150 else 1.2
     if max((r.length_ft or 0.0) for r in airport.runways) >= HUB_RUNWAY_FT:
         boost *= 2.0
-    return max(MIN_RATE, min(MAX_RATE, base * boost)) * factor
+    cap = MAX_RATE_SPLIT if airport.runway_configs else MAX_RATE
+    return max(MIN_RATE, min(cap, base * boost)) * factor
 
 
 def ga_flight(country: str, rng: random.Random) -> Departure:

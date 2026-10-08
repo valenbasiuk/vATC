@@ -275,7 +275,22 @@ def check_letter(state: AtisState, airport: Airport, own: OwnState, norm: str,
     word, _ = build(state, airport, own, surface_wind, preferred)
     if said == word[0].upper():
         return None
+    return current_note(state, airport, own, surface_wind, preferred, now=True)
+
+
+def current_note(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None,
+                 preferred: str | None, now: bool = False) -> str:
+    """'information Charlie is (now) current, QNH one zero one three'."""
+    word, _ = build(state, airport, own, surface_wind, preferred)
     _, _, qnh, _, _, _ = facts(airport, own, surface_wind, preferred)
     alt = (f", altimeter {phrase.digits(f'{qnh * 0.02953:.2f}')}" if airport.faa else
            f", QNH {phrase.digits(f'{qnh:.0f}')}") if qnh else ""
-    return f"information {word} is now current{alt}"
+    return f"information {word} is {'now ' if now else ''}current{alt}"
+
+
+ENFORCE = True  # ask for the ATIS letter when a first call has none (tests turn it off unless they test it)
+
+
+def confirm_question(word: str, faa: bool) -> str:
+    """Asked when a pilot's first call names no ATIS letter."""
+    return f"verify you have information {word}" if faa else f"confirm information {word}"

@@ -267,7 +267,9 @@ def test_clearances_come_over_the_radio_and_the_pilot_waits_for_them():
     t = _run(mgr, _user(), t + 5, t=t + 0.1)
     assert p.state == "push_radio"  # not heard yet: still parked
     ex.on_said()
-    _run(mgr, _user(), t + 1, t=t + 0.1)
+    t = _run(mgr, _user(), t + 5.5, t=t + 0.1)
+    assert p.state == "push_radio"  # heard: the tug takes a few seconds (6-12 s) before it pushes
+    _run(mgr, _user(), t + 8, t=t)
     assert p.state == "pushing"
 
 
@@ -347,6 +349,20 @@ def test_no_landing_clearance_with_the_user_on_the_runway_and_a_go_around_at_one
     assert p.state == "go_around" and not p.landing_cleared and p.checked_in
     _run(mgr, on_rwy, 1200)
     assert "ARG1234" not in mgr.pilots  # climbed away and was removed
+
+
+def test_our_pilots_report_the_atis_letter_or_get_asked_for_it():
+    said = []
+    for n in range(1200, 1240):  # enough flights for both: most say it, about one in ten forgets and is asked
+        bus = RadioBus()
+        mgr = _mgr(bus=bus, atis_letter=lambda a: "Bravo")
+        mgr.spawn_departure(APT, 0.0, schedule.Departure("ARG", str(n), "B738"))
+        _run(mgr, _user(), 200, watch=lambda t: bool(bus.queue))
+        said.append([text for _, text, _ in bus.queue[0].lines])
+    told = [x for x in said if ", information Bravo, request push and start" in x[0]]
+    asked = [x for x in said if x[1].endswith(", confirm information Bravo.")]
+    assert told and asked and len(told) + len(asked) == len(said) and len(asked) < len(told)
+    assert all(x[2].endswith(", affirm, information Bravo, Argentina " + x[2].split("Argentina ")[-1]) for x in asked)
 
 
 def test_ground_holds_a_push_while_somebody_taxis_behind_the_stand():

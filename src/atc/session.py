@@ -68,6 +68,8 @@ class Session:
     readback_due: dict[str, str] = field(default_factory=dict)
     faa: bool = False  # talking to a US position this turn: group-form callsign ("United four thirty-six")
     atis: AtisState = field(default_factory=AtisState)  # current ATIS letter per airport
+    atis_confirmed: set[str] = field(default_factory=set)  # airports where the pilot said (or confirmed) the letter
+    atis_asked: dict[str, str] = field(default_factory=dict)  # ICAO -> letter word ATC asked them to confirm
     # radar monitoring (monitor.py)
     cleared_dir: str | None = None  # "up" / "down": which way the last assigned level was
     level_checked: int | None = None  # "check altitude" already said for this cleared level

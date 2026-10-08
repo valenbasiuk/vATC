@@ -30,7 +30,9 @@ PUSH_KT = 2.5
 TAXI_ACCEL = 0.35  # m/s2, speeding up
 COMFORT_DECEL = 0.45  # m/s2, planned braking (stop points, corners)
 MAX_DECEL = 1.4  # m/s2, if something appears close ahead
-JERK = 0.5  # m/s3: how fast the acceleration itself may change
+JERK = 0.3  # m/s3: how fast the acceleration itself may change (speeding up: a gentle start)
+BRAKE_JERK = 1.0  # m/s3 braking in
+STOP_TAU = 1.2  # s: the last bit of a stop fades out (decel no more than speed / STOP_TAU) instead of a jolt
 SPEED_TAU = 1.6  # s: how quickly the speed follows its target
 CHORD_M = 9.0  # heading = direction of the path from CHORD_M behind to CHORD_M ahead
 
@@ -190,8 +192,8 @@ class GroundMover:
     """Moves along a Path: the speed follows a target (segment limit, corners, a stop point) through a smooth
     controller: braking is planned at COMFORT_DECEL, the acceleration itself changes gently (JERK)."""
 
-    def __init__(self, path: Path, backwards: bool = False, v: float = 0.0) -> None:
-        self.path, self.backwards = path, backwards
+    def __init__(self, path: Path, backwards: bool = False, v: float = 0.0, run_through: bool = False) -> None:
+        self.path, self.backwards, self.run_through = path, backwards, run_through
         self.s, self.v, self.a = 0.0, v, 0.0
 
     @property
@@ -218,14 +220,17 @@ class GroundMover:
     def step(self, dt: float, target_kt: float, stop_s: float | None = None) -> None:
         if dt <= 0:
             return
-        stop = self.path.length if stop_s is None else min(stop_s, self.path.length)
+        end = self.path.length + (1e6 if self.run_through else 0.0)  # run_through: no stop at the end (rolling takeoff)
+        stop = end if stop_s is None else min(stop_s, end)
         want = self.target(target_kt, stop)
         room = stop - self.s
         a_want = (want - self.v) / SPEED_TAU
         if room < self.v * self.v / (2 * COMFORT_DECEL) + 0.5 and self.v > want:  # must brake harder than planned
             a_want = -min(MAX_DECEL, self.v * self.v / (2 * max(0.5, room)))
+        elif a_want < 0:
+            a_want = max(a_want, -self.v / STOP_TAU)  # ease out: no jolt in the last metre
         a_want = max(-MAX_DECEL, min(TAXI_ACCEL, a_want))
-        jerk = JERK * dt if a_want > self.a else max(JERK, 3.0) * dt  # brake in faster than letting go
+        jerk = (JERK if a_want > self.a else BRAKE_JERK) * dt
         self.a += max(-jerk, min(jerk, a_want - self.a))
         self.v = max(0.0, self.v + self.a * dt)
         if self.v == 0.0 and self.a < 0:
@@ -240,6 +245,9 @@ class GroundMover:
         if self.backwards:
             h = (h + 180.0) % 360.0
         return Pose(lat, lon, 0.0, h, gs_kt=self.v / KT)
+
+
+SPOOL_S = 5.0  # the takeoff thrust is reached this long after the roll starts
 
 
 class Takeoff:
@@ -259,6 +267,7 @@ class Takeoff:
         self.vs = 0.0  # m/s
         self.pitch = 0.0
         self.t_air: float | None = None
+        self.t_roll = 0.0
 
     @property
     def airborne(self) -> bool:
@@ -267,7 +276,8 @@ class Takeoff:
     def step(self, dt: float) -> None:
         p = self.p
         if not self.airborne:
-            self.v += p.accel * dt
+            self.t_roll += dt
+            self.v += p.accel * min(1.0, 0.25 + self.t_roll / SPOOL_S) * dt  # thrust builds up: no jump
             if self.v >= p.vr_kt * KT:
                 self.pitch = min(self.ROTATE_TO, self.pitch + self.ROTATE_DPS * dt)
             if self.pitch >= self.LIFTOFF_PITCH:
