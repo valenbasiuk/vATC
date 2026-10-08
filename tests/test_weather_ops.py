@@ -173,11 +173,56 @@ def test_backtrack_then_takeoff_once_lined_up_at_the_end():
 
 def test_no_backtrack_with_traffic_on_final_inside_eight_miles():
     sim = _mid_runway_sim()
+    sim.update(aircraft_type="B738")  # 1550 m left from there: too short to offer it an intersection departure
     sim.add_on_final(6.0, "ARG1234", "13")
     s = Session(callsign="MAR4133", telephony="Martinair")
     r = handle(ORIGIN, sim, None, _Quiet(), [], "Testa Tower, Martinair 4133, ready for departure", session=s)
     assert r == f"{CS}, Testa Tower, hold position, traffic on six mile final."
-    assert s.backtrack == "pending"
+    assert s.backtrack == "pending" and s.intersection_offer is None
+
+
+def test_tower_offers_an_intersection_departure_instead_of_waiting_for_the_backtrack():
+    """Valen 2026-10-08: "ocasionalmente el atc pregunta (o el aviador requestea) despegar directamente al entrar a
+    la pista ... para salir de una sin hacer el backtrack". A Cessna 800 m down the runway, an arrival at 6 NM."""
+    sim = _mid_runway_sim()
+    sim.add_on_final(6.0, "ARG1234", "13")
+    s = Session(callsign="MAR4133", telephony="Martinair")
+    cb = _Callbacks(World([ORIGIN]), sim, _Quiet(), [], s)
+    r = handle(ORIGIN, sim, None, _Quiet(), cb.history, "Testa Tower, Martinair 4133, ready for departure", session=s)
+    assert r == f"{CS}, Testa Tower, traffic on six mile final, advise able to depart from runway one three, "                 "present position, one thousand five hundred metres available."
+    assert cb.tick(now=1.0) is None  # waiting for the answer, no backtrack meanwhile
+    r = handle(ORIGIN, sim, None, _Quiet(), cb.history, "affirm, Martinair 4133", session=s)
+    assert r == f"{CS}, wind one two zero degrees eight knots, runway one three from present position, "                 "one thousand five hundred metres available, cleared for takeoff."
+    assert s.takeoff_waiting is None and s.backtrack is None
+
+
+def test_negative_to_the_intersection_offer_keeps_the_backtrack_for_later():
+    sim = _mid_runway_sim()
+    sim.add_on_final(6.0, "ARG1234", "13")
+    s = Session(callsign="MAR4133", telephony="Martinair")
+    cb = _Callbacks(World([ORIGIN]), sim, _Quiet(), [], s)
+    handle(ORIGIN, sim, None, _Quiet(), cb.history, "Testa Tower, Martinair 4133, ready for departure", session=s)
+    r = handle(ORIGIN, sim, None, _Quiet(), cb.history, "negative, we need the full length, Martinair 4133",
+               session=s)
+    assert r == f"{CS}, roger, hold position."
+    assert s.backtrack == "pending" and s.intersection is None
+
+
+def test_the_pilot_asks_for_an_intersection_departure_from_the_taxiway_they_are_on():
+    from atc.taxi import TaxiNetwork
+
+    from atc.own.airport import _runway_point
+
+    sim = _mid_runway_sim()
+    world = World([ORIGIN])
+    net = TaxiNetwork()
+    net.nodes = {1: _runway_point(ORIGIN, R13, 800.0, 30.0), 2: _runway_point(ORIGIN, R13, 800.0, 200.0)}
+    net.edges = {1: [(2, 170.0, "B")], 2: [(1, 170.0, "B")]}
+    world.taxi[ORIGIN.icao] = net
+    s = Session(callsign="MAR4133", telephony="Martinair")
+    r = handle(ORIGIN, sim, None, _Quiet(), [], "Testa Tower, Martinair 4133, holding point runway 13, "
+               "request intersection departure", session=s, world=world)
+    assert r == f"{CS}, Testa Tower, wind one two zero degrees eight knots, runway one three from intersection "                 "Bravo, one thousand five hundred metres available, cleared for takeoff."
 
 
 def test_our_departure_backtracks_and_turns_round_at_the_end():

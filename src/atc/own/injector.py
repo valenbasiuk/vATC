@@ -6,6 +6,10 @@ Verified on Valen's PC (tools/probe_inject.py, 2026-10-07): SimConnect_AICreateN
 SetDataOnSimObject (lat, lon, alt, pitch, bank, heading) at 20 Hz: smooth, 0.3 m from the commanded spot.
 Not verified yet (VERIFY): the pitch sign, height above ground while moving (PLANE ALT ABOVE GROUND of a frozen
 object), gear / light / engine events on a non-ATC aircraft.
+Lights (Valen 2026-10-08: our aircraft showed none with the *_SET events alone): the battery is switched on, and the
+light simvars are written on the object as well (LIGHT BEACON, NAV, STROBE, LANDING, TAXI, LOGO; again every
+LIGHTS_RESEND_S in case the sim resets them). ATC_OWN_LIGHTS=events|data|both picks the way; tools/probe_lights.py
+tries each one in turn so you can see which the sim honours.
 
 Timing: the connection is opened with a Win32 event the sim signals when it has messages, and subscribed to the
 sim's "Frame" event, so `wait()` returns once per rendered frame: the manager sends every pose in step with the
@@ -43,13 +47,20 @@ EVENT_FLAG_GROUPID_IS_PRIORITY = 0x10
 
 DEF_POS = 3101  # lat, lon, alt, pitch, bank, heading
 DEF_AGL = 3102  # PLANE ALT ABOVE GROUND, PLANE ALTITUDE
+DEF_LIGHTS = 3103  # the light simvars (LIGHT_VARS), bool as float64
 REQ_CREATE0 = 10_000  # + n per aircraft
 REQ_PLACED0 = 20_000
 REQ_AGL0 = 30_000
 REQ_MISC = 40_000
 EVENTS = ["FREEZE_LATITUDE_LONGITUDE_SET", "FREEZE_ALTITUDE_SET", "FREEZE_ATTITUDE_SET", "GEAR_UP", "GEAR_DOWN",
           "BEACON_LIGHTS_SET", "NAV_LIGHTS_SET", "LANDING_LIGHTS_SET", "STROBES_SET", "TAXI_LIGHTS_SET",
-          "ENGINE_AUTO_START"]
+          "ENGINE_AUTO_START", "MASTER_BATTERY_SET", "LOGO_LIGHTS_SET"]
+LIGHT_EVENTS = {"beacon": "BEACON_LIGHTS_SET", "nav": "NAV_LIGHTS_SET", "landing": "LANDING_LIGHTS_SET",
+                "strobe": "STROBES_SET", "taxi": "TAXI_LIGHTS_SET", "logo": "LOGO_LIGHTS_SET"}
+LIGHT_VARS = [("beacon", "LIGHT BEACON"), ("nav", "LIGHT NAV"), ("strobe", "LIGHT STROBE"),
+              ("landing", "LIGHT LANDING"), ("taxi", "LIGHT TAXI"), ("logo", "LIGHT LOGO")]
+LIGHTS_MODE = os.environ.get("ATC_OWN_LIGHTS", "both").lower()  # events | data | both (VERIFY which works)
+LIGHTS_RESEND_S = 5.0
 EV0 = 5100
 SYS_FRAME, SYS_PAUSE = 5200, 5201
 GROUND_FOLLOW_FTPS = 2.0  # the height on the ground moves toward the measured terrain this fast (no bumps)
@@ -80,6 +91,7 @@ class _Obj:
     asked: bool = False  # "where did you put it" sent
     last_sent: float | None = None
     lights: dict = field(default_factory=dict)
+    lights_at: float = 0.0  # when the light simvars were last written
     gear_down: bool = True
     type_icao: str | None = None
     airborne_spawn: bool = False  # created in the air: its gear height comes from GEAR_FILE, not from the sim
@@ -180,8 +192,13 @@ class SimInjector:
         for name in ("PLANE ALT ABOVE GROUND", "PLANE ALTITUDE"):
             self._ok(self.d.SimConnect_AddToDataDefinition(self.h, DEF_AGL, name.encode(), b"feet", DATATYPE_FLOAT64,
                                                            0.0, UNUSED), name)
+        for name, var in LIGHT_VARS:
+            self._ok(self.d.SimConnect_AddToDataDefinition(self.h, DEF_LIGHTS, var.encode(), b"bool",
+                                                           DATATYPE_FLOAT64, 0.0, UNUSED), var)
         for i, ev in enumerate(EVENTS):
             self._ok(self.d.SimConnect_MapClientEventToSimEvent(self.h, EV0 + i, ev.encode()), ev)
+        self.lights_mode = LIGHTS_MODE
+        self._exceptions: dict[tuple[int, int], int] = {}
         self.objs: dict[str, _Obj] = {}
         self.by_req: dict[int, _Obj] = {}
         self.n = 0
@@ -275,19 +292,31 @@ class SimInjector:
             self._event(obj, "GEAR_DOWN" if pose.gear_down else "GEAR_UP")
 
     def lights(self, key: str, **on: bool) -> None:
-        """beacon=, nav=, landing=, strobe=, taxi=: sent when they change."""
+        """beacon=, nav=, landing=, strobe=, taxi=, logo= (default: with nav), engines=. Events when they change; the
+        simvars when they change and every LIGHTS_RESEND_S (self.lights_mode: events / data / both)."""
         obj = self.objs.get(key)
-        if obj is None or not obj.ready:
+        if obj is None or not obj.ready or obj.vehicle:
             return
-        names = {"beacon": "BEACON_LIGHTS_SET", "nav": "NAV_LIGHTS_SET", "landing": "LANDING_LIGHTS_SET",
-                 "strobe": "STROBES_SET", "taxi": "TAXI_LIGHTS_SET"}
+        on.setdefault("logo", on.get("nav", False))
+        if not obj.lights.get("battery"):  # a released AI may sit with its electrics off: no lights at all
+            obj.lights["battery"] = True
+            self._event(obj, "MASTER_BATTERY_SET", 1)
+        changed = False
         for k, v in on.items():
-            if obj.lights.get(k) != v and k in names:
+            if k in LIGHT_EVENTS and obj.lights.get(k) != v:
                 obj.lights[k] = v
-                self._event(obj, names[k], int(v))
+                changed = True
+                if self.lights_mode in ("events", "both"):
+                    self._event(obj, LIGHT_EVENTS[k], int(v))
         if on.get("engines") and not obj.lights.get("engines"):
             obj.lights["engines"] = True
             self._event(obj, "ENGINE_AUTO_START")
+        now = time.monotonic()
+        if self.lights_mode in ("data", "both") and (changed or now - obj.lights_at >= LIGHTS_RESEND_S):
+            obj.lights_at = now
+            data = struct.pack(f"<{len(LIGHT_VARS)}d", *(1.0 if obj.lights.get(k) else 0.0 for k, _ in LIGHT_VARS))
+            buf = ctypes.create_string_buffer(data, len(data))
+            self.d.SimConnect_SetDataOnSimObject(self.h, DEF_LIGHTS, obj.object_id, 0, 0, len(data), buf)
 
     def remove(self, key: str) -> None:
         obj = self.objs.pop(key, None)
@@ -305,7 +334,11 @@ class SimInjector:
             recv_id = struct.unpack_from("<I", msg, 8)[0]
             if recv_id == RECV_ID_EXCEPTION:
                 exc, send_id, index = struct.unpack_from("<3I", msg, 12)
-                print(f"[own traffic: SimConnect exception {exc} (send {send_id}, parameter {index})]")
+                seen = self._exceptions.get((exc, index), 0) + 1
+                self._exceptions[(exc, index)] = seen
+                if seen <= 3:  # the same one again and again (a light simvar the sim won't take): said 3 times
+                    print(f"[own traffic: SimConnect exception {exc} (send {send_id}, parameter {index})"
+                          + (", not shown again" if seen == 3 else "") + "]")
             elif recv_id == RECV_ID_ASSIGNED_OBJECT_ID:
                 req, oid = struct.unpack_from("<2I", msg, 12)
                 obj = self.by_req.get(req)

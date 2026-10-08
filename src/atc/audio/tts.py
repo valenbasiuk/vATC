@@ -21,6 +21,17 @@ class Speaker(Protocol):
     def say(self, text: str) -> None: ...
 
 
+def shift_pitch(samples, pitch: float):
+    """Pitch (and formants) times `pitch` by resampling: the result is 1/pitch as long, so the voice is synthesized
+    `pitch` times slower first (voices.PITCHES: the same Piper speaker sounds like another person)."""
+    if pitch == 1.0 or len(samples) < 2:
+        return samples
+    import numpy as np  # type: ignore
+
+    n = int(len(samples) / pitch)
+    return np.interp(np.arange(n) * pitch, np.arange(len(samples)), samples).astype(np.float32)
+
+
 class PrintTTS:
     def say(self, text: str) -> None:
         print(f"ATC> {text}")
@@ -80,8 +91,11 @@ class PiperTTS:
         import numpy as np  # type: ignore
 
         model, speaker, rate = self._voice, voice, self.length_scale
+        pitch = 1.0
         if voice is not None and not isinstance(voice, int):
             model, speaker, rate = self._model(voice.model), voice.speaker, voice.rate * self.length_scale
+            pitch = getattr(voice, "pitch", 1.0) or 1.0
+            rate *= pitch  # synthesized that much slower: the pitch shift below brings the length back
         kwargs = {}
         try:
             from piper import SynthesisConfig  # type: ignore
@@ -90,7 +104,8 @@ class PiperTTS:
         except (ImportError, TypeError):  # older/newer layout: fall back to defaults
             pass
         for chunk in model.synthesize(text, **kwargs):
-            yield np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0, chunk.sample_rate
+            samples = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            yield shift_pitch(samples, pitch), chunk.sample_rate
 
     def synthesize(self, text: str, voice=None):
         """Returns (float32 mono samples, sample_rate) for the whole text."""

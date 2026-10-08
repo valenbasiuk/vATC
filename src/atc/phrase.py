@@ -46,6 +46,15 @@ def level(ft: int, airport=None) -> str:
     return out.strip() if getattr(airport, "faa", False) else f"{out.strip()} feet"
 
 
+def distance(n: float) -> str:
+    """Runway length available, down to the hundred: 1850 -> 'one thousand eight hundred', 900 -> 'niner hundred'."""
+    th, hu = divmod(int(n) // 100 * 100, 1000)
+    out = f"{digits(str(th))} thousand" if th else ""
+    if hu:
+        out += f" {digits(str(hu // 100))} hundred"
+    return out.strip() or "zero"
+
+
 def climb(ft: int, airport=None) -> str:
     """ICAO 'climb to flight level two zero zero' / FAA 'climb and maintain one one thousand'."""
     return f"climb and maintain {level(ft, airport)}" if getattr(airport, "faa", False) else \

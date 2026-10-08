@@ -89,6 +89,15 @@ def track(session, world, own: OwnState, now: float | None = None) -> None:
             departures.landed(near.icao, rwy.ident, departures.USER, user_type)
 
 
+def _at_a_stand(world, airport: Airport, own: OwnState) -> bool:
+    net = world.taxi.get(airport.icao) if hasattr(world, "taxi") else None
+    if net is None:
+        return False
+    from atc.own.airport import stands
+
+    return any(distance_nm(own.lat, own.lon, s.lat, s.lon) * 1852.0 < 45.0 for s in stands(airport.icao, net))
+
+
 def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     """(key, text without callsign) for a handoff that is due now, or None. Each key fires once per flight."""
     picked = world.pick(own)
@@ -109,8 +118,10 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
     if fac.role == "tower" and own.on_ground and session.landed and session.landed_at == apt.icao \
             and own.gs_kt < 40 and not any(on_runway(apt, r, own) for r in apt.runways):
         return due(f"{apt.icao}:ground", _contact(apt, ("GND", "RMP")))
-    # before departure: Ground -> Tower once stopped next to the departure end of the runway in use
-    if fac.role == "ground" and own.on_ground and not session.landed and own.gs_kt < 5:
+    # before departure: Ground -> Tower once stopped next to the departure end of the runway in use, after taxiing
+    # there (SABE's gates 27-29 are that close to the 13 end: parked at one, the handoff came unasked, 2026-10-08)
+    if fac.role == "ground" and own.on_ground and not session.landed and own.gs_kt < 5 and session.taxi_cleared \
+            and not _at_a_stand(world, apt, own):
         rwy = session_runway(apt, own.wind_dir_deg, own.wind_kt, session, "departure")
         if rwy is not None:
             along, cross = along_cross(apt, rwy, own.lat, own.lon)
@@ -169,6 +180,11 @@ LINED_UP_NM = 0.15  # "lined up at the end": this close to the threshold, on the
 
 
 IMMEDIATE_NM = 5.0  # an arrival between short final and this: "cleared for immediate takeoff"
+# "request intersection departure" / "from present position" / "no backtrack": the takeoff starts where they are
+_INTERSECTION = re.compile(r"\b(?:intersection|present position|from (?:here|this position|our position)|"
+                           r"(?:no|without|don t need (?:a |the |to )?)backtrack)\b")
+INTERSECTION_NEED_M = {"L": 600.0, "M": 1700.0, "H": 2800.0, "J": 3000.0}  # Tower offers one with this much left
+INTERSECTION_TURBOPROP_M = 1100.0  # M category that approaches below 125 kt (ATR, Dash 8)
 
 
 def user_type(session, own: OwnState) -> str | None:
@@ -206,14 +222,142 @@ def takeoff_clearance(session, airport: Airport, rwy, own: OwnState, st, now: fl
 
 
 def takeoff_words(session, airport: Airport, rwy, own: OwnState, st, now: float | None = None) -> str:
-    """'runway one three, cleared for (immediate) takeoff(, caution wake turbulence)', without the wind."""
+    """'runway one three, cleared for (immediate) takeoff(, caution wake turbulence)', without the wind. From an
+    intersection: 'runway one three from intersection Bravo, one thousand eight hundred metres available, ...'."""
     from atc import departures
 
     rw = phrase.runway(rwy.ident, airport.faa)
     close = [d for _, d in st.finals if d <= IMMEDIATE_NM]
-    text = f"runway {rw}, cleared for {'immediate ' if close else ''}takeoff"
+    where = intersection_words(session, airport, rwy, own) if session.intersection is not None else f"runway {rw}"
+    text = f"{where}, cleared for {'immediate ' if close else ''}takeoff"
     caution = departures.wake_caution(airport.icao, rwy.ident, user_type(session, own), now)
     return text + (f", {caution}" if caution else "")
+
+
+def wants_intersection(norm: str) -> bool:
+    return _INTERSECTION.search(norm) is not None and "full length" not in norm
+
+
+def available_m(airport: Airport, rwy, own: OwnState) -> float:
+    """Runway left ahead for a takeoff starting abeam the aircraft (TORA from the intersection)."""
+    from atc.taxi import _signed
+
+    along, _ = _signed(airport, rwy, own.lat, own.lon)
+    return max(0.0, (rwy.length_ft or 0.0) * 0.3048 - max(0.0, along) * 1852.0)
+
+
+def intersection_at(world, airport: Airport, rwy, own: OwnState) -> str:
+    """The taxiway the aircraft holds on next to `rwy` ("Bravo"), from the taxi map; "" if unknown."""
+    from atc.geo import offset_nm
+    from atc.taxi import spoken_route
+
+    net = world.taxi.get(airport.icao) if world is not None and hasattr(world, "taxi") else None
+    if net is None:
+        return ""
+
+    def seg_m(a, b) -> float:  # metres from the aircraft to segment a-b (flat, around the aircraft)
+        ax, ay = offset_nm(own.lat, own.lon, *a)
+        bx, by = offset_nm(own.lat, own.lon, *b)
+        dx, dy = bx - ax, by - ay
+        k = 0.0 if dx == dy == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / (dx * dx + dy * dy)))
+        return ((ax + k * dx) ** 2 + (ay + k * dy) ** 2) ** 0.5 * 1852.0
+
+    best = None
+    for a, edges in net.edges.items():
+        if distance_nm(own.lat, own.lon, *net.nodes[a]) * 1852.0 > 400.0:
+            continue
+        for b, _, name in edges:
+            if name:
+                d = seg_m(net.nodes[a], net.nodes[b])
+                if best is None or d < best[0]:
+                    best = (d, name)
+    return spoken_route([best[1]]) if best is not None and best[0] <= 60.0 else ""
+
+
+def intersection_words(session, airport: Airport, rwy, own: OwnState) -> str:
+    """ICAO 'runway one three from intersection Bravo, one thousand eight hundred metres available'; FAA 'runway one
+    three at Bravo, intersection departure, five thousand niner hundred feet available'."""
+    rw = phrase.runway(rwy.ident, airport.faa)
+    name = session.intersection or ""
+    left = available_m(airport, rwy, own)
+    if airport.faa:
+        return f"runway {rw}{f' at {name}' if name else ''}, intersection departure, " \
+               f"{phrase.distance(left / 0.3048)} feet available"
+    return f"runway {rw} {f'from intersection {name}' if name else 'from present position'}, " \
+           f"{phrase.distance(left)} metres available"
+
+
+def _intersection_need_m(session, own: OwnState) -> float:
+    from atc import departures
+    from atc.own.motion import perf
+
+    t = user_type(session, own)
+    cat = departures.wake(t)
+    if cat == "M" and t and perf(t).vapp_kt < 125:
+        return INTERSECTION_TURBOPROP_M
+    return INTERSECTION_NEED_M.get(cat, INTERSECTION_NEED_M["M"])
+
+
+def intersection_offer(session, world, airport: Airport, rwy, own: OwnState, st) -> str | None:
+    """Tower asks for an intersection departure when the backtrack would wait for an arrival a few miles out but
+    a takeoff from where the aircraft is fits in before it (and there is runway enough for the type): ICAO 'advise
+    able to depart from runway two zero, intersection Bravo, one thousand two hundred metres available'."""
+    if st.takeoff_blocked() or departure_hold(session, airport, rwy, own, st) is not None:
+        return None
+    left = available_m(airport, rwy, own)
+    if left < _intersection_need_m(session, own):
+        return None
+    name = intersection_at(world, airport, rwy, own)
+    session.intersection_offer = name
+    rw = phrase.runway(rwy.ident, airport.faa)
+    if airport.faa:
+        return f"are you able to depart runway {rw}{f' at {name}' if name else ' from present position'}, " \
+               f"{phrase.distance(left / 0.3048)} feet available?"
+    where = f"intersection {name}" if name else "present position"
+    return f"advise able to depart from runway {rw}, {where}, {phrase.distance(left)} metres available."
+
+
+_YES = re.compile(r"\b(?:affirm|affirmative|able|yes|can do|we can|wilco|ok|okay|sure|no problem)\b")
+_NO = re.compile(r"\b(?:negative|unable|no(?! problem)|full length|require (?:the )?full)\b")
+
+
+def intersection_answer(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str,
+                        traffic: list[Traffic]) -> str | None:
+    """The pilot's answer to Tower's intersection offer. "Affirm": the takeoff clearance from there (or the wait
+    the runway needs right now); "negative": hold position, the backtrack follows once the arrival is down."""
+    if session.intersection_offer is None or facility.role != "tower" or not own.on_ground \
+            or session.takeoff_waiting is None:
+        return None
+    norm = _normalize(pilot_text)
+    no, yes = _NO.search(norm), _YES.search(norm)
+    if not (yes or no) or ("unable" in norm and not no):
+        return None
+    name, session.intersection_offer = session.intersection_offer, None
+    cs = session.spoken_callsign
+    if no:
+        return f"{cs}, roger, hold position."
+    ident, clearance = session.takeoff_waiting
+    rwy = next((r for r in airport.runways if r.ident == ident), None)
+    if rwy is None:
+        return None
+    session.intersection = name
+    session.backtrack = None
+    st = runway_status(airport, rwy, own, traffic)
+    wait = wait_for_takeoff(st, airport, own) or departure_hold(session, airport, rwy, own, st)
+    if wait:
+        return f"{cs}, {wait}."  # the takeoff clearance follows by itself (takeoff_when_clear)
+    session.takeoff_waiting = None
+    return f"{cs}, {_clearance_now(session, airport, rwy, own, st, clearance)}."
+
+
+_TAKEOFF_WORDS = re.compile(r"runway [a-z ]+?(?:, intersection departure)?(?:, [a-z ]+ available)?, cleared for "
+                            r"(?:immediate )?takeoff(?:, caution wake turbulence)?", re.I)
+
+
+def _clearance_now(session, airport: Airport, rwy, own: OwnState, st, clearance: str | None) -> str:
+    if clearance:  # the VFR one (turn-out, circuit): its takeoff words as of now
+        return _TAKEOFF_WORDS.sub(lambda m: takeoff_words(session, airport, rwy, own, st), clearance)
+    return takeoff_clearance(session, airport, rwy, own, st)
 
 
 def needs_backtrack(airport: Airport, rwy, own: OwnState, norm: str = "") -> bool:
@@ -221,7 +365,7 @@ def needs_backtrack(airport: Airport, rwy, own: OwnState, norm: str = "") -> boo
     starts at the end, so Tower clears a backtrack first. Not for an intersection departure the pilot asked for."""
     from atc.taxi import _signed
 
-    if "intersection" in norm or rwy.heading_deg is None:
+    if wants_intersection(norm) or rwy.heading_deg is None:
         return False
     along, cross = _signed(airport, rwy, own.lat, own.lon)
     length = (rwy.length_ft or 0.0) / 6076.1
@@ -254,10 +398,12 @@ def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) ->
     clearance once the aircraft is lined up at the end."""
     if session.takeoff_waiting is None:
         session.backtrack = None
+        session.intersection = session.intersection_offer = None
         return None
     if not own.on_ground:  # took off anyway, or the flight moved on
         session.takeoff_waiting = None
         session.backtrack = None
+        session.intersection = session.intersection_offer = None
         return None
     picked = world.pick(own)
     if picked is None or picked[1].role != "tower":
@@ -274,6 +420,7 @@ def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) ->
         if _backtrack_blocked(st, airport):
             return None
         session.backtrack = "lining"
+        session.intersection_offer = None  # not answered: the full length after all
         return f"{session.spoken_callsign}, backtrack runway {phrase.runway(rwy.ident, airport.faa)}, line up and wait."
     if session.backtrack == "lining" and not lined_up_at_end(airport, rwy, own):
         return None
@@ -281,10 +428,8 @@ def takeoff_when_clear(session, world, own: OwnState, traffic: list[Traffic]) ->
         return None
     session.takeoff_waiting = None
     session.backtrack = None
-    if clearance:  # the VFR one (turn-out, circuit): its takeoff words as of now
-        clearance = re.sub(r"runway [a-z ]+?, cleared for (?:immediate )?takeoff(?:, caution wake turbulence)?",
-                           takeoff_words(session, airport, rwy, own, st), clearance)
-    return f"{session.spoken_callsign}, {clearance or takeoff_clearance(session, airport, rwy, own, st)}."
+    session.intersection_offer = None
+    return f"{session.spoken_callsign}, {_clearance_now(session, airport, rwy, own, st, clearance)}."
 
 
 def push_when_ready(session, world, own: OwnState, now: float) -> str | None:
@@ -346,6 +491,13 @@ def repeat_or_clear(session, own: OwnState, now: float) -> str | None:
 
 _AT_HOLDING_POINT = re.compile(
     r"\b(?:on|at|reaching|approaching|arrived at|established at|holding at|now at) (?:the )?holding point\b")
+
+
+def note_intersection(session, world, airport: Airport, rwy, own: OwnState, norm: str) -> None:
+    """The pilot asked for an intersection departure (not lined up at the end already): the takeoff clearance names
+    where it starts and the runway left."""
+    if wants_intersection(norm) and not lined_up_at_end(airport, rwy, own):
+        session.intersection = intersection_at(world, airport, rwy, own)
 
 
 def is_ready_call(norm: str, departure_runway: str) -> bool:
@@ -605,7 +757,8 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
     rw = phrase.runway(rwy.ident, faa)
     wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, faa)
 
-    if own.on_ground and not session.landed and is_ready_call(norm, rwy.ident):
+    asks_intersection = wants_intersection(norm) and "request" in norm
+    if own.on_ground and not session.landed and (is_ready_call(norm, rwy.ident) or asks_intersection):
         from atc.sequence import debug_line
 
         print(debug_line(airport, st, traffic))
@@ -614,12 +767,14 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
 
         departures.ready(airport.icao, departures.USER, rwy.ident)  # its place in the departure queue
         clearance = None  # made when it is given: "immediate", "caution wake turbulence" depend on that moment
+        note_intersection(session, world, airport, rwy, own, norm)
         if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end first, then the takeoff
             session.takeoff_waiting = (rwy.ident, clearance)
             why = _backtrack_blocked(st, airport)
             if why:
                 session.backtrack = "pending"
-                return f"{pre}, hold position, {why}."
+                offer = intersection_offer(session, world, airport, rwy, own, st)
+                return f"{pre}, {why}, {offer}" if offer else f"{pre}, hold position, {why}."
             session.backtrack = "lining"
             return f"{pre}, backtrack runway {rw}, line up and wait."
         wait = wait_for_takeoff(st, airport, own) or departure_hold(session, airport, rwy, own, st)

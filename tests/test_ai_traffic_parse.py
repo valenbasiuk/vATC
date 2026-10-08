@@ -85,3 +85,66 @@ def test_one_simconnect_ai_request_per_tick(monkeypatch):
     clock[0] += 1.0  # next tick
     src.traffic(-34.56, -58.41, 15)
     assert Reader.calls == 2
+
+
+def _exception(code=17):
+    return struct.pack("<3I", 24, 4, 1) + struct.pack("<3I", code, 5, 0)
+
+
+def test_an_exception_in_the_queue_does_not_lose_the_records():
+    """Real sim 2026-10-08: one SimConnect exception turned the AI reader off for the rest of the flight."""
+    from atc.sim.ai_traffic import AiTrafficReader
+
+    q = [_exception(), _message(RECV_ID_SIMOBJECT_DATA_BYTYPE, REQUEST_ID, 3, 0, 2, _record_bytes(b"ARG1780")),
+         _message(RECV_ID_SIMOBJECT_DATA_BYTYPE, REQUEST_ID, 4, 1, 2, _record_bytes(b"FBZ5231"))]
+    recs = AiTrafficReader._collect(lambda: q.pop(0) if q else None, REQUEST_ID, 1.0)
+    assert [r.atc_id for r in recs] == ["ARG1780", "FBZ5231"]
+    # records of an older (timed-out) request are not mixed in
+    q = [_message(RECV_ID_SIMOBJECT_DATA_BYTYPE, REQUEST_ID - 1 + 1000, 9, 0, 1, _record_bytes(b"OLD")),
+         _message(RECV_ID_SIMOBJECT_DATA_BYTYPE, REQUEST_ID, 3, 0, 1, _record_bytes(b"NEW"))]
+    assert [r.atc_id for r in AiTrafficReader._collect(lambda: q.pop(0) if q else None, REQUEST_ID, 1.0)] == ["NEW"]
+
+
+def test_an_exception_and_no_data_is_a_failed_read():
+    import pytest
+
+    from atc.sim.ai_traffic import AiTrafficReader, ReadError
+
+    q = [_exception(17)]
+    with pytest.raises(ReadError) as e:
+        AiTrafficReader._collect(lambda: q.pop(0) if q else None, REQUEST_ID, 2.0)
+    assert e.value.code == 17 and "DATA_ERROR" in str(e.value)
+
+
+def test_a_failed_ai_read_backs_off_and_keeps_our_own_traffic(monkeypatch):
+    import atc.sim.simconnect_source as scs
+    from atc import own
+    from atc.models import OwnState, Traffic
+
+    class Reader:
+        fail = True
+
+        def read(self, radius_m):
+            if Reader.fail:
+                raise RuntimeError("SimConnect exception 17 (DATA_ERROR)")
+            return []
+
+        def close(self):
+            pass
+
+    src = object.__new__(scs.SimConnectSource)
+    src._ai, src._ai_failed, src._ai_cache = Reader(), False, None
+    src._ai_errors, src._ai_retry_at = 0, 0.0
+    src._own_object_id, src._own_record = None, None
+    monkeypatch.setattr(src, "own", lambda: OwnState(-34.6, -58.5, 3000, 2980, 150, 90, False, 118.85))
+    clock = [100.0]
+    monkeypatch.setattr(scs.time, "monotonic", lambda: clock[0])
+    own.publish({"ARG1234": Traffic("ARG1234", -34.56, -58.41, 18.0, 10.0, 130.0, True, type="B738")})
+    assert [t.callsign for t in src.traffic(-34.56, -58.41, 15)] == ["ARG1234"]  # ours stay listed
+    assert src._ai_retry_at == 105.0
+    Reader.fail = False
+    clock[0] += 2.0
+    assert [t.callsign for t in src.traffic(-34.56, -58.41, 15)] == ["ARG1234"]  # still backing off
+    clock[0] += 4.0
+    src.traffic(-34.56, -58.41, 15)
+    assert src._ai_errors == 0  # the reader is back

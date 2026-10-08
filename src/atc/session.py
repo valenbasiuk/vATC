@@ -95,6 +95,12 @@ class Session:
     # backtrack before the takeoff (no taxiway to the runway end, SARC): None, "pending" (the "backtrack runway two
     # zero, line up and wait" is still to be given) or "lining" (given: the takeoff clearance once lined up at the end)
     backtrack: str | None = None
+    # intersection departure (no backtrack): the taxiway the takeoff starts from ("Bravo"; "" = present position),
+    # None = full length. intersection_offer: Tower asked "advise able to depart from ... intersection Bravo" (the
+    # name), waiting for "affirm" / "negative"
+    intersection: str | None = None
+    intersection_offer: str | None = None
+    taxi_cleared: bool = False  # Ground gave the departure taxi clearance (the Ground -> Tower handoff needs it)
     # push delayed at a busy time (improvement plan B5): {"icao", "at" (latest time), "text" (the approval)}; the
     # watcher gives the approval when the apron gets quieter or at "at"
     push_waiting: dict | None = None

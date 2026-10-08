@@ -215,6 +215,25 @@ class DeparturePilot(_Pilot):
         self.immediate = False  # "cleared for immediate takeoff": no stop on the centerline
         self.reported_airborne = False
 
+    def start_taxiing(self, now: float, share: float) -> None:
+        """Warm start (traffic already moving when vATC starts): taxiing out under a clearance given before we came,
+        `share` of the way to the holding point (1.0 = stopped at it, about to call Tower). Never on a runway it
+        crosses: then short of that runway instead."""
+        path = Path(self.paths.taxi, limits_kt=self.paths.taxi_limits or None)
+        hold = path.length - (self.perf.length_m / 2 + HOLD_SHORT_M)
+        at = max(0.0, min(hold, share * hold))
+        crossings = [c for c in path_crossings(self.airport, path, self.perf.length_m, self.paths.runway)
+                     if c.s_hold < hold]
+        for c in crossings:
+            if c.s_hold - 30.0 < at < c.s_clear + 30.0:
+                at = max(0.0, c.s_hold - 30.0)
+        self.mover = GroundMover(path)
+        self.mover.s = at
+        self.crossings = [c for c in crossings if c.s_hold > at]
+        self.pose = self.mover.pose()
+        self.push_at = now
+        self._go("taxiing", now)
+
     def _cleared_in_place(self, what: str, now: float) -> bool:
         if what == "handoff":  # "contact Departure": nothing changes in how it flies
             self.handed_off = True

@@ -179,7 +179,9 @@ def handle(
         reply = f"{cs}, I say again, {_instruction(history[-1][1], cs, station)}"
     traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
     if reply is None:  # VFR circuit, before the readback check ("left downwind 31" repeats Tower's own words)
-        reply = pattern.handle(session, airport, facility, own, pilot_text, traffic, preferred)
+        reply = pattern.handle(session, airport, facility, own, pilot_text, traffic, preferred, world)
+    if reply is None:  # "affirm" / "negative" to "advise able to depart from intersection ..." (not a readback)
+        reply = flow.intersection_answer(session, world, airport, facility, own, pilot_text, traffic)
     if reply is None:  # "holding short of runway 28R": cross it or keep holding (also before the readback check)
         reply = handle_crossing(session, airport, facility, own, pilot_text, traffic)
     # A readback only answers the position that gave the instruction: after "contact Tower", the first call

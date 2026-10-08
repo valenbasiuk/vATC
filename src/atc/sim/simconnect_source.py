@@ -19,6 +19,8 @@ from atc.models import OwnState, Traffic
 
 AI_CACHE_S = 0.8  # one AI request per watcher tick (1 s) at most
 AI_MIN_REACH_M = int(30 * 1852)  # ask for at least 30 NM so the next callers' smaller radii hit the cache
+AI_RETRY_S = (5.0, 15.0, 30.0, 60.0)  # after a failed AI read: wait, then try again (never off for good)
+AI_RECONNECT_AFTER = 3  # failed reads in a row -> a new SimConnect connection for the reader
 
 
 class SimConnectSource:
@@ -31,7 +33,9 @@ class SimConnectSource:
         # library_path lets you point at the MSFS 2024 SDK's SimConnect.dll if the bundled one fails.
         self._sm = SimConnect(library_path=library_path) if library_path else SimConnect()
         self._ai = None
-        self._ai_failed = False
+        self._ai_failed = False  # kept for old callers/tests; a failed read now backs off instead (_ai_retry_at)
+        self._ai_errors = 0  # failed AI reads in a row
+        self._ai_retry_at = 0.0
         self._ai_cache: tuple[float, int, list] | None = None  # (time, radius_m, records) of the last AI read
         self._own_object_id: int | None = None
         self._own_record = None  # the user's aircraft as the AI list shows it: ATC ID, airline, flight number
@@ -86,10 +90,13 @@ class SimConnectSource:
             return None
 
     def traffic(self, center_lat: float, center_lon: float, radius_nm: float) -> list[Traffic]:
-        """AI aircraft near a point. On any failure: log once, return [] (the prompt then says
-        'none reported', which is safe: the model is told never to invent traffic)."""
-        if self._ai_failed:
-            return []
+        """AI aircraft near a point. On a failed read: log, back off a few seconds, try again (a new connection after
+        a few failures). Meanwhile only our own traffic is listed: 'none reported' for the sim's AI is safe, the
+        model is told never to invent traffic."""
+        from atc import own as own_traffic
+
+        if self._ai_failed or time.monotonic() < getattr(self, "_ai_retry_at", 0.0):
+            return own_traffic.merge([], center_lat, center_lon, radius_nm)
         try:
             if self._ai is None:
                 from atc.sim.ai_traffic import AiTrafficReader
@@ -116,13 +123,25 @@ class SimConnectSource:
                 t = to_traffic(rec)
                 if distance_nm(center_lat, center_lon, t.lat, t.lon) <= radius_nm:
                     out.append(t)
-            from atc import own as own_traffic
-
+            self._ai_errors = 0
             return own_traffic.merge(out, center_lat, center_lon, radius_nm)  # ours, with their real speed
         except Exception as exc:  # noqa: BLE001 - never crash the radio loop over traffic
-            self._ai_failed = True
-            print(f"[traffic disabled: {exc}]", file=sys.stderr)
-            return []
+            self._ai_read_failed(exc)
+            return own_traffic.merge([], center_lat, center_lon, radius_nm)
+
+    def _ai_read_failed(self, exc: Exception) -> None:
+        n = getattr(self, "_ai_errors", 0) + 1
+        self._ai_errors = n
+        wait = AI_RETRY_S[min(n, len(AI_RETRY_S)) - 1]
+        self._ai_retry_at = time.monotonic() + wait
+        self._ai_cache = None
+        print(f"[traffic: AI read failed ({exc}), retrying in {wait:.0f} s]", file=sys.stderr)
+        if n % AI_RECONNECT_AFTER == 0 and self._ai is not None:
+            try:
+                self._ai.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._ai = None  # the next try opens a new connection
 
     def _ai_records(self, reach_m: int) -> list:
         """One SimConnect AI request serves every caller for AI_CACHE_S (the watcher asks up to six times per tick:

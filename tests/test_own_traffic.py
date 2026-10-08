@@ -454,3 +454,60 @@ def test_change_of_routing_round_somebody_stuck_in_the_way():
     assert via == "Charlie, Delta" and pts[-1] == net.nodes[3]
     line = TaxiNetwork(nodes={1: base, 2: net.nodes[2]}, edges={1: [(2, 300.0, "A")], 2: [(1, 300.0, "A")]})
     assert reroute(line, *base, {2}, [net.nodes[2]]) is None
+
+
+def test_warm_start_a_departure_already_at_the_holding_point_and_one_on_final():
+    """Valen 2026-10-08: at the start not everybody is parked: one already taxiing out (here at the holding point,
+    so it calls Tower and takes off) and one on a short final."""
+    inj = FakeInjector()
+    mgr = _mgr(inj=inj)
+    msg = mgr.spawn_departure(APT, 0.0, schedule.Departure("ARG", "1216", "B738"), taxiing=1.0)
+    assert "ARG1216 B738 at the holding point -> runway 13" in msg
+    p = mgr.pilots["ARG1216"]
+    assert p.state == "taxiing" and (inj.poses["ARG1216"].lat, inj.poses["ARG1216"].lon) == (p.pose.lat, p.pose.lon)
+    assert "on a 5 NM final runway 13" in mgr.spawn_arrival(APT, 0.0, schedule.Departure("AEP", "1890", "B738"),
+                                                             dist_nm=5.0)
+    states = set()
+    _run(mgr, _user(), 600, watch=lambda t: states.add(p.state) or False)
+    assert {"holding", "takeoff"} <= states and "pushing" not in states and "parked" not in states
+
+
+def test_warm_start_never_on_top_of_the_user():
+    mgr = _mgr()
+    hold = mgr.world.taxi["SATS"].nodes[100]
+    mgr.user = _user(lat=hold[0], lon=hold[1])
+    mgr.spawn_departure(APT, 0.0, schedule.Departure("ARG", "1216", "B738"), taxiing=1.0)
+    from atc.geo import distance_nm
+
+    p = mgr.pilots["ARG1216"]
+    assert distance_nm(p.pose.lat, p.pose.lon, *hold) * 1852 >= 70.0
+
+
+def test_lights_go_out_as_events_and_as_simvars_and_the_battery_comes_on_first():
+    """Valen 2026-10-08: our aircraft had no lights with the *_SET events alone (VERIFY with tools/probe_lights.py)."""
+    import struct
+
+    from atc.own import injector as inj_mod
+
+    sent = []
+
+    class Dll:
+        def SimConnect_TransmitClientEvent(self, h, obj, ev, value, group, flags):
+            sent.append(("event", inj_mod.EVENTS[ev - inj_mod.EV0], value))
+
+        def SimConnect_SetDataOnSimObject(self, h, define, obj, flags, count, size, buf):
+            sent.append(("data", struct.unpack(f"<{len(inj_mod.LIGHT_VARS)}d", buf.raw[:size])))
+
+    inj = object.__new__(inj_mod.SimInjector)
+    inj.d, inj.h, inj.lights_mode = Dll(), None, "both"
+    inj.objs = {"ARG1": inj_mod._Obj("ARG1", 1, object_id=7, ready=True)}
+    inj.lights("ARG1", nav=True, beacon=True, strobe=False, landing=False, taxi=True)
+    assert sent[0] == ("event", "MASTER_BATTERY_SET", 1)
+    assert ("event", "BEACON_LIGHTS_SET", 1) in sent and ("event", "LOGO_LIGHTS_SET", 1) in sent
+    assert sent[-1] == ("data", (1.0, 1.0, 0.0, 0.0, 1.0, 1.0))  # beacon, nav, strobe, landing, taxi, logo
+    sent.clear()
+    inj.lights("ARG1", nav=True, beacon=True, strobe=False, landing=False, taxi=True)
+    assert sent == []  # nothing changed, simvars written 5 s ago at most
+    inj.objs["ARG1"].lights_at -= 6.0
+    inj.lights("ARG1", nav=True, beacon=True, strobe=False, landing=False, taxi=True)
+    assert [k for k, *_ in sent] == ["data"]  # written again in case the sim reset them

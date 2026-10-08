@@ -65,6 +65,16 @@ EXTRA_FIELDS = [
 FULL_FMT = RECORD_FMT + "32s64s8s"
 FULL_SIZE = struct.calcsize(FULL_FMT)  # 180
 
+# SIMCONNECT_RECV_EXCEPTION: header, then dwException, dwSendID, dwIndex (SimConnect.h)
+EXCEPTION_FMT = "<3I"
+EXCEPTION_NAMES = {
+    1: "ERROR", 2: "SIZE_MISMATCH", 3: "UNRECOGNIZED_ID", 4: "UNOPENED", 5: "VERSION_MISMATCH",
+    6: "TOO_MANY_GROUPS", 7: "NAME_UNRECOGNIZED", 8: "TOO_MANY_EVENT_NAMES", 9: "EVENT_ID_DUPLICATE",
+    10: "TOO_MANY_MAPS", 11: "TOO_MANY_OBJECTS", 12: "TOO_MANY_REQUESTS", 15: "INVALID_DATA_TYPE",
+    16: "INVALID_DATA_SIZE", 17: "DATA_ERROR", 18: "INVALID_ARRAY", 19: "CREATE_OBJECT_FAILED",
+    21: "OPERATION_INVALID_FOR_OBJECT_TYPE", 22: "ILLEGAL_OPERATION",
+}  # VERIFY against the SDK header; only used for the log line
+
 # SIMCONNECT_RECV (12 bytes) + 7 DWORDs, then the packed data.
 HEADER_FMT = "<3I"
 OBJ_HEADER_FMT = "<7I"  # request, object, define, flags, entrynumber, outof, definecount
@@ -100,8 +110,12 @@ def unpack_record(object_id: int, data: bytes, full: bool = False) -> AiRecord:
 
 
 def parse_message(msg: bytes) -> tuple[int, dict | None]:
-    """Returns (recv_id, info). info is set for SIMOBJECT_DATA(_BYTYPE) messages."""
+    """Returns (recv_id, info). info is set for SIMOBJECT_DATA(_BYTYPE) messages, and for exceptions
+    ({"exception": code, "send_id": ..., "index": ...})."""
     _size, _version, recv_id = struct.unpack_from(HEADER_FMT, msg, 0)
+    if recv_id == RECV_ID_EXCEPTION and len(msg) >= 24:
+        code, send_id, index = struct.unpack_from(EXCEPTION_FMT, msg, 12)
+        return recv_id, {"exception": code, "send_id": send_id, "index": index}
     if recv_id not in (RECV_ID_SIMOBJECT_DATA, RECV_ID_SIMOBJECT_DATA_BYTYPE):
         return recv_id, None
     request, obj, define, _flags, entry, outof, _count = struct.unpack_from(OBJ_HEADER_FMT, msg, 12)
@@ -129,6 +143,18 @@ def default_dll_path() -> Path:
     )
 
 
+class ReadError(RuntimeError):
+    """A read that got no data: SimConnect answered with an exception (code kept for the log), or nothing at all."""
+
+    def __init__(self, text: str, code: int | None = None) -> None:
+        super().__init__(text)
+        self.code = code
+
+
+def exception_text(code: int) -> str:
+    return f"SimConnect exception {code} ({EXCEPTION_NAMES.get(code, 'unknown')})"
+
+
 class AiTrafficReader:
     def __init__(self, dll_path: Path | None = None, app_name: str = "atc-ia-traffic") -> None:
         if sys.platform != "win32":
@@ -148,6 +174,8 @@ class AiTrafficReader:
             if hr != 0:
                 raise RuntimeError(f"AddToDataDefinition failed for {name!r}: 0x{hr & 0xFFFFFFFF:08x}")
         self._define = DEFINE_FULL
+        self._full_ok = False  # the full layout has returned data once: never drop it over a later hiccup
+        self._request = REQUEST_ID
         for name, units, dtype in FIELDS + EXTRA_FIELDS:
             hr = self._dll.SimConnect_AddToDataDefinition(
                 self._h, DEFINE_FULL, name.encode(), units.encode() if units else None, dtype, 0.0, UNUSED
@@ -173,44 +201,71 @@ class AiTrafficReader:
 
     def read(self, radius_m: int, timeout_s: float = 1.5) -> list[AiRecord]:
         """AI aircraft within radius_m of the USER aircraft. May include the user's own aircraft.
-        If the sim rejects the type/airline fields, drop to the basic (verified) layout and retry once."""
+        If the sim rejects the type/airline fields on the very first reads (a field name it doesn't know),
+        drop to the basic (verified) layout and retry once. Once the full layout has worked, a failed read is
+        just a failed read (real sim 2026-10-08: one exception dropped the type fields and then the whole reader)."""
         try:
-            return self._read(radius_m, timeout_s)
-        except RuntimeError:
-            if self._define != DEFINE_FULL:
+            recs = self._read(radius_m, timeout_s)
+        except ReadError as exc:
+            if self._define != DEFINE_FULL or self._full_ok or exc.code not in (None, 7, 15, 16):
                 raise
             self._define = DEFINE_ID
-            print("[traffic: sim rejected type/airline fields, using basic traffic data]", file=sys.stderr)
+            print(f"[traffic: sim rejected type/airline fields ({exc}), using basic traffic data]", file=sys.stderr)
             return self._read(radius_m, timeout_s)
+        if recs and self._define == DEFINE_FULL:
+            self._full_ok = True
+        return recs
 
     def _read(self, radius_m: int, timeout_s: float) -> list[AiRecord]:
+        # a fresh request id per read: late records of a read that timed out are not mixed into this one
+        self._request = REQUEST_ID + (self._request - REQUEST_ID + 1) % 1000
         hr = self._dll.SimConnect_RequestDataOnSimObjectType(
-            self._h, REQUEST_ID, self._define, int(radius_m), SIMOBJECT_TYPE_AIRCRAFT
+            self._h, self._request, self._define, int(radius_m), SIMOBJECT_TYPE_AIRCRAFT
         )
         if hr != 0:
-            raise RuntimeError(f"RequestDataOnSimObjectType failed: 0x{hr & 0xFFFFFFFF:08x}")
+            raise ReadError(f"RequestDataOnSimObjectType failed: 0x{hr & 0xFFFFFFFF:08x}")
+        return self._collect(self._next_message, self._request, timeout_s)
+
+    def _next_message(self) -> bytes | None:
+        p = ctypes.c_void_p()
+        n = ctypes.c_uint32()
+        if self._dll.SimConnect_GetNextDispatch(self._h, ctypes.byref(p), ctypes.byref(n)) != 0:
+            return None
+        return ctypes.string_at(p.value, n.value)
+
+    @staticmethod
+    def _collect(next_message, request: int, timeout_s: float) -> list[AiRecord]:
+        """Records of one request. An exception message doesn't end the read (it may be about one object, or a
+        leftover of an earlier request): the records that arrive are kept. Only a read with an exception and no
+        data at all fails."""
         out: list[AiRecord] = []
         expected: int | None = None
+        seen: set[int] = set()
+        error: int | None = None
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            p = ctypes.c_void_p()
-            n = ctypes.c_uint32()
-            if self._dll.SimConnect_GetNextDispatch(self._h, ctypes.byref(p), ctypes.byref(n)) != 0:
+            msg = next_message()
+            if msg is None:
+                if error is not None and expected is None and time.monotonic() > deadline - timeout_s + 0.3:
+                    break  # an exception and no data after 0.3 s: this request failed
                 time.sleep(0.01)  # nothing queued yet
                 continue
-            msg = ctypes.string_at(p.value, n.value)
             recv_id, info = parse_message(msg)
             if recv_id == RECV_ID_EXCEPTION:
-                raise RuntimeError("SimConnect reported an exception (check the request/definition)")
-            if info is None or info["request"] != REQUEST_ID:
+                error = info["exception"] if info else 0
+                continue
+            if info is None or info["request"] != request:
                 continue
             expected = info["outof"]
             if expected == 0:
                 return []
+            seen.add(info["entry"])
             if "record" in info:
                 out.append(info["record"])
-            if len(out) >= expected:
+            if len(seen) >= expected or (error is not None and info["entry"] == expected - 1):
                 break
+        if not out and error is not None:
+            raise ReadError(exception_text(error), error)
         return out
 
     def close(self) -> None:

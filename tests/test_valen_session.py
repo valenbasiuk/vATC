@@ -254,6 +254,7 @@ def test_watcher_hands_ground_to_tower_when_stopped_at_the_holding_point():
     sabe, world, sim, s = _setup()
     s.clearance = "confirmed"
     s.telephony = "Martinair"
+    s.taxi_cleared = True  # Ground gave the taxi clearance (parked at a gate, nothing is said: see the next test)
     sim.update(com1_mhz=121.9, gs_kt=0.0)
     cb = _Callbacks(world, sim, _Quiet(), [], s)
     assert cb.tick(now=0) is None  # at the apron
@@ -266,3 +267,18 @@ def test_watcher_hands_ground_to_tower_when_stopped_at_the_holding_point():
                key=lambda n: abs(along_cross(sabe, rwy, *net.nodes[n])[0]))
     sim.update(lat=net.nodes[hold][0], lon=net.nodes[hold][1])
     assert cb.tick(now=1) == f"{CS}, contact Aeroparque Tower one one eight decimal eight five."
+
+
+def test_no_handoff_to_tower_while_parked_at_a_gate_next_to_the_runway():
+    """Real sim, SABE 2026-10-08: parked at gate 27-29 (that close to the 13 end) on Ground, the watcher said
+    "contact Aeroparque Tower" twice before any call."""
+    sabe, world, sim, s = _setup()
+    s.clearance = "confirmed"
+    from atc.own.airport import stands
+
+    gate = next(g for g in stands("SABE", world.taxi["SABE"]) if g.ref == "28")
+    sim.update(lat=gate.lat, lon=gate.lon, com1_mhz=121.9, gs_kt=0.0, wind_dir_deg=130.0, wind_kt=8.0)
+    cb = _Callbacks(world, sim, _Quiet(), [], s)
+    assert cb.tick(now=0) is None and cb.tick(now=5) is None
+    s.taxi_cleared = True
+    assert cb.tick(now=10) is None  # still at the gate

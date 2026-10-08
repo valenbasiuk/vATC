@@ -59,6 +59,10 @@ NOSE_GEAR_SHARE = 0.38  # the nose gear sits this share of the length ahead of t
 TUG_AHEAD_M = 2.0
 TUG_YAW = float(os.environ.get("ATC_OWN_TUG_YAW", "180"))  # VERIFY: the tug faces the aircraft
 TUG_STAYS_S = 12.0
+WARM_ARRIVAL = 0.7  # at the start (times how busy the field is, 20 movements/hour = 1): one already on final
+WARM_DEPARTURE = 0.7  # ... and one already taxiing out or at the holding point
+WARM_FINAL_NM = (3.5, 8.0)
+WARM_CLEAR_M = 70.0  # a warm-started departure not this close to anybody
 
 
 def _every(length: float, step: float):
@@ -127,7 +131,8 @@ class OwnTraffic:
         return Flight(dep.callsign, title or "", dep.type_icao, dep.airline or None), title
 
     def spawn_departure(self, airport: Airport, now: float | None = None, dep: schedule.Departure | None = None,
-                        ga: bool = False) -> str:
+                        ga: bool = False, taxiing: float | None = None) -> str:
+        """`taxiing` (warm start): already taxiing out, that share of the way to the holding point (1.0 = at it)."""
         from atc.runway import runway_in_use
 
         now = self._now() if now is None else now
@@ -150,16 +155,28 @@ class OwnTraffic:
         paths = departure_paths(net, airport, rwy, stand)
         if paths is None:
             return f"no taxi route from stand {stand.ref} to runway {rwy.ident}"
+        pilot = DeparturePilot(flight, airport, paths, p, now, push_after_s=self.rng.uniform(20.0, 50.0))
+        where = f"at stand {stand.ref}"
+        if taxiing is not None:
+            taken = self._taken(airport)
+            for share in (taxiing, 0.8, 0.6, 0.4):
+                pilot.start_taxiing(now, share)
+                if all(distance_nm(pilot.pose.lat, pilot.pose.lon, t.lat, t.lon) * 1852.0 >= WARM_CLEAR_M
+                       for t in taken):
+                    break
+            else:
+                return "no room on the taxi route"
+            where = "taxiing" if pilot.mover.s < pilot.mover.path.length - pilot.perf.length_m else "at the holding point"
         with self.lock:
-            self.pilots[flight.callsign] = DeparturePilot(flight, airport, paths, p, now,
-                                                          push_after_s=self.rng.uniform(20.0, 50.0))
-        self.injector.create(flight.callsign, flight.title, stand.lat, stand.lon, stand.heading, airport.elevation_ft,
-                             type_icao=flight.type_icao)
-        return self._said(f"{flight.callsign} {flight.type_icao} at stand {stand.ref} -> runway {rwy.ident}"
+            self.pilots[flight.callsign] = pilot
+        self.injector.create(flight.callsign, flight.title, pilot.pose.lat, pilot.pose.lon, pilot.pose.heading_deg,
+                             airport.elevation_ft, type_icao=flight.type_icao)
+        return self._said(f"{flight.callsign} {flight.type_icao} {where} -> runway {rwy.ident}"
                           + (f" via {paths.via}" if paths.via else "") + (f" ({title})" if title else ""))
 
     def spawn_arrival(self, airport: Airport, now: float | None = None, dep: schedule.Departure | None = None,
-                      ga: bool = False) -> str:
+                      ga: bool = False, dist_nm: float | None = None) -> str:
+        """`dist_nm` (warm start): this close in on final instead of the usual spawn distance."""
         from atc.runway import runway_in_use
         from atc.sequence import final_distance, threshold
 
@@ -173,7 +190,7 @@ class OwnTraffic:
             return made
         flight, title = made
         p = perf(flight.type_icao)
-        dist = ARRIVAL_SPAWN_NM if p.vapp_kt >= 100 else 5.0
+        dist = dist_nm if dist_nm is not None else ARRIVAL_SPAWN_NM if p.vapp_kt >= 100 else 5.0
         spacing = ARRIVAL_SPACING_DEP_NM if self._departure_queue() else ARRIVAL_SPACING_NM
         for t in self._taken(airport):  # behind everybody already on this final
             d = final_distance(airport, rwy, t) if not t.on_ground else None
@@ -337,6 +354,8 @@ class OwnTraffic:
         rate = schedule.movements_per_hour(apt, self.community, self.factor)
         if self.next_spawn is None:  # something happening soon after the start
             self.next_spawn = now + 8.0
+            if rate > 0:
+                self._warm_start(apt, now, rate)
         if now < self.next_spawn or len(self.pilots) >= self._max_alive(rate) or rate <= 0:
             return
         self.next_spawn = now + self.rng.expovariate(rate / 3600.0)
@@ -351,6 +370,19 @@ class OwnTraffic:
             msg = self.spawn_departure(apt, now, ga=ga)
             if msg == "no free stand":
                 self.spawn_arrival(apt, now, ga=ga)
+
+    def _warm_start(self, apt: Airport, now: float, rate: float) -> None:
+        """Traffic already moving when vATC starts (Valen 2026-10-08: not everybody parked): now and then one on
+        final and one taxiing out or at the holding point, more likely the busier the field."""
+        busy = min(1.0, rate / 20.0)
+        scheduled = schedule._todays_cached(apt.icao, self.community)
+        if self.rng.random() < WARM_ARRIVAL * busy:
+            ga = not scheduled or self.rng.random() < schedule.GA_SHARE
+            self.spawn_arrival(apt, now, ga=ga, dist_nm=self.rng.uniform(*WARM_FINAL_NM))
+        if self.rng.random() < WARM_DEPARTURE * busy:
+            ga = not scheduled or self.rng.random() < schedule.GA_SHARE
+            share = 1.0 if self.rng.random() < 0.5 else self.rng.uniform(0.3, 0.9)
+            self.spawn_departure(apt, now, ga=ga, taxiing=share)
 
     # --- the controller ------------------------------------------------------------------------------------
     def _answer(self, p: _Pilot, now: float, others: list[Traffic]) -> None:

@@ -8,8 +8,13 @@ Accent pools come from the multi-speaker models' speaker lists:
     Arabic, Vietnamese): an Aerolineas pilot or an Argentine controller sounds like one;
   - en_US-libritts(-r)-high: 904 US speakers, no tags: the generic pool;
   - single-speaker voices count for their locale (en_GB -> English, en_US -> American).
-The same aircraft / position always gets the same voice (hashed), and voices that aren't downloaded are simply
-not in the pools: with only libritts everything falls back to it, as before.
+Voices that aren't downloaded are simply not in the pools: with only libritts everything falls back to it.
+
+Nobody shares a voice with another speaker heard in the last VOICE_ACTIVE_S (Valen 2026-10-08: at SABE pilots and
+controllers kept sounding alike: the Spanish pool has 4 speakers, 2 of them men). A new speaker gets a person nobody
+is using, else one of them pitched up or down a little (PITCHES: with the formants moving too, the same speaker
+sounds like somebody else, more so through the radio filter), else the other sex, else the next accent and then the
+generic pool. A speaker keeps their voice for the whole session.
 
 voices/blacklist.txt (optional, one per line; '#' starts a comment line, ' #' a note after the entry): a voice to
 never use, as tools/voice_samples.py names it ("en_US-l2arctic-medium#3"), or a whole accent ("accent:Spanish":
@@ -21,6 +26,8 @@ from __future__ import annotations
 import csv
 import json
 import re
+import threading
+import time
 import zlib
 from dataclasses import dataclass
 from functools import lru_cache
@@ -34,15 +41,21 @@ class Voice:
     rate: float = 1.0  # Piper length_scale (< 1 = faster)
     accent: str = ""
     female: bool = False
+    pitch: float = 1.0  # > 1 higher (and a smaller voice): tts.py shifts the samples
 
     @property
     def label(self) -> str:
-        return f"{Path(self.model).stem}#{self.speaker} {self.accent}{' F' if self.female else ''}".strip()
+        p = f" p{self.pitch:.2f}" if self.pitch != 1.0 else ""
+        return f"{Path(self.model).stem}#{self.speaker} {self.accent}{' F' if self.female else ''}{p}".strip()
 
     @property
     def key(self) -> str:
         """How voices/blacklist.txt names this voice: 'en_US-l2arctic-medium#3' (the model alone if single)."""
         return Path(self.model).stem + (f"#{self.speaker}" if self.speaker is not None else "")
+
+
+VOICE_ACTIVE_S = 900.0  # a voice heard this recently belongs to that speaker: nobody else gets it
+PITCHES = (0.92, 1.08)  # the same speaker made into another person when the pool runs out
 
 
 def read_blacklist(voices_dir: Path | str) -> set[str]:
@@ -120,6 +133,10 @@ class VoiceBank:
     def __init__(self, voices_dir: Path | str = "voices", default_model: Path | str | None = None) -> None:
         self.default_model = str(default_model) if default_model else None
         self.pools: dict[str, list[Voice]] = {}
+        self.clock = time.monotonic
+        self._lock = threading.Lock()  # the chatter thread and the main loop both ask
+        self._who: dict[str, Voice] = {}  # speaker key -> their voice for the session
+        self._last: dict[str, float] = {}  # speaker key -> when they last spoke
         self.blacklist = read_blacklist(voices_dir)
         for onnx in sorted(Path(voices_dir).glob("*.onnx")):
             meta = onnx.with_name(onnx.name + ".json")
@@ -161,20 +178,44 @@ class VoiceBank:
         female = any(n in name for n in _FEMALE_NAMES)
         self.pools.setdefault(accent, []).append(Voice(model, None, accent=accent, female=female))
 
-    def _pick(self, key: str, accents: list[str], female_share: float, rate: tuple[float, float],
-              avoid: set[Voice] = frozenset()) -> Voice | None:
+    def _pick(self, key: str, accents: list[str], female_share: float, rate: tuple[float, float]) -> Voice | None:
+        with self._lock:
+            now = self.clock()
+            v = self._who.get(key)
+            if v is None:
+                v = self._new_voice(key, accents, female_share, rate, now)
+                if v is None:
+                    return None
+                self._who[key] = v
+            self._last[key] = now
+            return v
+
+    def _new_voice(self, key: str, accents: list[str], female_share: float, rate: tuple[float, float],
+                   now: float) -> Voice | None:
         h = zlib.crc32(key.encode())
         want_female = (h % 1000) / 1000.0 < female_share
+        lo, hi = rate
+        r = round(lo + ((h >> 8) % 100) / 100.0 * (hi - lo), 2)
+        active = [self._who[k] for k, t in self._last.items() if now - t < VOICE_ACTIVE_S and k in self._who]
+        people = {v.key for v in active}
+        taken = {(v.key, v.pitch) for v in active}
         for accent in accents + ["generic"]:
-            pool = self.pools.get(accent) or []
+            # this speaker's own order through the pool: two new aircraft don't both start at its first voice
+            pool = sorted(self.pools.get(accent) or [], key=lambda v: zlib.crc32(f"{key}|{v.key}".encode()))
             if not pool:
                 continue
-            same = [v for v in pool if v.female == want_female and v not in avoid] or \
-                [v for v in pool if v not in avoid] or pool
-            v = same[(h // 1000) % len(same)]
-            lo, hi = rate
-            r = round(lo + ((h >> 8) % 100) / 100.0 * (hi - lo), 2)
-            return Voice(v.model, v.speaker, r, v.accent, v.female)
+            for sex in (want_female, not want_female):
+                same = [v for v in pool if v.female == sex]
+                choice = next(((v, 1.0) for v in same if v.key not in people), None) or \
+                    next(((v, p) for p in PITCHES for v in same if (v.key, p) not in taken), None)
+                if choice is not None:
+                    v, pitch = choice
+                    return Voice(v.model, v.speaker, r, v.accent, v.female, pitch)
+        for accent in accents + ["generic"]:  # every voice is talking: the old hashed pick
+            pool = self.pools.get(accent) or []
+            if pool:
+                v = pool[(h // 1000) % len(pool)]
+                return Voice(v.model, v.speaker, r, v.accent, v.female)
         return None
 
     def pilot(self, callsign: str, country: str | None) -> Voice | None:

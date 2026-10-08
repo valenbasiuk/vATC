@@ -28,10 +28,34 @@ below. The rest, in this order (codes as in docs/IMPROVEMENT_PLAN.md):
    - H1 turnarounds (an arrival leaves again from its stand after 45-90 min); H2 arrivals from the STAR / downwind
      and departures on the SID's first legs; H3 GA circuits and CTAF calls at small fields (E3).
    - C3 side-step (KSFO/JFK), E1 Class B/C transitions (US), D2 ride reports by code, D3 traffic information on our
-     departures/arrivals en route, G4 closures by hand in the airport YAML, B6 intersection departures on request.
+     departures/arrivals en route, G4 closures by hand in the airport YAML, B6 Ground taxiing to an intersection
+     on request (Tower's intersection departure is built).
 7. Voices and language (TODO)
    - J1 voice comparison tool (Piper high voices downloaded / Kokoro / Edge neural) -> pick.
    - J2 Spanish ATC (Spanish speech model, phraseology tables, es_AR daniela voice: downloaded).
+
+## WATCH IN THE SIM 2026-10-08, second round (Valen's SABE flight; fake sim + tests; 298 tests)
+- Ground -> Tower handoff now needs Ground's taxi clearance and not being at a stand (SABE gates 27-29 lie inside
+  the runway-13 handoff box: parked there, "contact Tower" came twice unasked).
+- AI traffic reader: a SimConnect exception no longer turns it off for the flight; it backs off 5/15/30/60 s and
+  opens a new connection after 3 failures ("[traffic: AI read failed (SimConnect exception N (NAME)), retrying in
+  ...]"). Our own traffic stays listed meanwhile. Tell me the exception NAME if it shows up.
+- Warm start (own traffic): at the start, more likely the busier the field, one of ours already on a 3.5-8 NM final
+  and one taxiing out or at the holding point ("[own traffic: X B738 at the holding point -> runway 13 ...]").
+- Voices: nobody heard in the last 15 min shares a voice; the Spanish pool (4 people) is stretched with pitch
+  variants (0.92 / 1.08) before going to the generic pool. Listen to voice_samples/pitch_variants.wav: if the
+  variants sound robotic, narrow voices.PITCHES.
+- Lights on our aircraft: battery on + light simvars written on the object + the *_SET events (ATC_OWN_LIGHTS=
+  events|data|both). Run `python tools/probe_lights.py` (dusk/night) and tell me which step lit them.
+- Intersection departure: "request intersection departure" / "from present position" / "no backtrack" -> "runway
+  one three from intersection Bravo, one thousand five hundred metres available, cleared for takeoff" (taxiway from
+  the taxi map). At a mid-runway holding point with an arrival inside 8 NM (backtrack blocked) Tower asks "advise
+  able to depart from runway two zero, intersection Bravo, ... metres available" when the runway left is enough for
+  the type (L 600 m, turboprop 1100, M 1700, H 2800); "affirm" -> takeoff, "negative" -> backtrack later.
+  Not yet: Ground taxiing you to an intersection on request.
+- FS Traffic's own AI (callsign labels like "5231/B738/BONDI", ARG1780) is not ours: it doesn't hear this ATC, can
+  enter the runway unasked, and its go-around ended on the ground. With --own-traffic, FS Traffic's injection
+  must be OFF (keep the package: its models and schedules are what we use).
 
 ## WATCH IN THE SIM 2026-10-08 (blocks 1-3, fake sim + tests only; 286 tests)
 - ATIS on a clock: the letter changes with the METAR; a QNH or runway change is broadcast "all stations" on the

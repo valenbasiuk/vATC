@@ -4,7 +4,13 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-08)
+## Where we are (2026-10-08, evening)
+- Fixes from Valen's SABE flight (ROADMAP "WATCH IN THE SIM 2026-10-08, second round"; 298 tests): no Ground->Tower
+  handoff at a gate, AI reader backs off instead of dying on a SimConnect exception, warm start for our traffic,
+  no two speakers share a voice (pitch variants, voices.PITCHES), lights on our aircraft (tools/probe_lights.py to
+  verify), intersection departures (flow.intersection_offer/answer). FS Traffic injection must be off with ours.
+
+## Earlier on 2026-10-08
 - Improvement plan blocks 1-3 built (docs/IMPROVEMENT_PLAN.md; fake sim + tests, 286 tests): ATIS on a clock with
   "all stations" on a QNH/runway change, the sim's own weather detected vs the METAR, controller weather where there
   is no ATIS (SARC), "confirm information X", crossings by Tower in reduced visibility, backtrack (SARC); the
@@ -80,7 +86,8 @@ Flight tab (transcript, typed calls, live panel). It runs `python -m atc` with t
 (`--status-file`, `--stdin` added). Settings: %APPDATA%\vATC\config.json (atc/config.py).
 Own traffic (departures + arrivals): add `--own-traffic [--own-factor 1.5] [--own-max N]`, sim AI traffic and
 parked aircraft OFF; REPL `/owndep [ARG B738]`, `/ownarr [ga]`. Env: ATC_OWN_MODELS=fsltl, ATC_OWN_TUG=off|<title>,
-ATC_OWN_PITCH_SIGN, ATC_OWN_TUG_YAW. `tools/probe_inject.py` = the injection probe (passed in MSFS 2026-10-07).
+ATC_OWN_PITCH_SIGN, ATC_OWN_TUG_YAW, ATC_OWN_LIGHTS=events|data|both. `tools/probe_inject.py` = the injection
+probe (passed in MSFS 2026-10-07); `tools/probe_lights.py` = which way lights our aircraft (not run yet).
 High Piper voices: `python tools/download_voices.py --high` (done 2026-10-07: cori, lessac, ljspeech, ryan + es).
 Accent voices: `python tools/download_voices.py` once (done on Valen's PC 2026-10-06; `--list` shows the pools).
 Preset (not live) weather in the sim: `$env:ATC_METAR = "off"` so the ATIS doesn't read the real METAR.

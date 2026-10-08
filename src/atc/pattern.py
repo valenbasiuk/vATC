@@ -72,7 +72,7 @@ _TRANSIT = re.compile(r"\b(?:transit(?:ing)?|cross(?:ing)? (?:the )?(?:field|zon
 
 
 def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_text: str, traffic: list[Traffic],
-           preferred: str | None) -> str | None:
+           preferred: str | None, world=None) -> str | None:
     """Tower's reply to a VFR pattern call, or None if this isn't one."""
     if facility.role != "tower" or not is_vfr(session):
         return None
@@ -114,17 +114,22 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
             session.vfr_departure = True  # leaves the zone on its own: no handoff to Departure
         if wind:
             bits.append(wind)
-        from atc.flow import takeoff_words
+        from atc.flow import note_intersection, takeoff_words
+
+        note_intersection(session, world, airport, rwy, own, norm)
 
         bits.append(takeoff_words(session, airport, rwy, own, runway_status(airport, rwy, own, traffic)))
         if session.in_circuit and not faa:
             bits.append("report downwind")
-        from atc.flow import _backtrack_blocked, needs_backtrack
+        from atc.flow import _backtrack_blocked, intersection_offer, needs_backtrack
 
         if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end, the takeoff once lined up
             session.takeoff_waiting = (rwy.ident, ", ".join(bits))
             why = _backtrack_blocked(st, airport)
             session.backtrack = "pending" if why else "lining"
+            offer = intersection_offer(session, world, airport, rwy, own, st) if why else None
+            if offer:  # an arrival a few miles out: "advise able to depart from runway two zero, intersection ..."
+                return f"{pre}, {why}, {offer}"
             return f"{pre}, hold position, {why}." if why else f"{pre}, backtrack runway {rw}, line up and wait."
         from atc import departures
         from atc.flow import departure_hold

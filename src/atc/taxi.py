@@ -465,6 +465,7 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
     # the runway given with the taxi clearance stays this pilot's (like an approved request) even if the AI's runway
     # in use changes while they taxi
     session.runway_requests[f"{airport.icao}:departure"] = rwy.ident
+    session.taxi_cleared = True
     via = departure_route(net, airport, rwy, own)
     rw = phrase.runway(rwy.ident, faa)
     # runways on the way: hold short of the first one; the pilot calls holding short and Ground clears the crossing
