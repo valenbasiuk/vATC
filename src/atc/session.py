@@ -108,8 +108,18 @@ class Session:
     runway_requests: dict[str, str] = field(default_factory=dict)  # "ICAO:departure" -> runway the pilot got
     holding: str | None = None  # fix the pilot is holding at (holding.py): no descent or vectors meanwhile
     holding_until: float | None = None  # watcher time of the expected further clearance
+    # why: "request" (the pilot asked), "sequence" (ATC: the arrival sequence is full; released early once it
+    # thins out) or "runway" (ATC: the runway can't be used now)
+    hold_reason: str | None = None
+    sequence_hold_done: bool = False  # ATC already held this arrival once for the sequence
     own_nav: str | None = None  # flying the approach procedure on their own ("" = no fix named): no vectors
     vfr_departure: bool = False  # asked for a turn-out / said VFR: "frequency change approved", not Departure
+    base_given: bool = False  # on vectors: the base turn was given, the intercept comes near the centerline
+    visual: str | None = None  # runway of a visual approach clearance (improvement plan C1): no vectors, no level
+    visual_asked: bool = False  # "report field in sight" said
+    deviating: bool = False  # weather deviation approved (D1), until "back on track"
+    low_alt_warned: bool = False  # "low altitude warning" said; again only after climbing back above the minimum
+    missed_approach: bool = False  # went around: the next call on the radar position is the re-check-in (C5)
 
     def __post_init__(self) -> None:
         if self.telephony is not None:

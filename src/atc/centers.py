@@ -157,3 +157,20 @@ def by_frequency(mhz: float, lat: float, lon: float, max_nm: float = 400.0) -> S
             if nm <= max_nm and (best is None or nm < best[0]):
                 best = (nm, pid)
     return d.sector(best[1]) if best else None
+
+
+def ahead(lat: float, lon: float, alt_ft: float | None, track_deg: float, max_nm: float = 200.0,
+          step_nm: float = 2.0) -> tuple[Sector, float] | None:
+    """The next Center sector along the track (straight ahead, same level) and how far it is: (sector, NM)."""
+    from atc.geo import destination
+
+    here = sector_at(lat, lon, alt_ft)
+    nm = step_nm
+    while nm <= max_nm:
+        la, lo = destination(lat, lon, track_deg, nm)
+        s = sector_at(la, lo, alt_ft)
+        if s is not None and (here is None or s.pid != here.pid) and (here is None or s.mhz != here.mhz
+                                                                      or s.callsign != here.callsign):
+            return s, nm
+        nm += step_nm
+    return None

@@ -5,6 +5,11 @@ docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
 ## Where we are (2026-10-08, night)
+- Late: taxiway names the default scenery leaves out are filled from airports/osm/<ICAO>.json (taxi.fill_names,
+  sim geometry kept; checked against the SBFI and SBGR AD charts of AISWEB), holding point search along the whole
+  runway (SBFI 15 had no route), short crossing runs dropped from spoken routes. `/fly LAT LON ALT HDG [GS] [xN]`
+  (fake sim flies straight on) and `/center` (sector now + next ahead; also in the launcher panel). Next big thing:
+  docs/MAP_PLAN.md (live map like VATGlasses + world traffic beyond 40 NM), plan only.
 - Area control for the whole world: data/centers.json (built on this PC by `python tools/build_centers.py`, weekly
   cache in data/cache/centers/, not committed: CC BY-NC-SA) = every VATSIM Center/oceanic sector with polygon, levels,
   callsign and frequency (VATGlasses + vNAS for US ARTCCs + VATSpy outlines with Navigraph AIRAC 1801 frequencies),
@@ -107,7 +112,7 @@ reports buttons 19 and 32 as always held: switches, don't use). `--mic` / `--aud
 (defaults: Blue Snowball mic, Samsung USB-C earphones). AI chatter is always on (Tower/Ground of the airport you're at).
 Old style still works (`ATC_LLM_BASE_URL` + `ATC_LLM_API_KEY` + unprefixed models). Keys: `GROQ_API_KEY`, `GEMINI_API_KEY`,
 `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` (client.py PROVIDERS).
-Fake-sim REPL: `/wind 300 10 1015`, `/final 2 31`, `/onrwy`, `/notraffic`, `/air`, `/near SAAR 30 6000`, `/ground`,
+Fake-sim REPL: `/fly -28.2 -58.6 35000 5 450 x20` (cruise anywhere), `/center`, `/wind 300 10 1015`, `/final 2 31`, `/onrwy`, `/notraffic`, `/air`, `/near SAAR 30 6000`, `/ground`,
 `/leg downwind|base|final 2|upwind|out` (own aircraft in the circuit), `/aidep`, `/aiarr 20` (AI with Approach chatter).
 Voices: `python tools/voice_samples.py [--accent Spanish]` -> voice_samples/; bad ones into voices/blacklist.txt.
 Compare models: `python tools/compare_models.py [--only groq] [--runs N]` (scores the LLM-owned turns).

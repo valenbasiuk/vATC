@@ -65,14 +65,25 @@ _GENERIC = {"international", "intl", "airport", "aeropuerto", "aerodrome", "aer�
             "internacional", "aeroparque", "liberty", "intercontinental"}
 
 
+# Airports named after a person ("Suboficial Ay Santiago Germano", "Ingeniero Ambrosio Taravella", "Gobernador
+# Horacio Guzman"): controllers say the city ("San Rafael Tower", "Cordoba Tower").
+_PERSON_TITLES = {"suboficial", "comodoro", "brigadier", "general", "teniente", "capitan", "capitán", "coronel",
+                  "mayor", "sargento", "cabo", "almirante", "ingeniero", "ing", "doctor", "dr", "gobernador",
+                  "presidente", "aviador", "piloto", "ministro", "senador", "monseñor", "monsenor", "comandante",
+                  "vicecomodoro", "teniente-coronel", "cadete", "alférez", "alferez", "profesor", "intendente"}
+
+
 def spoken_name(name: str, municipality: str = "") -> str | None:
     """How controllers name the airport on the radio, guessed (hand-edit `spoken_name` if wrong):
     'London Heathrow Airport' (London) -> 'Heathrow', 'San Francisco International Airport' -> 'San Francisco',
-    'Metropolitan Oakland International Airport' (Oakland) -> 'Oakland', 'Chicago O'Hare ...' -> "O'Hare"."""
+    'Metropolitan Oakland International Airport' (Oakland) -> 'Oakland', 'Chicago O'Hare ...' -> "O'Hare",
+    'Suboficial Ay Santiago Germano Airport' (San Rafael) -> 'San Rafael'."""
     import re
 
     words = [w for w in re.split(r"[\s/–-]+", name) if w and w.lower().strip(".,()") not in _GENERIC]
     city = municipality.strip()
+    if city and words and words[0].lower().strip(".,()") in _PERSON_TITLES:
+        return city
     if city and city.lower() in " ".join(words).lower():
         rest = [w for w in words if w.lower() not in city.lower().split()]
         return rest[0] if len(rest) == 1 and not rest[0][0].isdigit() else city

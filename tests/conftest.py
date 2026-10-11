@@ -45,8 +45,14 @@ def _no_atis_question(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _offline_weather(monkeypatch):
-    """No METAR downloads in tests (tests seed atc.weather with weather.put when they need one)."""
+    """No METAR downloads in tests (tests seed atc.weather with weather.put when they need one), and a METAR one test
+    put in never reaches the next one."""
+    from atc import weather
+
     monkeypatch.setenv("ATC_METAR", "off")
+    weather._cache.clear()
+    yield
+    weather._cache.clear()
 
 
 @pytest.fixture(autouse=True)

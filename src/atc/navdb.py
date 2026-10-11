@@ -102,16 +102,30 @@ def enrich(airport: Airport, con: sqlite3.Connection | None = None) -> list[str]
             airport.mag_var_deg = round(float(row[0]), 1)
             added.append(f"magvar {airport.mag_var_deg}")
     approaches: dict[str, list[str]] = {}
+    missed: dict[str, dict[str, int]] = {}  # runway -> approach name -> missed approach altitude
     # "ILS Z" keeps its suffix (said "ILS Zulu"); GPS rows with suffix A / D are the STARs and SIDs, not approaches
-    for rwy, typ, suffix in con.execute("select runway_name, type, suffix from approach where airport_id=?", (aid,)):
+    for rwy, typ, suffix, missed_alt in con.execute(
+            "select runway_name, type, suffix, missed_altitude from approach where airport_id=?", (aid,)):
         if not rwy or not typ or (typ == "GPS" and suffix in ("A", "D")):
             continue
         name = f"{typ} {suffix}" if suffix else typ
         approaches.setdefault(str(rwy).zfill(2), [])
         if name not in approaches[str(rwy).zfill(2)]:
             approaches[str(rwy).zfill(2)].append(name)
+        if missed_alt:
+            missed.setdefault(str(rwy).zfill(2), {})[name] = int(missed_alt)
     if approaches and not airport.approaches:
         airport.approaches = approaches
+    for rwy, by_name in missed.items():  # the missed approach of the approach a controller would clear
+        if rwy in airport.missed_alt_ft:
+            continue
+        best = _best_approach(airport.approaches.get(rwy, []))
+        alt = by_name.get(best) if best else None
+        airport.missed_alt_ft[rwy] = alt or max(by_name.values())
+    if not airport.msa:
+        airport.msa = msa_records(airport.icao)
+        if airport.msa:
+            added.append(f"{len(airport.msa)} MSA")
     # Runway ends as the sim's scenery has them (in memory; the YAML is not rewritten). The YAML's come from
     # OurAirports and can be off: SABE's were 14 m east of the sim's runway and 830 ft too long, which put our own
     # traffic beside the centerline (2026-10-07). Missing ones (KSFO had none) get filled the same way.
@@ -257,17 +271,35 @@ _APPROACH_WORDS = {"ILS": "ILS", "LOC": "localizer", "RNAV": "RNAV", "GPS": "RNA
                    "VOR": "VOR", "NDBDME": "NDB DME", "NDB": "NDB"}
 
 
+_APPROACH_ORDER = ("ILS", "RNAV", "GPS", "LOC", "VORDME", "VOR", "NDBDME", "NDB")
+
+
+def _best_approach(kinds: list[str]) -> str | None:
+    """Of a runway's approaches ("ILS Z", "RNAV", "VORDME Z"...), the one a controller clears: ILS before RNAV
+    before ... and the plain one before Z, Y, X. Returns the name as listed, None if there is none."""
+    for want in _APPROACH_ORDER:
+        same = [k for k in kinds if k.split()[0] == want]
+        if same:
+            return min(same, key=lambda k: (len(k.split()) > 1, -ord(k.split()[1][0]) if len(k.split()) > 1 else 0))
+    return None
+
+
 def approach_type(airport: Airport, runway: str) -> str | None:
     """Best approach to that runway as a controller says it: 'ILS', else 'RNAV', 'VOR DME', ... None = unknown.
     With several of a kind the chart suffix is said: 'ILS Zulu' (the plain one first, then Z, Y, X...)."""
     want_key = runway.upper().lstrip("0")  # OurAirports says "1L", the sim "01L"
     kinds = next((v for k, v in airport.approaches.items() if k.upper().lstrip("0") == want_key), [])
-    for want in ("ILS", "RNAV", "GPS", "LOC", "VORDME", "VOR", "NDBDME", "NDB"):
-        suffixes = [k.split()[1] if len(k.split()) > 1 else "" for k in kinds if k.split()[0] == want]
-        if suffixes:
-            best = min(suffixes, key=lambda s: (s != "", -ord(s[0]) if s else 0))
-            return _APPROACH_WORDS[want] + (f" {phrase._NATO.get(best, best).title()}" if best else "")
-    return None
+    best = _best_approach(kinds)
+    if best is None:
+        return None
+    kind, *suffix = best.split()
+    return _APPROACH_WORDS[kind] + (f" {phrase._NATO.get(suffix[0], suffix[0]).title()}" if suffix else "")
+
+
+def missed_altitude(airport: Airport, runway: str) -> int | None:
+    """Missed approach altitude of the runway's instrument approach (sim db), None = unknown."""
+    want = runway.upper().lstrip("0")
+    return next((v for k, v in airport.missed_alt_ft.items() if k.upper().lstrip("0") == want), None)
 
 
 # --- taxi network ------------------------------------------------------------------------------------
@@ -411,3 +443,111 @@ def fir_at(lat: float, lon: float, alt_ft: float | None = None) -> tuple[str, fl
         return _fir_at(round(lat, 1), round(lon, 1), (alt_ft or 0) >= 24500)
     except sqlite3.Error:
         return None
+
+
+# --- minimum altitudes and holds near airports (Navigraph db: terrain doesn't move, AIRAC 1801 is fine) -------------
+
+def _msa_sectors(blob: bytes) -> list[list[float]]:
+    """airport_msa.geometry: big-endian int16 point count, that many float32 (lon, lat) pairs (the circle drawn on
+    the map), a byte with the sector count, then per sector float32 bearing (TO the centre, where the sector starts,
+    clockwise to the next), float32 altitude and two float32 points (label and boundary). Checked against SAMR's
+    SRA VOR: 4600 ft north-east over the plains, 8200 ft north-west toward the Andes."""
+    import struct
+
+    n = struct.unpack(">h", blob[:2])[0]
+    off = 2 + 8 * n
+    count = blob[off]
+    off += 1
+    out = []
+    for _ in range(count):
+        bearing, alt = struct.unpack(">ff", blob[off:off + 8])
+        out.append([round(bearing % 360.0, 1), int(round(alt))])
+        off += 24
+    return out
+
+
+def msa_records(icao: str) -> list[dict]:
+    """The airport's minimum sector altitudes (one per MSA centre: the airport itself and its navaids), as
+    Airport.msa wants them. Empty without the Navigraph database."""
+    path = navigraph_path()
+    con = _connect(str(path)) if path else None
+    if con is None:
+        return []
+    out = []
+    try:
+        rows = con.execute("select nav_ident, true_bearing, mag_var, radius, laty, lonx, geometry from airport_msa "
+                           "where airport_ident = ?", (icao.upper(),)).fetchall()
+    except sqlite3.Error:
+        return []
+    for ident, true_bearing, var, radius, lat, lon, geom in rows:
+        try:
+            sectors = _msa_sectors(geom) if geom else []
+        except Exception:  # noqa: BLE001 - a broken record (struct.error, IndexError): skip it
+            continue
+        if sectors:
+            out.append({"name": ident, "lat": round(lat, 6), "lon": round(lon, 6), "radius_nm": radius or 25.0,
+                        "mag_var": 0.0 if true_bearing else round(var or 0.0, 1), "sectors": sectors})
+    import re
+
+    # RNAV approaches carry an MSA around their runway threshold (KSFO 19R: 5100 all round); with the airport's or
+    # a navaid's sectors on file those are what a controller works with
+    named = [m for m in out if not re.fullmatch(r"\d{2}[LRC]?", str(m["name"]))]
+    return named or out
+
+
+@lru_cache(maxsize=1)
+def _mora_grid() -> tuple[int, int, tuple[int, ...]] | None:
+    path = navigraph_path()
+    con = _connect(str(path)) if path else None
+    if con is None:
+        return None
+    import struct
+
+    try:
+        row = con.execute("select lonx_columns, laty_rows, geometry from mora_grid").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or not row[2]:
+        return None
+    cols, rows, blob = row
+    return cols, rows, struct.unpack(f">{cols * rows}H", blob[8:8 + 2 * cols * rows])
+
+
+def mora_ft(lat: float, lon: float) -> int | None:
+    """Grid MORA of the 1 x 1 degree cell (big-endian hundreds of feet, row 0 = 89-90 N, column 0 = 180-179 W:
+    Everest's cell 31400, Aconcagua's 25100, open sea 1000). Coarse near mountains (21000 ft next to San Rafael), so
+    only used to keep area control from descending over high ground. None without the database."""
+    import math
+
+    grid = _mora_grid()
+    if grid is None:
+        return None
+    cols, rows, vals = grid
+    r, c = int(math.floor(90.0 - lat)), int(math.floor(lon + 180.0))
+    if not (0 <= r < rows and 0 <= c < cols):
+        return None
+    v = vals[r * cols + c]
+    return v * 100 if 0 < v < 900 else None
+
+
+def holds_near(lat: float, lon: float, within_nm: float) -> list[dict]:
+    """Published holds within `within_nm` of a point: {"ident", "lat", "lon", "course" (inbound, magnetic),
+    "turn" ("L"/"R"), "min_alt", "max_alt"}, nearest first. Empty without the Navigraph database."""
+    path = navigraph_path()
+    con = _connect(str(path)) if path else None
+    if con is None:
+        return []
+    s, n, w, e = _box(lat, lon, within_nm)
+    try:
+        rows = con.execute("select nav_ident, laty, lonx, course, turn_direction, minimum_altitude, maximum_altitude "
+                           "from holding where laty between ? and ? and lonx between ? and ?", (s, n, w, e)).fetchall()
+    except sqlite3.Error:
+        return []
+    out = []
+    for ident, la, lo, course, turn, lo_alt, hi_alt in rows:
+        d = distance_nm(lat, lon, la, lo)
+        if d <= within_nm and ident and course is not None:
+            out.append((d, {"ident": ident.upper(), "lat": la, "lon": lo, "course": float(course), "turn": turn or "R",
+                            "min_alt": int(lo_alt) if lo_alt else None,
+                            "max_alt": int(hi_alt) if hi_alt and hi_alt < 60000 else None}))
+    return [h for _, h in sorted(out, key=lambda x: x[0])]

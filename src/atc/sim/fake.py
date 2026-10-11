@@ -25,6 +25,7 @@ class FakeSim:
         )
         self._traffic: list[Traffic] = []
         self._scripts: list = []  # moving AI (spawn_departure / spawn_arrival)
+        self._cruise: dict | None = None  # /fly: the own aircraft flies straight on (heading, speed, time rate)
 
     # --- SimSource ---
     def own(self) -> OwnState:
@@ -48,6 +49,17 @@ class FakeSim:
 
     def clear_traffic(self) -> None:
         self._traffic.clear()
+
+    def fly(self, lat: float, lon: float, alt_ft: float, heading: float, gs_kt: float = 450.0,
+            rate: float = 1.0) -> None:
+        """In the air anywhere, flying straight on at `gs_kt` (times `rate`): Center sectors and handoffs without
+        MSFS. step() moves it."""
+        self.update(lat=lat, lon=lon, alt_msl_ft=alt_ft, alt_agl_ft=alt_ft, heading_deg=heading % 360.0,
+                    gs_kt=gs_kt, on_ground=False)
+        self._cruise = {"at": None, "rate": rate}
+
+    def stop_flying(self) -> None:
+        self._cruise = None
 
     def set_airborne(self, agl_ft: float = 1000.0, gs_kt: float = 90.0) -> None:
         self.update(
@@ -134,8 +146,19 @@ class FakeSim:
             self._airport, self._own.wind_dir_deg, self._own.wind_kt, use=use)
 
     def step(self, now: float) -> None:
-        """Move the scripted AI aircraft to where they are at time `now` (seconds, any clock)."""
+        """Move the scripted AI aircraft to where they are at time `now` (seconds, any clock), and the own aircraft
+        when it flies on its own (/fly)."""
         from atc.sequence import threshold
+
+        if self._cruise is not None:
+            last, self._cruise["at"] = self._cruise["at"], now
+            if last is not None and now > last:
+                from atc.geo import destination
+
+                o = self._own
+                nm = o.gs_kt * (now - last) / 3600.0 * self._cruise["rate"]
+                lat, lon = destination(o.lat, o.lon, o.heading_deg, nm)
+                self._own = replace(o, lat=lat, lon=lon)
 
         keep = []
         for kind, cs, rwy, start, info in self._scripts:

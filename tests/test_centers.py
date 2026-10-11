@@ -70,3 +70,17 @@ def test_world_control_uses_the_sector_under_the_aircraft(data):
     assert world.pick(tuned)[0] is a  # tuned, it answers
     low = OwnState(-27.6, -58.7, 9000, 8800, 300, 10, False, 118.3)
     assert world.control(low, sarc)[1].freq.mhz == 124.3
+
+
+def test_the_next_sector_ahead_and_flying_there_in_the_fake_sim(data):
+    from atc.sim.fake import FakeSim
+
+    nxt = centers.ahead(-30.0, -58.5, 10000, 0.0)  # north from below Resistencia's box
+    assert nxt is not None and nxt[0].callsign == "Resistencia Control" and 55 <= nxt[1] <= 62
+    sarc = Airport("SARC", "Corrientes", -27.4455, -58.7619, 202, country="AR", towered=True,
+                   runways=[Runway("02", 8.0, 6890)], frequencies=[Frequency("TWR", 118.3)])
+    sim = FakeSim(sarc)
+    sim.fly(-30.0, -58.5, 10000, 0.0, 480.0, rate=10.0)
+    sim.step(0.0)
+    sim.step(30.0)  # 30 s at 480 kt x10 = 40 NM north
+    assert abs(sim.own().lat - (-30.0 + 40 / 60)) < 0.01 and not sim.own().on_ground

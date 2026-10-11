@@ -108,6 +108,15 @@ class Airport:
     # Hand field: who clears runway crossings: "ground", "tower", or None / "auto" = Ground in good visibility,
     # Tower when it is reduced (visibility < 5 km or ceiling < 1500 ft; Valen, 2026-10-07).
     crossings_by: str | None = None
+    # Minimum sector altitudes (terrain.py): one entry per MSA circle, {"lat", "lon", "radius_nm", "mag_var",
+    # "sectors": [[magnetic bearing TO the centre where the sector starts, altitude ft], ...]} (clockwise to the next
+    # start). Hand field, else filled from the Navigraph database (navdb.enrich). Empty = unknown.
+    msa: list[dict] = field(default_factory=list)
+    # runway ident -> missed approach altitude of its instrument approach (sim db; SABE 13: 3000 ft)
+    missed_alt_ft: dict[str, int] = field(default_factory=dict)
+    # Hand field: closures (NOTAM-lite, improvement plan G4): ["runway 13/31", "taxiway E", "taxiway A between B and
+    # C"...] with an optional " until 1800" (UTC). Routes avoid them; a closed runway is never the runway in use.
+    closed: list[str] = field(default_factory=list)
 
     @property
     def faa(self) -> bool:

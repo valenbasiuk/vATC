@@ -450,8 +450,14 @@ class App(tk.Tk):
             self.station.config(text=f"{st['name']}  ({data['com1']:.3f})" if st else f"COM1 {data['com1']:.3f}: nobody")
             apt = data.get("airport") or {}
             wx = "  sim weather" if data.get("sim_weather") else ""
+            c = data.get("center")
+            ctr = ""
+            if c:
+                ctr = f"\nCenter: {c['name']} {c['mhz']:.3f}"
+                if c.get("next"):
+                    ctr += f"   next: {c['next']['name']} {c['next']['mhz']:.3f} in {c['next']['nm']} NM"
             self.where.config(text=f"{apt.get('icao', '')} {apt.get('name', '')}   runway {data.get('runway') or '-'}"
-                                   f"   {data['callsign']}{wx}")
+                                   f"   {data['callsign']}{wx}{ctr}")
             self.freqs.delete(0, "end")
             for fr in apt.get("frequencies", []):
                 mark = "<" if abs(fr["mhz"] - data["com1"]) < 0.005 else " "

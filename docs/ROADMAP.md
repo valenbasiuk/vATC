@@ -34,6 +34,20 @@ below. The rest, in this order (codes as in docs/IMPROVEMENT_PLAN.md):
    - J1 voice comparison tool (Piper high voices downloaded / Kokoro / Edge neural) -> pick.
    - J2 Spanish ATC (Spanish speech model, phraseology tables, es_AR daniela voice: downloaded).
 
+## WATCH IN THE SIM 2026-10-08, parked aircraft at the start
+- Own traffic now starts with up to 6 departures parked at their gates (ATC_OWN_APRON=0..N), leaving one every
+  75-330 s (the first within ~2 min), on top of the usual arrivals and departures; they don't count toward the alive cap.
+  Simulated 8 x 45 min at SABE: no two on a runway, about one "passes ... (deadlock)" per 70 min (nose to nose on a
+  taxiway): tell me if you see it.
+
+## WATCH IN THE SIM 2026-10-08, taxi names and airborne tests
+- Ground names taxiways the default scenery leaves unnamed (from OSM): SGAS now B..N, SBGR Y4/Y6/Y7, SBGL Y lanes.
+  A wrong name in a taxi clearance = an OSM line matched to the wrong sim segment: tell me the airport and route.
+- SBFI: departures to 15 enter via Alfa and backtrack (no holding point near the 15 end in the sim's scenery).
+- Stands are the sim scenery's numbers (what MSFS lists when you pick a parking spot); default sceneries number
+  differently from the real charts (SBFI, SAEZ, SBGR remote stands). An add-on scenery with real numbers fixes it.
+- `/center` and the launcher's "Center: ... next: ..." line: tune it after an airborne start, then call.
+
 ## WATCH IN THE SIM 2026-10-08, world Centers and nine airports (fake sim + tests; 302 tests)
 - Center handoffs now follow the real sector under you (data/centers.json): more frequency changes than before
   (Polaris splits, Brazil's sectors, "Baires Control" before "Ezeiza Control" out of SABE). Too many? Wrong name?

@@ -21,6 +21,9 @@ def airport_to_dict(a: Airport) -> dict:
         d.pop("approaches", None)
     if not d.get("runway_configs"):
         d.pop("runway_configs", None)
+    for key in ("msa", "missed_alt_ft", "closed"):  # hand fields or filled from the sim's data at load time
+        if not d.get(key):
+            d.pop(key, None)
     d["frequencies"] = [{k: v for k, v in f.items() if not (k == "spoken" and v is None)} for f in d["frequencies"]]
     return d
 
@@ -64,6 +67,10 @@ def load_airport(path: Path) -> Airport:
                         for c in (raw.get("runway_configs") or [])],
         traffic_per_hour=float(raw["traffic_per_hour"]) if raw.get("traffic_per_hour") is not None else None,
         crossings_by=str(raw["crossings_by"]).lower() if raw.get("crossings_by") else None,
+        msa=[dict(m) for m in (raw.get("msa") or [])],
+        missed_alt_ft={str(k).zfill(2) if str(k).isdigit() else str(k): int(v)
+                       for k, v in (raw.get("missed_alt_ft") or {}).items()},
+        closed=[str(c) for c in (raw.get("closed") or [])],
     )
 
 

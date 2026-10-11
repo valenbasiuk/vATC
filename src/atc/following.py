@@ -85,6 +85,11 @@ def watcher_event(session, world, own: OwnState) -> str | None:
     if near is None or distance_nm(own.lat, own.lon, near.lat, near.lon) > TERMINATE_NM \
             or own.alt_agl_ft > TERMINATE_AGL_FT or near.icao == session.departed_from and own.alt_agl_ft > 1500:
         return None
+    return terminate(session, near)
+
+
+def terminate(session, near: Airport) -> str:
+    """The end of the service near `near`: its Tower takes the flight, else "radar service terminated"."""
     session.following = False
     cs = session.spoken_callsign
     from atc.flow import _contact

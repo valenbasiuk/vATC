@@ -86,8 +86,15 @@ def test_tower_orders_a_go_around_when_the_runway_is_occupied():
     r = cb.tick(now=100)
     assert r == f"{CS}, go around, I say again, go around, Airbus three twenty on the runway."
     assert not s.intercept_given and "SAAR:tower" not in s.handoffs_done  # the arrival is flown again
-    # the pilot reads it back: the missed approach instruction (Rosario Tower does the approach work itself)
+    # the pilot reads it back: the missed approach instruction (Rosario Tower does the approach work itself; no
+    # instrument approach on file in the test YAML: straight ahead to the arrival altitude)
     sim.update(alt_msl_ft=1500, alt_agl_ft=1420)
+    r = handle(saar, sim, None, _Quiet(), [(None, r)], "Going around, Martinair 4133", session=s, world=world)
+    assert r == f"{CS}, roger, climb straight ahead to three thousand feet, expect vectors for another approach."
+    assert s.cleared_level_ft == 3000
+    # with the sim's approaches (ILS 02, missed approach 3000 ft): the published missed approach
+    saar.approaches, saar.missed_alt_ft = {"02": ["ILS"]}, {"02": 3000}
+    s.go_around_at = None
     r = handle(saar, sim, None, _Quiet(), [(None, r)], "Going around, Martinair 4133", session=s, world=world)
     assert r == f"{CS}, roger, follow the published missed approach procedure, expect vectors for another approach."
 

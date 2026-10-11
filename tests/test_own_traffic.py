@@ -511,3 +511,16 @@ def test_lights_go_out_as_events_and_as_simvars_and_the_battery_comes_on_first()
     inj.objs["ARG1"].lights_at -= 6.0
     inj.lights("ARG1", nav=True, beacon=True, strobe=False, landing=False, taxi=True)
     assert [k for k, *_ in sent] == ["data"]  # written again in case the sim reset them
+
+
+def test_the_apron_has_parked_aircraft_at_the_start_that_leave_one_by_one():
+    """Valen 2026-10-08: with 20 movements an hour and nothing parked at the start, the field looked empty."""
+    mgr = _mgr()
+    mgr.user = _user()
+    mgr.next_spawn = None
+    mgr._populate_apron(APT, 0.0, 20.0)
+    parked = [p for p in mgr.pilots.values() if p.state == "parked"]
+    assert 1 <= len(parked) <= OwnTraffic.APRON_MAX  # the made-up field has one stand
+    times = sorted(p.push_at for p in parked)
+    assert 40.0 <= times[0] <= 120.0 and all(b - a >= 75.0 for a, b in zip(times, times[1:]))
+    assert mgr._active() == 0  # waiting parked doesn't use up the alive cap

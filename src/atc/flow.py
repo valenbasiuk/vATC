@@ -165,11 +165,13 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         if not dest_app and d_dest <= ARRIVAL_APP_NM:  # no Approach on file: Tower does the approach work
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
         return None
-    # destination Approach -> Tower, once established on final (or close in and low)
+    # destination Approach -> Tower, once established on final (or close in and low, cleared for the approach: not
+    # while climbing out after a missed approach, that one is being vectored again)
     if fac.role == "approach":
         rwy = session_runway(dest, own.wind_dir_deg, own.wind_kt, session, "arrival")
         established = rwy is not None and final_distance(dest, rwy, own) is not None
-        if established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000):
+        vectoring = session.missed_approach or (session.vectors_given and not session.intercept_given)
+        if not vectoring and (established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000)):
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
     return None
 
@@ -570,7 +572,7 @@ def runway_request(session, world, airport: Airport, facility: Facility, own: Ow
         return None
     if use == "arrival" and facility.role != "tower":
         if changed and not session.landing_cleared:  # new runway: vectors and the approach clearance again
-            session.vectors_given = session.intercept_given = False
+            session.vectors_given = session.intercept_given = session.base_given = False
         from atc.enroute import _approach
 
         return reply(f"expect {_approach(airport, rwy)}")

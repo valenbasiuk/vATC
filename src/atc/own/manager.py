@@ -131,7 +131,7 @@ class OwnTraffic:
         return Flight(dep.callsign, title or "", dep.type_icao, dep.airline or None), title
 
     def spawn_departure(self, airport: Airport, now: float | None = None, dep: schedule.Departure | None = None,
-                        ga: bool = False, taxiing: float | None = None) -> str:
+                        ga: bool = False, taxiing: float | None = None, push_after: float | None = None) -> str:
         """`taxiing` (warm start): already taxiing out, that share of the way to the holding point (1.0 = at it)."""
         from atc.runway import runway_in_use
 
@@ -155,7 +155,8 @@ class OwnTraffic:
         paths = departure_paths(net, airport, rwy, stand)
         if paths is None:
             return f"no taxi route from stand {stand.ref} to runway {rwy.ident}"
-        pilot = DeparturePilot(flight, airport, paths, p, now, push_after_s=self.rng.uniform(20.0, 50.0))
+        pilot = DeparturePilot(flight, airport, paths, p, now,
+                               push_after_s=push_after if push_after is not None else self.rng.uniform(20.0, 50.0))
         where = f"at stand {stand.ref}"
         if taxiing is not None:
             taken = self._taken(airport)
@@ -340,6 +341,10 @@ class OwnTraffic:
                                  landing=airborne or s == "rollout", strobe=airborne or s == "rollout",
                                  taxi=s in ("vacating", "taxiing_in"))
 
+    def _active(self) -> int:
+        """Aircraft doing something: the ones waiting parked for a departure time don't count toward the cap."""
+        return sum(1 for p in self.pilots.values() if not (isinstance(p, DeparturePilot) and p.state == "parked"))
+
     def _max_alive(self, rate: float) -> int:
         if self.max_alive_fixed is not None:
             return self.max_alive_fixed
@@ -356,7 +361,7 @@ class OwnTraffic:
             self.next_spawn = now + 8.0
             if rate > 0:
                 self._warm_start(apt, now, rate)
-        if now < self.next_spawn or len(self.pilots) >= self._max_alive(rate) or rate <= 0:
+        if now < self.next_spawn or self._active() >= self._max_alive(rate) or rate <= 0:
             return
         self.next_spawn = now + self.rng.expovariate(rate / 3600.0)
         scheduled = schedule._todays_cached(apt.icao, self.community)
@@ -371,10 +376,31 @@ class OwnTraffic:
             if msg == "no free stand":
                 self.spawn_arrival(apt, now, ga=ga)
 
+    APRON_SHARE = 0.25  # of the stands filled at the start (more at busy fields), at most APRON_MAX aircraft
+    APRON_MAX = int(__import__("os").environ.get("ATC_OWN_APRON", "6"))  # 0 = nobody parked at the start
+
+    def _populate_apron(self, apt: Airport, now: float, rate: float) -> None:
+        """Aircraft already parked when vATC starts (Valen 2026-10-08: the apron was empty): departures waiting at their
+        gates, leaving one by one over the next hour (the first within a minute or two), so there are always some
+        parked and the next ones keep coming out. They don't count toward the alive cap."""
+        net = self.world.taxi.get(apt.icao)
+        if net is None:
+            return
+        n = min(self.APRON_MAX, max(2, round(len(stands(apt.icao, net)) * self.APRON_SHARE * min(1.0, rate / 12.0))))
+        scheduled = schedule._todays_cached(apt.icao, self.community)
+        gaps, at = [], self.rng.uniform(40.0, 120.0)  # one leaves every 75-330 s, never two together
+        for _ in range(n):
+            gaps.append(at)
+            at += self.rng.uniform(75.0, 330.0)
+        for after in gaps:
+            ga = not scheduled or self.rng.random() < schedule.GA_SHARE
+            self.spawn_departure(apt, now, ga=ga, push_after=after)
+
     def _warm_start(self, apt: Airport, now: float, rate: float) -> None:
         """Traffic already moving when vATC starts (Valen 2026-10-08: not everybody parked): now and then one on
         final and one taxiing out or at the holding point, more likely the busier the field."""
         busy = min(1.0, rate / 20.0)
+        self._populate_apron(apt, now, rate)
         scheduled = schedule._todays_cached(apt.icao, self.community)
         if self.rng.random() < WARM_ARRIVAL * busy:
             ga = not scheduled or self.rng.random() < schedule.GA_SHARE
@@ -513,6 +539,14 @@ class OwnTraffic:
             if q is p or not isinstance(q, DeparturePilot) or not same_strip(q.paths.runway.ident, c.ident):
                 continue
             if q.state in ("takeoff_radio", "lining_up", "lined_up") or (q.state == "takeoff" and q.pose.on_ground):
+                return
+        for q in self.pilots.values():  # one of ours already crossing it (cleared, not yet clear on the far side)
+            if q is p or q.mover is None:
+                continue
+            if q.state == "cross_radio" and q.next_crossing is not None and same_strip(q.next_crossing.ident, c.ident):
+                return  # cleared a moment ago, still on the radio: it goes first
+            if any(x.cleared and same_strip(x.ident, c.ident) and q.mover.s < x.s_clear + 5.0
+                   and q.mover.s > x.s_hold - 5.0 for x in q.crossings):
                 return
         rw = phrase.runway(c.ident, a.faa)
         from atc.taxi import crossing_by_tower

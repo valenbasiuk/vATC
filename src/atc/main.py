@@ -135,6 +135,7 @@ def handle(
         _say_timed(speaker, reply, stt_s, llm_s, _atc_voice(speaker, airport, facility.role))
         return reply
 
+    traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
     reply = None
     if session.names_other_flight(pilot_text):  # misheard or wrong callsign: never answer it as ours
         reply = f"Station calling {station}, say again your callsign."
@@ -146,6 +147,10 @@ def handle(
         reply = flow.frequency_request(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "request own navigation" / "full procedure" / "RNAV via DOKMU": no vectors
         reply = enroute.own_nav_request(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "request visual approach" / "field in sight": cleared visual approach (or report it in sight)
+        reply = enroute.visual_request(session, world, airport, facility, own, pilot_text, traffic)
+    if reply is None:  # "request deviation twenty degrees left due weather" / "back on track"
+        reply = enroute.deviation_request(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "request runway 13" / "request ILS 13": approved (then used everywhere) or unable
         reply = flow.runway_request(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "request hold at DOTNE" / "request approach" out of the hold
@@ -177,7 +182,6 @@ def handle(
             and session.last_role == session._key(facility.role):
         # "say again": the last transmission of this position, word for word (never the model's paraphrase)
         reply = f"{cs}, I say again, {_instruction(history[-1][1], cs, station)}"
-    traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
     if reply is None:  # VFR circuit, before the readback check ("left downwind 31" repeats Tower's own words)
         reply = pattern.handle(session, airport, facility, own, pilot_text, traffic, preferred, world)
     if reply is None:  # "affirm" / "negative" to "advise able to depart from intersection ..." (not a readback)
@@ -415,8 +419,9 @@ class _Callbacks:
             if text is None and self.session.pending_handoff is None:  # level bust, 7700, go-around
                 text = monitor.radar_event(self.session, self.world, own,
                                            self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM), now)
-            if text is None and self.session.pending_handoff is None:  # out of the hold at the EFC time
-                text = holding.watcher_event(self.session, self.world, own, now)
+            if text is None and self.session.pending_handoff is None:
+                # out of the hold at the expected time / once the sequence thins out; the hold when it is full
+                text = holding.watcher_event(self.session, self.world, own, now, self._dest_traffic(own))
             if text is None and self.session.pending_handoff is None:  # VFR flight following ends near the field
                 text = following.watcher_event(self.session, self.world, own)
             if text is None and self.session.pending_handoff is None:  # progressive taxi: the next turn
@@ -441,6 +446,14 @@ class _Callbacks:
             if not self._chatter(own, now):
                 self._atis(own, now)
             return None
+
+    def _dest_traffic(self, own) -> list | None:
+        """Traffic around the destination when the user is inbound to it (the arrival sequence), else None."""
+        plan = self.session.plan
+        dest = self.world.get(plan.destination) if plan is not None else None
+        if dest is None or own.on_ground or distance_nm(own.lat, own.lon, dest.lat, dest.lon) > 45.0:
+            return None
+        return self.sim.traffic(dest.lat, dest.lon, 25.0)
 
     def _atis_clock(self, own, now: float) -> str | None:
         """Improvement plan A1/A2: rebuild the ATIS of the airports in play once a minute, so its letter changes
@@ -631,6 +644,20 @@ def _repl_command(cmd: str, sim, world: World | None = None) -> bool:
         return False
     if name == "/state":
         print(sim.own())
+    elif name == "/center":  # which Center you are in and the next one ahead (data/centers.json)
+        print(center_line(sim.own()))
+    elif name == "/fly" and hasattr(sim, "fly"):
+        # "/fly LAT LON ALT HDG [GS] [xRATE]": in the air there, flying straight on; "/fly stop"
+        try:
+            if len(parts) == 2 and parts[1] == "stop":
+                sim.stop_flying()
+            else:
+                rate = float(parts[-1][1:]) if parts[-1].lower().startswith("x") else 1.0
+                nums = [float(x) for x in parts[1:] if not x.lower().startswith("x")]
+                sim.fly(nums[0], nums[1], nums[2], nums[3], nums[4] if len(nums) > 4 else 450.0, rate)
+                print(center_line(sim.own()))
+        except (ValueError, IndexError):
+            print("usage: /fly LAT LON ALT_FT HEADING [GS_KT] [xRATE]   e.g. /fly -27.4 -58.7 35000 20 450 x10")
     elif name == "/near" and len(parts) in (3, 4) and world is not None and hasattr(sim, "place_on_final"):
         target = world.get(parts[1])
         if target is None:
@@ -915,6 +942,20 @@ def _start_stdin(world, sim, llm, speaker, history, session, cb, own_mgr) -> Non
 STATUS_EVERY_S = 1.5
 
 
+def center_line(own) -> str:
+    """'Center: Asuncion Control 128.400 | next: Resistencia Control 124.300 in 34 NM' (data/centers.json)."""
+    from atc import centers
+
+    if not centers.available():
+        return "[no data/centers.json: run python tools/build_centers.py]"
+    here = centers.sector_at(own.lat, own.lon, own.alt_msl_ft)
+    nxt = centers.ahead(own.lat, own.lon, own.alt_msl_ft, own.heading_deg)
+    text = f"Center: {here.callsign} {here.mhz:.3f}" if here else "Center: none here"
+    if nxt is not None:
+        text += f" | next: {nxt[0].callsign} {nxt[0].mhz:.3f} in {nxt[1]:.0f} NM"
+    return text
+
+
 def status_snapshot(world, sim, session, own_mgr=None) -> dict:
     """What the launcher's live panel shows: where you are, who you talk to, the ATIS, our traffic."""
     from atc import own as own_traffic
@@ -940,6 +981,17 @@ def status_snapshot(world, sim, session, own_mgr=None) -> dict:
             except Exception:  # noqa: BLE001 - weather not there yet
                 pass
         out["sim_weather"] = atis.SIM_WX.get(near.icao, False)
+    try:
+        from atc import centers
+
+        here = centers.sector_at(own.lat, own.lon, own.alt_msl_ft)
+        if here is not None:
+            out["center"] = {"name": here.callsign, "mhz": here.mhz}
+            nxt = centers.ahead(own.lat, own.lon, own.alt_msl_ft, own.heading_deg) if not own.on_ground else None
+            if nxt is not None:
+                out["center"]["next"] = {"name": nxt[0].callsign, "mhz": nxt[0].mhz, "nm": round(nxt[1])}
+    except Exception:  # noqa: BLE001 - the panel never stops over this
+        pass
     if own_mgr is not None:
         out["own"] = [{"callsign": p.flight.callsign, "type": p.flight.type_icao, "kind": p.kind, "state": p.state}
                       for p in list(own_mgr.pilots.values())]

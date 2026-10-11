@@ -132,8 +132,87 @@ def load_network(airports_dir: Path, icao: str, use_navdb: bool = True) -> TaxiN
             continue
         if net is not None and net.edges:
             net.source = source
+            if source != "OpenStreetMap" and osm.exists():
+                try:
+                    n = fill_names(net, load_osm(osm))
+                except (KeyError, ValueError, TypeError):
+                    n = 0
+                if n:
+                    net.source += f" + {n} taxiway names from OpenStreetMap"
             return net
     return None
+
+
+FILL_MAX_M = 22.0  # an unnamed sim segment this close to a named OSM taxiway (both ends and middle) ...
+FILL_MAX_DEG = 25.0  # ... and running along it takes its name
+
+
+def fill_names(net: TaxiNetwork, osm: TaxiNetwork) -> int:
+    """Names for the sim map's unnamed segments from OpenStreetMap: the sim's default scenery often leaves real
+    taxiways unnamed (SBFI: D, E, F; SGAS: all but A; 2026-10-08 check against the AD charts), OSM usually has them.
+    The sim's geometry stays (it is what the aircraft drive on); names it has are never changed. Returns how many
+    segments got a name."""
+    import math
+
+    if not net.nodes or not osm.nodes:
+        return 0
+    lat0, lon0 = next(iter(net.nodes.values()))
+    kx = math.cos(math.radians(lat0)) * 111_320.0
+
+    def xy(p):
+        return ((p[1] - lon0) * kx, (p[0] - lat0) * 111_320.0)
+
+    cell = 50.0
+    grid: dict[tuple[int, int], list] = {}
+    for a, edges in osm.edges.items():
+        for b, _, name in edges:
+            if not name or a > b:
+                continue
+            pa, pb = xy(osm.nodes[a]), xy(osm.nodes[b])
+            seg = (pa, pb, name)
+            for cx in range(int(min(pa[0], pb[0]) // cell) - 1, int(max(pa[0], pb[0]) // cell) + 2):
+                for cy in range(int(min(pa[1], pb[1]) // cell) - 1, int(max(pa[1], pb[1]) // cell) + 2):
+                    grid.setdefault((cx, cy), []).append(seg)
+
+    def dist(p, seg) -> float:
+        (ax, ay), (bx, by), _ = seg
+        dx, dy = bx - ax, by - ay
+        k = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(ax + k * dx - p[0], ay + k * dy - p[1])
+
+    def near(p):
+        return grid.get((int(p[0] // cell), int(p[1] // cell)), [])
+
+    named: dict[tuple[int, int], str] = {}
+    for a, edges in net.edges.items():
+        for b, _, name in edges:
+            if name or (b, a) in named or (a, b) in named:
+                continue
+            pa, pb = xy(net.nodes[a]), xy(net.nodes[b])
+            mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
+            if math.hypot(pb[0] - pa[0], pb[1] - pa[1]) < 1.0:
+                continue
+            heading = math.degrees(math.atan2(pb[0] - pa[0], pb[1] - pa[1]))
+            best = None
+            for seg in near(mid):
+                d_mid = dist(mid, seg)
+                if d_mid > FILL_MAX_M:
+                    continue
+                (ax, ay), (bx, by), nm = seg
+                h2 = math.degrees(math.atan2(bx - ax, by - ay))
+                if abs((heading - h2 + 90.0) % 180.0 - 90.0) > FILL_MAX_DEG:
+                    continue
+                same = [s for s in near(pa) + near(pb) + near(mid) if s[2] == nm]
+                if min(dist(pa, s) for s in same) > FILL_MAX_M or min(dist(pb, s) for s in same) > FILL_MAX_M:
+                    continue
+                if best is None or d_mid < best[0]:
+                    best = (d_mid, nm)
+            if best is not None:
+                named[(a, b)] = best[1]
+    for (a, b), nm in named.items():
+        net.edges[a] = [(t, m, nm if t == b and n is None else n) for t, m, n in net.edges[a]]
+        net.edges[b] = [(t, m, nm if t == a and n is None else n) for t, m, n in net.edges[b]]
+    return len(named)
 
 
 def route(net: TaxiNetwork, start: int, goals: set[int]) -> list[str | None] | None:
@@ -158,7 +237,8 @@ def route_path(net: TaxiNetwork, start: int, goals: set[int]) -> tuple[list[str 
             while state is not None:
                 nodes.append(state[0])
                 state = parent[state]
-            return list(names), nodes[::-1]
+            nodes = nodes[::-1]
+            return _clean_names(net, nodes) or list(names), nodes
         for to, m, ename in net.edges.get(node, ()):
             change = ename is not None and name is not None and ename != name
             nxt_name = ename if ename is not None else name
@@ -171,6 +251,31 @@ def route_path(net: TaxiNetwork, start: int, goals: set[int]) -> tuple[list[str 
     return None
 
 
+SHORT_RUN_M = 60.0  # a taxiway followed for less than this between two stretches of another one isn't named
+
+
+def _clean_names(net: TaxiNetwork, nodes: list[int]) -> list[str]:
+    """The taxiways of a path in order, without a few metres of a crossing taxiway between two stretches of the
+    same one ("Yankee two, Yankee four, Yankee two" at SBGL -> "Yankee two")."""
+    runs: list[list] = []  # [name, metres]
+    for a, b in zip(nodes, nodes[1:]):
+        hit = next(((m, n) for to, m, n in net.edges.get(a, ()) if to == b), (0.0, None))
+        m, name = hit
+        if name is None or (runs and runs[-1][0] == name):
+            if runs:
+                runs[-1][1] += m
+            continue
+        runs.append([name, m])
+    i = 1
+    while i < len(runs) - 1:
+        if runs[i][1] < SHORT_RUN_M and runs[i - 1][0] == runs[i + 1][0]:
+            runs[i - 1][1] += runs[i][1] + runs[i + 1][1]
+            del runs[i:i + 2]
+        else:
+            i += 1
+    return [r[0] for r in runs]
+
+
 def _holding_points(net: TaxiNetwork, airport: Airport, rwy: Runway, side: float | None = None) -> set[int]:
     """Runway holding point(s) at the departure end of `rwy`; falls back to any holding point near it.
     `side` (signed NM off the centerline of where the aircraft starts): holding points on that side of the runway
@@ -181,6 +286,11 @@ def _holding_points(net: TaxiNetwork, airport: Airport, rwy: Runway, side: float
         along, cross = _signed(airport, rwy, *net.nodes[node])
         if -0.3 <= along <= min(0.5, length / 2) and abs(cross) <= 0.15:
             cands.append((side is not None and cross * side < 0, kind != "runway", abs(along), node))
+    if not cands:  # none near the threshold (SBFI 15: the first taxiway joins 1 km in, then a backtrack): the
+        for node, kind in net.holds:  # runway holding point nearest the threshold, anywhere along the runway
+            along, cross = _signed(airport, rwy, *net.nodes[node])
+            if 0.0 <= along <= length and abs(cross) <= 0.15 and kind == "runway":
+                cands.append((side is not None and cross * side < 0, False, abs(along), node))
     if not cands:  # no holding point mapped: the taxiway node next to the runway closest to the threshold
         near = []
         for node, (lat, lon) in net.nodes.items():

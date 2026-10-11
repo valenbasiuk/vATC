@@ -1,10 +1,14 @@
 """Radar controller work done in code (roadmap 9c, second slice), from the SimBrief navlog and telemetry:
 
 - pilot requests: "request direct ATOVO" (only fixes of the filed route still ahead), "request higher / FL200",
-  "request descent", "request vectors";
+  "request descent", "request vectors", "request visual approach" / "field in sight" (improvement plan C1),
+  "request deviation twenty degrees left" (D1);
 - controller-initiated, from the watcher (`arrival_event`): descent at the planned top of descent, vectors to a
-  point on the extended centerline, the turn to intercept + approach clearance, landing clearance on final,
-  "welcome to Rosario, vacate via ..." when slowing on the runway.
+  point on the extended centerline (a downwind and a base turn when the aircraft comes from the wrong side, as after
+  a missed approach), the turn to intercept + approach clearance, landing clearance on final, "welcome to Rosario,
+  vacate via ..." when slowing on the runway.
+- never below the minimum sector altitude (terrain.py, C4): the arrival altitude is raised to the MSA over the way to
+  the intercept point, which then moves out to where the glide path is at that height.
 
 Headings are said magnetic when the airport's `mag_var_deg` is known (true otherwise, like the sim gives them).
 """
@@ -14,7 +18,7 @@ from __future__ import annotations
 import math
 import re
 
-from atc import phrase
+from atc import phrase, terrain
 from atc.geo import bearing_deg, distance_nm, heading_diff, offset_nm
 from atc.models import Airport, Facility, OwnState, Runway, Traffic
 from atc.readback import _normalize, join_digits
@@ -24,6 +28,10 @@ from atc.sequence import _miles, final_distance, on_runway, runway_status, thres
 VECTORS_NM = 25.0  # the arrival radar starts vectoring inside this
 INTERCEPT_POINT_NM = 10.0  # on the extended centerline...
 INTERCEPT_OFFSET_NM = 3.0  # ...and this far to the aircraft's side, for a 30-degree intercept
+MAX_INTERCEPT_NM = 25.0  # a high minimum altitude moves the intercept point out, never beyond this
+GLIDE_FT_PER_NM = 318.0  # 3 degrees
+DOWNWIND_DEG = 120.0  # flying this far off the runway heading: on a downwind, a base turn comes before the intercept
+BASE_CENTERLINE_NM = 2.0  # on base: the intercept turn this close to the extended centerline
 LANDING_CLEARANCE_NM = 6.0  # Tower clears to land on its own inside this
 VACATE_KT = 60.0
 
@@ -75,14 +83,51 @@ CENTER_DESCENT_FT = 10000  # area control descends arrivals to this; the arrival
 
 def _arrival_altitude(dest: Airport, session) -> int:
     """Altitude the arrival radar descends to before vectoring: 3000 ft, or about 2500 ft above a high field
-    (never the transition altitude itself: in the US that is 18000 ft)."""
+    (never the transition altitude itself: in the US that is 18000 ft). Raised to the MSA by `approach_altitude`."""
     return max(3000, int(math.ceil((dest.elevation_ft + 2500) / 1000.0) * 1000))
 
 
+def intercept_nm(dest: Airport, alt_ft: float | None) -> float:
+    """How far out the final is joined at `alt_ft`: where a 3 degree glide path is at that height (10 NM at 3000 ft
+    at a field near sea level, 18 NM at 8200 ft at San Rafael), never closer than INTERCEPT_POINT_NM."""
+    if alt_ft is None:
+        return INTERCEPT_POINT_NM
+    d = math.ceil((alt_ft - dest.elevation_ft - 50.0) / GLIDE_FT_PER_NM)
+    return float(min(MAX_INTERCEPT_NM, max(INTERCEPT_POINT_NM, d)))
+
+
+def _side(dest: Airport, rwy: Runway, own: OwnState) -> float:
+    _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
+    return INTERCEPT_OFFSET_NM if cross >= 0 else -INTERCEPT_OFFSET_NM
+
+
+def approach_altitude(dest: Airport, rwy: Runway | None, own: OwnState, session) -> int:
+    """The altitude to vector at: `_arrival_altitude`, raised to the minimum sector altitude over the way from the
+    aircraft to the intercept point and over the point itself (that point moves out as the altitude goes up)."""
+    alt = _arrival_altitude(dest, session)
+    if rwy is None or rwy.heading_deg is None or not dest.msa:
+        return alt
+    for _ in range(3):
+        p = _point(dest, rwy, -intercept_nm(dest, alt), _side(dest, rwy, own))
+        floors = [f for f in (terrain.floor_along(dest, (own.lat, own.lon), p), terrain.floor_at(dest, *p)) if f]
+        if not floors or max(floors) <= alt:
+            break
+        alt = terrain.round_up(max(floors))
+    return alt
+
+
+def _high_ground(own: OwnState) -> bool:
+    """Over terrain that area control's FL100 wouldn't clear (grid MORA above it): the first descent waits."""
+    from atc.navdb import mora_ft
+
+    mora = mora_ft(own.lat, own.lon)
+    return mora is not None and mora > CENTER_DESCENT_FT
+
+
 def _center_stage(session, dest: Airport, own: OwnState, role: str | None) -> bool:
-    """Area control's part of the descent: high aircraft go to FL100 / 10000 ft first."""
+    """Area control's part of the descent: high aircraft go to FL100 / 10000 ft first (not over high ground)."""
     return role == "control" and not session.center_descent and own.alt_msl_ft > CENTER_DESCENT_FT + 1000 \
-        and _arrival_altitude(dest, session) < CENTER_DESCENT_FT
+        and _arrival_altitude(dest, session) < CENTER_DESCENT_FT and not _high_ground(own)
 
 
 def descent_due(session, dest: Airport, own: OwnState, role: str | None) -> bool:
@@ -90,7 +135,8 @@ def descent_due(session, dest: Airport, own: OwnState, role: str | None) -> bool
         return False
     if role == "control":
         return _center_stage(session, dest, own, role)
-    return own.alt_msl_ft > _arrival_altitude(dest, session) + 1000
+    alt = approach_altitude(dest, _arrival_runway(dest, own, session), own, session)
+    return own.alt_msl_ft > alt + 1000
 
 
 def descent_text(session, dest: Airport, own: OwnState, role: str | None = None) -> str:
@@ -105,12 +151,15 @@ def descent_text(session, dest: Airport, own: OwnState, role: str | None = None)
             return f"{session.spoken_callsign}, descend via {phrase.procedure(star)} arrival to " \
                 f"{phrase.level(CENTER_DESCENT_FT, dest)}."
         return f"{session.spoken_callsign}, {phrase.descend(CENTER_DESCENT_FT, dest)}."
-    alt = _arrival_altitude(dest, session)
     rwy = _arrival_runway(dest, own, session)
+    alt = approach_altitude(dest, rwy, own, session)
     q = _qnh(own, dest.country == "US")
     session.descent_given = True
     session.assign_level(alt, own.alt_msl_ft)
-    bits = [f"{session.spoken_callsign}, {phrase.descend(alt, dest)}"]
+    # (asked for early, below the minimum altitude of the way in: never "descend" up to it)
+    verb = phrase.descend(alt, dest) if alt < own.alt_msl_ft - 200 else \
+        phrase.climb(alt, dest) if alt > own.alt_msl_ft + 200 else f"maintain {phrase.level(alt, dest)}"
+    bits = [f"{session.spoken_callsign}, {verb}"]
     if q:
         bits.append(q)
     if rwy is not None:
@@ -150,8 +199,9 @@ def own_nav_request(session, world, airport: Airport, facility: Facility, own: O
         return None
     via = re.search(r"\bvia ([a-z]{2,5}\d{0,2})\b", norm)
     session.own_nav = via.group(1).upper() if via else ""
-    session.vectors_given = session.intercept_given = False
-    session.holding = session.holding_until = None  # "ready to leave the hold, request own navigation"
+    session.vectors_given = session.intercept_given = session.base_given = False
+    session.visual = None
+    session.holding = session.holding_until = session.hold_reason = None  # "ready to leave the hold, request own navigation"
     dest = _dest(world, session)
     named = re.search(r"\brunway (\d{1,2}) ?(left|right|center|l|r|c)?\b", join_digits(norm))
     if named and dest is not None:  # "... RNAV approach runway 02 via DOKMU": that runway too, if the wind allows
@@ -163,6 +213,165 @@ def own_nav_request(session, world, airport: Airport, facility: Facility, own: O
     rwy = _arrival_runway(dest, own, session) if dest is not None else None
     expect = f", expect {_approach(dest, rwy)}" if rwy is not None else ""
     return f"{session.spoken_callsign}, own navigation approved{expect}."
+
+
+# --- visual approach (improvement plan C1) ---------------------------------------------------------------------------
+_IN_SIGHT = re.compile(r"\b(?:field|airport|aerodrome|airfield|runway|runway lights|approach lights|the lights) "
+                       r"(?:is |are )?(?:in sight|insight|in site)\b|\b(?:have|got) the (?:field|airport|runway)\b")
+VISUAL_FAA_CEILING_FT = 1000  # FAA 7110.65 7-4-2: a visual approach needs at least this ceiling...
+VISUAL_FAA_VIS_M = 4800.0  # ...and 3 statute miles
+
+
+def visual_request(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str,
+                   traffic=()) -> str | None:
+    """'Request visual approach' / 'field in sight' to the arrival radar (or a Tower doing the approach work):
+    ICAO "cleared visual approach runway one three" (FAA the same), in weather that allows it; "report field in sight"
+    when the pilot asks before seeing it; "unable visual approach, expect ILS approach ..." in poor weather. From then
+    on no vectors and no level watch; the landing clearance comes from Tower as usual. A VFR flight being followed
+    that reports the field in sight is handed to its Tower."""
+    if own.on_ground:
+        return None
+    norm = _normalize(pilot_text)
+    in_sight = _IN_SIGHT.search(norm) is not None
+    asks = "visual" in norm and ("request" in norm or "like" in norm or "?" in pilot_text)
+    if not (in_sight or asks):
+        return None
+    plan = session.plan
+    cs = session.spoken_callsign
+    if plan is None or not plan.is_ifr:
+        return _vfr_in_sight(session, world, facility, own) if in_sight else None
+    dest = _dest(world, session)
+    if dest is None or not _arrival_radar(world, session, airport, facility) or session.landing_cleared \
+            or session.visual is not None:
+        return None
+    if facility.role == "control" and distance_nm(own.lat, own.lon, dest.lat, dest.lon) > 40.0:
+        return None
+    if session.intercept_given and not asks:
+        return f"{cs}, roger."  # cleared for the instrument approach already: the field in sight is news, no change
+    named = re.search(r"\brunway (\d{1,2}) ?(left|right|center|l|r|c)?\b", join_digits(norm))
+    if named:  # "request visual approach runway 31": that runway, if the wind allows it
+        from atc.runway import find_runway, request_ok
+
+        r = find_runway(dest, named.group(1).zfill(2) + (named.group(2) or "")[:1].upper())
+        if r is not None and request_ok(r, own.wind_dir_deg, own.wind_kt):
+            if session.runway_requests.get(f"{dest.icao}:arrival") != r.ident:
+                session.vectors_given = session.base_given = False
+            session.runway_requests[f"{dest.icao}:arrival"] = r.ident
+    rwy = _arrival_runway(dest, own, session)
+    if rwy is None:
+        return None
+    rw = phrase.runway(rwy.ident, dest.faa)
+    from atc import atis
+
+    cond = atis.conditions(dest, own, session.surface_wind.get(dest.icao))
+    if dest.faa:
+        poor = (cond.ceiling_ft is not None and cond.ceiling_ft < VISUAL_FAA_CEILING_FT) or \
+            (cond.visibility_m is not None and cond.visibility_m < VISUAL_FAA_VIS_M)
+    else:  # ICAO: the pilot seeing the field is enough, unless the visibility is very low
+        poor = cond.low_visibility or (not in_sight and cond.reduced)
+    if poor:
+        app = _approach(dest, rwy)
+        known = app.startswith(("ILS", "RNAV", "VOR", "NDB", "localizer"))
+        return f"{cs}, unable visual approach, expect {app if known else 'instrument approach ' + app}."
+    if not in_sight:
+        session.visual_asked = True
+        return f"{cs}, expect visual approach runway {rw}, " + \
+            ("report the airport in sight." if dest.faa else "report field in sight.")
+    session.visual = rwy.ident
+    session.intercept_given = session.vectors_given = True
+    session.own_nav = session.holding = session.holding_until = None
+    session.cleared_level_ft = session.cleared_dir = None  # descends on its own, seeing the field
+    bits = [f"{cs}, cleared visual approach runway {rw}"]
+    ahead = _traffic_ahead(dest, rwy, own, traffic) if traffic else None
+    if ahead:
+        bits.append(f"number two, follow the {ahead[0]} on {_miles(ahead[1])} final" if ahead[0] != "traffic"
+                    else f"number two, traffic on {_miles(ahead[1])} final")
+    if facility.role == "tower":  # Tower doing the approach work: the landing clearance comes from it
+        bits.append("report final")
+    elif distance_nm(own.lat, own.lon, dest.lat, dest.lon) <= 12.0:  # close in: straight to Tower
+        from atc.flow import Pending, _contact
+
+        twr = _contact(dest, ("TWR",))
+        if twr is not None:
+            key = f"{dest.icao}:tower"
+            session.handoffs_done.add(key)
+            import time
+
+            session.pending_handoff = Pending(key, twr[1], own.com1_mhz, time.monotonic())
+            bits.append(twr[1])
+    return ", ".join(bits) + "."
+
+
+def _vfr_in_sight(session, world, facility: Facility, own: OwnState) -> str | None:
+    """A VFR flight with flight following reports the field in sight: Tower takes it (or radar service ends)."""
+    if not session.following or facility.role not in ("approach", "departure", "control"):
+        return None
+    near = world.nearest(own)
+    if near is None or distance_nm(own.lat, own.lon, near.lat, near.lon) > 25.0:
+        return None
+    from atc import following
+
+    return following.terminate(session, near)
+
+
+# --- weather deviations (improvement plan D1) -----------------------------------------------------------------------
+_DEVIATION = re.compile(r"\bdeviat(?:ion|ions|e|ing)\b")
+_DEV_AMOUNT = re.compile(r"\b(\d{1,3}) (degrees?|miles?|nm|nautical miles?|kilometers?|kilometres?|km)\b")
+_DEV_SIDE = re.compile(r"\b(left|right)\b")
+_DEV_HEADING = re.compile(r"\b(?:request(?:ing)?|like) (?:a )?heading (\d{3})\b")
+_WEATHER = re.compile(r"\b(?:weather|wx|cb|cbs|cumulonimbus|build ?ups?|cells?|storms?|thunderstorms?|turbulence|"
+                      r"clouds?|echoes)\b")
+_BACK_ON_TRACK = re.compile(r"\b(?:back on (?:course|track|route)|clear of (?:the )?(?:weather|wx|cells?|storms?|"
+                            r"build ?ups?)|(?:re ?)?established (?:back )?on (?:course|track|route)|"
+                            r"(?:on|back to) (?:course|track|the route))\b")
+
+
+def deviation_request(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
+    """'Request deviation twenty degrees left (of track) due weather' / 'request heading 270 for weather' on a radar
+    position: ICAO "deviation up to twenty degrees left of track approved, report back on track"; FAA "deviation
+    twenty degrees left of course approved, when able proceed direct ESKON". "Back on track" / "clear of weather"
+    afterwards: "roger"."""
+    if own.on_ground or not (facility.role in ("approach", "departure", "control")
+                             or _arrival_radar(world, session, airport, facility)):
+        return None
+    norm = join_digits(_normalize(pilot_text))
+    cs = session.spoken_callsign
+    faa = airport.faa
+    asks = "request" in norm or "like" in norm or "?" in pilot_text
+    if session.deviating and _BACK_ON_TRACK.search(norm) and not asks:
+        session.deviating = False
+        return f"{cs}, roger."
+    if not asks:
+        return None
+    heading = _DEV_HEADING.search(norm)
+    if heading and _WEATHER.search(norm):
+        session.deviating = True
+        words = phrase.digits(heading.group(1))
+        return f"{cs}, heading {words} approved, " + ("advise clear of weather." if faa else "report clear of weather.")
+    if not _DEVIATION.search(norm):
+        return None
+    side = _DEV_SIDE.search(norm)
+    amount = _DEV_AMOUNT.search(norm)
+    what = ""
+    if amount:
+        n, unit = int(amount.group(1)), amount.group(2)
+        unit = "degrees" if unit.startswith("degree") else "kilometres" if unit.startswith(("kilo", "km")) else "miles"
+        what = f" {phrase.digits(str(n))} {unit}"  # numbers said digit by digit: "two zero degrees"
+    session.deviating = True
+    if faa:
+        where = f"{what} {side.group(1)} of course" if side else what
+        plan = session.plan
+        nxt = None
+        if plan is not None and plan.fixes:
+            i = next_fix_index(plan, own)
+            nxt = plan.fixes[i].ident if i < len(plan.fixes) else None
+        tail = f"when able proceed direct {spoken_fix(nxt)}" if nxt else "advise when able to proceed on course"
+        return f"{cs}, deviation{where} approved, {tail}."
+    if side:
+        where = f" up to{what} {side.group(1)} of track" if what else f" {side.group(1)} of track"
+    else:
+        where = f" up to{what}" if what else ""
+    return f"{cs}, deviation{where} approved, report back on track."
 
 
 def _past_tod(session, dest: Airport, own: OwnState) -> bool:
@@ -190,16 +399,65 @@ def _point(airport: Airport, rwy: Runway, along: float, cross: float) -> tuple[f
     return tlat + n / 60.0, tlon + e / (60.0 * math.cos(math.radians(tlat)))
 
 
+BIG_TURN_DEG = 60.0  # a vector this far from the present heading is said with its direction ("turn left heading")
+
+
+def _vector_level(session, dest: Airport) -> int:
+    return int(session.cleared_level_ft or _arrival_altitude(dest, session))
+
+
+def _turn(dest: Airport, own: OwnState, true_hdg: float, side: float = 0.0) -> tuple[str, str, float]:
+    """(heading words, 'left'/'right', degrees to turn) for a new heading. A turn of about 180 degrees goes toward
+    `side` (+ = right of the final course, where the vectors are)."""
+    hval, words = _heading_words(true_hdg, dest)
+    delta = (hval - magnetic(dest, own.heading_deg)) % 360
+    turn = "left" if delta > 180 else "right"
+    if 150 <= delta <= 210 and side:
+        turn = "right" if side > 0 else "left"
+    return words, turn, min(delta, 360 - delta)
+
+
 def vectors_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
-    """'fly heading 340, vectors runway 02' toward a point 10 NM out on the extended centerline, on our side."""
-    _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
-    side = INTERCEPT_OFFSET_NM if cross >= 0 else -INTERCEPT_OFFSET_NM
-    plat, plon = _point(dest, rwy, -INTERCEPT_POINT_NM, side)
-    _, hdg = _heading_words(bearing_deg(own.lat, own.lon, plat, plon), dest)
+    """'fly heading 340, vectors ILS approach runway 02' toward a point out on the extended centerline (10 NM, farther
+    when the minimum altitude is high), on our side; a big turn says its direction ("turn left heading 130", after a
+    missed approach). If the way there crosses higher ground than the level given, the level goes up first."""
+    lvl = _vector_level(session, dest)
+    side = _side(dest, rwy, own)
+    plat, plon = _point(dest, rwy, -intercept_nm(dest, lvl), side)
+    words, turn, delta = _turn(dest, own, bearing_deg(own.lat, own.lon, plat, plon), side)
     session.vectors_given = True
+    session.base_given = False
+    bits = [f"{session.spoken_callsign}, " + (f"turn {turn} heading {words}" if delta > BIG_TURN_DEG
+                                              else f"fly heading {words}")]
+    need = terrain.floor_along(dest, (own.lat, own.lon), (plat, plon))
+    if need is not None and need > lvl:  # never vectored below the minimum sector altitude
+        need = terrain.round_up(need)
+        session.assign_level(need, own.alt_msl_ft)
+        bits.append(phrase.climb(need, dest) if need > own.alt_msl_ft + 200 else f"maintain {phrase.level(need, dest)}")
+    bits.append(f"vectors {_approach(dest, rwy)}")
     speed = _speed_text(session, own, VECTORS_KT, dest)
-    return f"{session.spoken_callsign}, fly heading {hdg}, vectors {_approach(dest, rwy)}" + \
-        (f", {speed}" if speed else "") + "."
+    if speed:
+        bits.append(speed)
+    return ", ".join(bits) + "."
+
+
+def base_text(session, dest: Airport, rwy: Runway, own: OwnState) -> str:
+    """On a downwind (coming back after a missed approach, or from the far side), abeam the intercept point: the turn
+    onto base, square to the final course ('turn left heading 040'); the intercept follows near the centerline."""
+    _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
+    true_base = (rwy.heading_deg - 90) % 360 if cross > 0 else (rwy.heading_deg + 90) % 360
+    words, turn, _ = _turn(dest, own, true_base)
+    session.base_given = True
+    return f"{session.spoken_callsign}, turn {turn} heading {words}."
+
+
+def _on_downwind(rwy: Runway, own: OwnState) -> bool:
+    return heading_diff(own.heading_deg, rwy.heading_deg or 0.0) > DOWNWIND_DEG
+
+
+def _due_for_base(session, dest: Airport, rwy: Runway, own: OwnState) -> bool:
+    along, _ = _signed_cross(dest, rwy, own.lat, own.lon)
+    return _on_downwind(rwy, own) and along <= -(intercept_nm(dest, _vector_level(session, dest)) - 1.0)
 
 
 VECTORS_KT = 210  # speed on vectors
@@ -248,18 +506,22 @@ def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState, traffic=(
     if abs(cross) < 0.5 and heading_diff(own.heading_deg, rwy.heading_deg) <= 20:
         return f"{cs}, {cleared}{tail}, report established."
     true_int = (rwy.heading_deg - 30) % 360 if cross > 0 else (rwy.heading_deg + 30) % 360
-    hval, hdg = _heading_words(true_int, dest)
-    own_mag = magnetic(dest, own.heading_deg) % 360
-    turn = "left" if ((hval - own_mag) % 360) > 180 else "right"
+    hdg, turn, _ = _turn(dest, own, true_int)
     return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, {cleared}{tail}."
 
 
-def _due_for_intercept(dest: Airport, rwy: Runway, own: OwnState) -> bool:
+def _due_for_intercept(dest: Airport, rwy: Runway, own: OwnState, session=None) -> bool:
+    """Time to turn onto the final: near the intercept point (or lined up with the final anyway); after a base turn,
+    once close to the extended centerline. Never from a downwind heading (that gets the base turn first)."""
+    if _on_downwind(rwy, own):
+        return False
     along, cross = _signed_cross(dest, rwy, own.lat, own.lon)
-    plat, plon = _point(dest, rwy, -INTERCEPT_POINT_NM, INTERCEPT_OFFSET_NM if cross >= 0 else -INTERCEPT_OFFSET_NM)
-    near_point = distance_nm(own.lat, own.lon, plat, plon) <= 3.0
-    lined_up = -15.0 <= along <= -3.0 and abs(cross) <= 2.0 and heading_diff(own.heading_deg, rwy.heading_deg) <= 60
-    return near_point or lined_up
+    d = intercept_nm(dest, _vector_level(session, dest)) if session is not None else INTERCEPT_POINT_NM
+    lined_up = -(d + 5.0) <= along <= -3.0 and abs(cross) <= 2.0 and heading_diff(own.heading_deg, rwy.heading_deg) <= 60
+    if session is not None and session.base_given:
+        return lined_up or (along < -1.0 and abs(cross) <= BASE_CENTERLINE_NM)
+    plat, plon = _point(dest, rwy, -d, INTERCEPT_OFFSET_NM if cross >= 0 else -INTERCEPT_OFFSET_NM)
+    return distance_nm(own.lat, own.lon, plat, plon) <= 3.0 or lined_up
 
 
 def _arrival_radar(world, session, airport: Airport, facility: Facility) -> bool:
@@ -321,9 +583,11 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         if rwy is None:
             return None
         session.own_nav = None  # back to vectors after "own navigation"
-        if not session.descent_given and own.alt_msl_ft > _arrival_altitude(dest, session) + 1000:
+        if not session.descent_given and own.alt_msl_ft > approach_altitude(dest, rwy, own, session) + 1000:
             return descent_text(session, dest, own, facility.role)
-        if _due_for_intercept(dest, rwy, own):
+        if session.vectors_given and _due_for_base(session, dest, rwy, own):
+            return base_text(session, dest, rwy, own)
+        if _due_for_intercept(dest, rwy, own, session):
             return intercept_text(session, dest, rwy, own)
         return vectors_text(session, dest, rwy, own)
     return None
@@ -401,7 +665,9 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
             return f"{session.spoken_callsign}, {_cleared(_approach(dest, rwy))}{via}, report established."
         return None
     if session.descent_given and not session.intercept_given and d_dest <= VECTORS_NM + 10:
-        if _due_for_intercept(dest, rwy, own):
+        if session.vectors_given and not session.base_given and _due_for_base(session, dest, rwy, own):
+            return base_text(session, dest, rwy, own)  # downwind abeam the intercept point: the base turn
+        if _due_for_intercept(dest, rwy, own, session):
             return intercept_text(session, dest, rwy, own, traffic)
         if not session.vectors_given and d_dest <= VECTORS_NM:
             return vectors_text(session, dest, rwy, own)

@@ -24,6 +24,15 @@ def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
+def destination(lat: float, lon: float, bearing: float, nm: float) -> tuple[float, float]:
+    """The point `nm` away on the great circle starting at `bearing` (true)."""
+    r = nm / 3440.065
+    la1, lo1, b = math.radians(lat), math.radians(lon), math.radians(bearing)
+    la2 = math.asin(math.sin(la1) * math.cos(r) + math.cos(la1) * math.sin(r) * math.cos(b))
+    lo2 = lo1 + math.atan2(math.sin(b) * math.sin(r) * math.cos(la1), math.cos(r) - math.sin(la1) * math.sin(la2))
+    return math.degrees(la2), (math.degrees(lo2) + 540.0) % 360.0 - 180.0
+
+
 def offset_nm(lat0: float, lon0: float, lat: float, lon: float) -> tuple[float, float]:
     """(east, north) of a point from an origin, in NM. Flat-earth: fine within ~20 NM of the airport."""
     return (lon - lon0) * 60.0 * math.cos(math.radians(lat0)), (lat - lat0) * 60.0

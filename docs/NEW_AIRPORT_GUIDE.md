@@ -45,6 +45,12 @@ Todo lo aprendido volando SABE, SARC, SAAR, KSFO y KLAX, para no repetir errores
 - **Aeropuertos chicos con plataforma apretada:** los stands se eligen con separación por envergadura; si "no free stand"
   aparece seguido, bajar `traffic_per_hour`.
 
+- **Nombres que el scenery no trae:** `python tools/fetch_osm_taxi.py XXXX` baja el mapa OSM; el código usa la
+  geometría del sim y le pone a cada tramo sin nombre el de la calle OSM que corre a lo largo (hasta 22 m). Cruzar
+  con la carta oficial (AISWEB en Brasil: ADC y PDC) los aeropuertos donde importe. ChartFox pide login de VATSIM.
+- **Stands:** son los del scenery del sim (los que elegís al arrancar en MSFS). En sceneries por defecto la
+  numeración no siempre coincide con la carta real; con un add-on con números reales coincide sola.
+
 ## 5. Frecuencias y estaciones
 - Tipos: `CLD` (clearance/delivery), `GND`, `TWR`, `APP`, `DEP`, `ATIS`, `CTAF`, `RMP`. La frecuencia sintonizada en COM1
   decide quién contesta (`facility.py`); ATIS y CTAF son silenciosas.
