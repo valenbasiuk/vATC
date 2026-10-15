@@ -9,6 +9,7 @@ data/*.csv
 data/airlines.dat
 voices/*.onnx
 voices/*.onnx.json
+voices/*.bin
 simbrief_last.json
 voice_samples/
 # made from FSLTL / FS Traffic on this PC (atc.own.catalog): third-party data, never committed

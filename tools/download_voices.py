@@ -3,6 +3,7 @@
     python tools/download_voices.py            # the two accent sets (~150 MB)
     python tools/download_voices.py --more     # + a few single British/American voices
     python tools/download_voices.py --high     # + every high-quality English / Spanish voice (~650 MB)
+    python tools/download_voices.py --kokoro   # + Kokoro-82M (~355 MB): more natural voices, used first by atc
     python tools/download_voices.py --list     # what is in voices/ and how it is used
 
   en_US-l2arctic-medium  24 speakers with a first language other than English: Spanish (Aerolineas, LATAM, Iberia,
@@ -32,6 +33,10 @@ HIGH = ["en_GB-cori-high", "en_US-lessac-high", "en_US-ljspeech-high", "en_US-ry
         "es_AR-daniela-high", "es_MX-claude-high"]
 
 
+KOKORO_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+KOKORO = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]  # Apache-2.0 (hexgrad/Kokoro-82M); pip install kokoro-onnx
+
+
 def url_for(voice: str, ext: str) -> str:
     locale, name, quality = voice.split("-", 2)
     return f"{BASE}/{locale.split('_')[0]}/{locale}/{name}/{quality}/{voice}{ext}"
@@ -39,24 +44,27 @@ def url_for(voice: str, ext: str) -> str:
 
 def fetch(voice: str, out: Path) -> None:
     for ext in (".onnx.json", ".onnx"):
-        target = out / f"{voice}{ext}"
-        if target.exists() and target.stat().st_size > 0:
-            print(f"  have {target.name}")
-            continue
-        print(f"  downloading {target.name} ...", flush=True)
-        tmp = target.with_suffix(target.suffix + ".part")
-        req = urllib.request.Request(url_for(voice, ext), headers={"User-Agent": "vATC voice downloader"})
-        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as fh:
-            total = int(resp.headers.get("Content-Length") or 0)
-            got = 0
-            while chunk := resp.read(1 << 20):
-                fh.write(chunk)
-                got += len(chunk)
-                if total > 5 << 20:
-                    print(f"\r    {got >> 20} / {total >> 20} MB", end="", flush=True)
-        if total > 5 << 20:
-            print()
-        tmp.replace(target)
+        _get(url_for(voice, ext), out / f"{voice}{ext}")
+
+
+def _get(url: str, target: Path) -> None:
+    if target.exists() and target.stat().st_size > 0:
+        print(f"  have {target.name}")
+        return
+    print(f"  downloading {target.name} ...", flush=True)
+    tmp = target.with_suffix(target.suffix + ".part")
+    req = urllib.request.Request(url, headers={"User-Agent": "vATC voice downloader"})
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as fh:
+        total = int(resp.headers.get("Content-Length") or 0)
+        got = 0
+        while chunk := resp.read(1 << 20):
+            fh.write(chunk)
+            got += len(chunk)
+            if total > 5 << 20:
+                print(f"\r    {got >> 20} / {total >> 20} MB", end="", flush=True)
+    if total > 5 << 20:
+        print()
+    tmp.replace(target)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=Path("voices"))
     p.add_argument("--more", action="store_true", help="also single-speaker British/American voices")
     p.add_argument("--high", action="store_true", help="every high-quality English and Spanish voice (~650 MB)")
+    p.add_argument("--kokoro", action="store_true", help="Kokoro-82M (~355 MB), needs: pip install kokoro-onnx")
     p.add_argument("--list", action="store_true", help="show the accent pools made from voices/")
     args = p.parse_args(argv)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -75,6 +84,13 @@ def main(argv: list[str] | None = None) -> int:
                 fetch(v, args.out)
             except Exception as exc:  # noqa: BLE001
                 print(f"  failed: {exc}")
+        if args.kokoro:
+            print("kokoro")
+            for name in KOKORO:
+                try:
+                    _get(f"{KOKORO_BASE}/{name}", args.out / name)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  failed: {exc}")
     from atc.voices import VoiceBank
 
     print("accent pools:", VoiceBank(args.out).describe())

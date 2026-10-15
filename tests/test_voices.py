@@ -71,3 +71,45 @@ def test_pitch_shift_keeps_the_length_it_was_synthesized_for():
     assert len(y) == 22050  # synthesized 1.08x slower, back to 1 s
     crossings = np.sum((y[:-1] < 0) & (y[1:] >= 0))
     assert 214 <= crossings <= 218  # 216 Hz
+
+
+def _fake_kokoro(folder):
+    (folder / "kokoro-v1.0.onnx").write_bytes(b"")
+    (folder / "voices-v1.0.bin").write_bytes(b"")
+
+
+def test_kokoro_first_for_american_and_british_l2arctic_first_for_spanish(tmp_path, monkeypatch):
+    monkeypatch.delenv("ATC_VOICE_ENGINE", raising=False)
+    _fake_spanish_pool(tmp_path)
+    _fake_kokoro(tmp_path)
+    bank = VoiceBank(tmp_path)
+    assert bank.controller("KSFO", "tower", "US").kokoro
+    assert bank.pilot("BAW286", "GB").kokoro
+    assert not bank.controller("SABE", "tower", "AR").kokoro  # real accented English first
+    assert bank.pilot("GLO1234", "BR").accent == "Portuguese"  # only Kokoro has Brazilians
+    assert any(v.kokoro for v in bank.pools["Spanish"])  # ... and more Spanish people after L2-ARCTIC's
+    blends = [v for v in bank.pools["generic"] if "+" in v.style]
+    assert len(blends) >= 10 and bank.pilot("N123AB", None).kokoro
+    assert not any(v.style == "am_eric" for p in bank.pools.values() for v in p)  # D grade: blended only
+    assert all(v.female == (v.style[1] == "f") for p in bank.pools.values() for v in p if v.kokoro)
+
+
+def test_kokoro_off_by_setting_or_without_its_voices_file(tmp_path, monkeypatch):
+    _fake_spanish_pool(tmp_path)
+    _fake_kokoro(tmp_path)
+    monkeypatch.setenv("ATC_VOICE_ENGINE", "piper")
+    assert not any(v.kokoro for p in VoiceBank(tmp_path).pools.values() for v in p)
+    monkeypatch.delenv("ATC_VOICE_ENGINE")
+    (tmp_path / "voices-v1.0.bin").unlink()
+    assert not any(v.kokoro for p in VoiceBank(tmp_path).pools.values() for v in p)
+
+
+def test_kokoro_parts_start_with_the_callsign_and_keep_every_word():
+    from atc.audio.tts import kokoro_parts
+
+    text = "Aerolineas one two three four, wind one four zero degrees one zero knots, runway one three, " \
+           "cleared for takeoff. Contact departure one two zero decimal six."
+    parts = kokoro_parts(text)
+    assert parts[0][0] == "Aerolineas one two three four,"
+    assert " ".join(p for p, _ in parts).split() == text.split()
+    assert parts[-1][1] > parts[0][1]  # a longer pause after a sentence than after a clause

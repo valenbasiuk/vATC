@@ -158,6 +158,11 @@ class App(tk.Tk):
         self._row(ra, 6, "Speech model", ttk.Combobox(ra, textvariable=self._var("stt_model"), values=STT_MODELS, width=12),
                   "base.en if too slow")
 
+        eng = ttk.Frame(ra)
+        for val, txt in (("auto", "Kokoro when downloaded"), ("piper", "Piper only")):
+            ttk.Radiobutton(eng, text=txt, value=val, variable=self._var("voice_engine")).pack(side="left", padx=(0, 8))
+        self._row(ra, 7, "Voices", eng, "python tools/download_voices.py --kokoro")
+
         at = ttk.LabelFrame(f, text="ATC", padding=8)
         at.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
         at.columnconfigure(1, weight=1)
@@ -192,6 +197,22 @@ class App(tk.Tk):
                   "0 or empty = by airport")
         self._row(tr, 3, "Liveries", ttk.Combobox(tr, textvariable=self._var("own_models"), values=["fstraffic", "fsltl"], width=12))
         self._row(tr, 4, "Pushback tug", ttk.Checkbutton(tr, text="GSX tug under the nose", variable=self._var("own_tug", tk.BooleanVar)))
+        self._row(tr, 5, "Parked at start", ttk.Spinbox(tr, from_=0, to=12, textvariable=self._var("own_apron", tk.StringVar), width=5),
+                  "departures waiting at their gates")
+        self._row(tr, 6, "Lights", ttk.Combobox(tr, textvariable=self._var("own_lights"), values=["both", "events", "data"], width=12),
+                  "tools/probe_lights.py tells which works")
+        fst = ttk.Frame(tr)
+        fmode = self._var("fstraffic")
+        for val, txt in (("auto", "off while ours fly"), ("off", "always off"), ("leave", "don't touch")):
+            ttk.Radiobutton(fst, text=txt, value=val, variable=fmode).pack(side="left", padx=(0, 8))
+        self._row(tr, 7, "FS Traffic AI", fst, "its injection (models and schedules stay)")
+        fb2 = ttk.Frame(tr)
+        self.fst_label = ttk.Label(fb2, text="", foreground="#777")
+        self.fst_label.pack(side="left")
+        ttk.Button(fb2, text="Off now", command=lambda: self._fstraffic(False)).pack(side="left", padx=4)
+        ttk.Button(fb2, text="On now", command=lambda: self._fstraffic(True)).pack(side="left")
+        self._row(tr, 8, "", fb2, "MSFS reads it when it starts")
+        self._fstraffic_status()
 
         bt = ttk.Frame(f)
         bt.grid(row=2, column=0, columnspan=2, sticky="e", pady=10)
@@ -202,6 +223,29 @@ class App(tk.Tk):
         self.start_btn.pack(side="left", padx=4)
         ttk.Button(bt, text="Stop", command=self._stop).pack(side="left", padx=4)
 
+    def _fstraffic_status(self) -> None:
+        from atc.own import fstraffic
+
+        try:
+            st = fstraffic.status()
+        except OSError as exc:
+            st = f"unknown ({exc})"
+        self.fst_label.config(text=f"FS Traffic injection: {st}")
+
+    def _fstraffic(self, on: bool | None) -> str | None:
+        """Turn FS Traffic's injection on/off (None = nothing to do). Returns what happened."""
+        if on is None:
+            return None
+        from atc.own import fstraffic
+
+        try:
+            msg = fstraffic.set_injection(on)
+        except OSError as exc:
+            msg = f"FS Traffic: {exc}"
+        self._fstraffic_status()
+        self.status_label.config(text=msg[:90])
+        return msg
+
     def _read_cfg(self) -> config.Config:
         c = self.cfg
         for key, var in self.v.items():
@@ -210,6 +254,8 @@ class App(tk.Tk):
                 continue
             if key == "own_max":
                 val = int(val) if str(val).strip().isdigit() and int(val) > 0 else None
+            if key == "own_apron":
+                val = int(val) if str(val).strip().isdigit() else 6
             if key == "voice" and val == "(text only)":
                 val = ""
             if key in ("mic", "audio_out") and isinstance(val, str) and ":" in val:
@@ -305,10 +351,21 @@ class App(tk.Tk):
         def work() -> None:
             try:
                 from atc.audio.tts import PiperTTS
+                from atc.voices import VoiceBank
 
                 dev = int(out) if out.isdigit() else (out or None)
-                PiperTTS(ROOT / voice, device=dev).say("Aeroparque Tower, wind one three zero degrees eight knots, "
-                                                       "runway one three, cleared for takeoff.")
+                if self.v["voice_engine"].get() == "piper":
+                    os.environ["ATC_VOICE_ENGINE"] = "piper"
+                else:
+                    os.environ.pop("ATC_VOICE_ENGINE", None)
+                path = ROOT / voice
+                bank = VoiceBank(path.parent, path)
+                tts = PiperTTS(path, device=dev, bank=bank)
+                # a controller as the flight would have one (Kokoro when downloaded), then a Spanish-accented pilot
+                tts.say_as("Aerolineas one two three four, Aeroparque Tower, wind one three zero degrees eight knots, "
+                           "runway one three, cleared for takeoff.", voice=bank.controller("KSFO", "tower", "US"))
+                tts.say_as("Cleared for takeoff runway one three, Aerolineas one two three four.",
+                           who="pilot", voice=bank.pilot("ARG1234", "AR"))
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: messagebox.showerror("vATC", f"Voice test failed: {exc}"))
 
@@ -327,6 +384,12 @@ class App(tk.Tk):
             STATUS.unlink()
         except OSError:
             pass
+        want = config.fstraffic_wanted(cfg)
+        if want is not None:
+            from atc.own import fstraffic
+
+            if fstraffic.status() in (("off",) if want else ("on",)):
+                self.lines.put(f"[{self._fstraffic(want)}]")
         argv = [sys.executable.replace("pythonw.exe", "python.exe"), "-u", "-m", "atc"] + cfg.to_argv(str(STATUS))
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", **cfg.env())
         self.proc = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

@@ -33,6 +33,7 @@ class Config:
     mic: str = ""
     audio_out: str = ""
     stt_model: str = "small.en"
+    voice_engine: str = "auto"  # auto = Kokoro voices when downloaded (atc.voices), piper = Piper only
     # ATC
     llm_models: str = DEFAULT_MODELS
     metar: str = "auto"  # auto (the sim's own weather is detected), on, off
@@ -44,6 +45,11 @@ class Config:
     own_max: int | None = None
     own_models: str = "fstraffic"  # or fsltl
     own_tug: bool = True
+    own_apron: int = 6  # departures already parked at their gates when vATC starts (ATC_OWN_APRON; 0 = none)
+    own_lights: str = "both"  # how our aircraft get their lights: events | data | both (tools/probe_lights.py)
+    # FS Traffic's own injection (atc.own.fstraffic): "auto" = off while our traffic is on, back on without it;
+    # "off" = always off; "leave" = never touched
+    fstraffic: str = "auto"
     extra: list[str] = field(default_factory=list)  # anything else for the command line
 
     def to_argv(self, status_file: str | None = None) -> list[str]:
@@ -86,11 +92,25 @@ class Config:
         """Environment variables for the ATC process."""
         e = {"ATC_LLM_MODEL": self.llm_models.strip(), "ATC_OWN_MODELS": self.own_models,
              "ATC_ATIS_QUESTION": "1" if self.atis_question else "0"}
+        if self.voice_engine == "piper":
+            e["ATC_VOICE_ENGINE"] = "piper"
         if self.metar == "off":
             e["ATC_METAR"] = "off"
         if not self.own_tug:
             e["ATC_OWN_TUG"] = "off"
+        if self.own_traffic:
+            e["ATC_OWN_APRON"] = str(max(0, int(self.own_apron)))
+            e["ATC_OWN_LIGHTS"] = self.own_lights if self.own_lights in ("events", "data", "both") else "both"
         return {k: v for k, v in e.items() if v}
+
+
+def fstraffic_wanted(cfg: Config) -> bool | None:
+    """Should FS Traffic inject for this flight? None = leave it as it is."""
+    if cfg.fstraffic == "leave":
+        return None
+    if cfg.fstraffic == "off":
+        return False
+    return not cfg.own_traffic  # auto: never two traffic sources at once
 
 
 def path() -> Path:

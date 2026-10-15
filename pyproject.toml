@@ -13,7 +13,7 @@ dependencies = ["pyyaml>=6"]
 # Real sim link. Needs 64-bit Python on Windows. Unverified against MSFS 2024, see docs/OPEN_QUESTIONS.md
 sim = ["SimConnect"]
 # Voice loop
-audio = ["numpy", "sounddevice", "faster-whisper", "piper-tts", "pynput"]
+audio = ["numpy", "sounddevice", "faster-whisper", "piper-tts", "pynput", "kokoro-onnx"]
 dev = ["pytest"]
 
 [project.scripts]

@@ -119,6 +119,7 @@ class Session:
     visual_asked: bool = False  # "report field in sight" said
     deviating: bool = False  # weather deviation approved (D1), until "back on track"
     low_alt_warned: bool = False  # "low altitude warning" said; again only after climbing back above the minimum
+    low_alt_at: float | None = None  # when it was said: the radar waits a little before the next vector
     missed_approach: bool = False  # went around: the next call on the radar position is the re-check-in (C5)
 
     def __post_init__(self) -> None:

@@ -66,3 +66,10 @@ def _no_world_centers(request):
     centers.reset(Path("Z:/no/such/centers.json"))
     yield
     centers.reset(Path("data/centers.json"))
+
+
+@pytest.fixture(autouse=True)
+def _no_radio_variety(monkeypatch):
+    """Tests check the chatter word for word: the human variety (atc.variety) is off (tests/test_variety.py turns
+    it back on)."""
+    monkeypatch.setattr("atc.variety.ENABLED", False)

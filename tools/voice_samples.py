@@ -41,7 +41,10 @@ def main() -> int:
         print(f"no voices in {args.voices} (python tools/download_voices.py)")
         return 1
     print(f"pools: {bank.describe()}" + (f"; blacklisted: {len(bank.blacklist)}" if bank.blacklist else ""))
-    first = next(v for pool in bank.pools.values() for v in pool)
+    first = next((v for pool in bank.pools.values() for v in pool if not v.kokoro), None)
+    if first is None:
+        print("Kokoro needs a Piper voice next to it too (python tools/download_voices.py)")
+        return 1
     tts = PiperTTS(Path(first.model), radio_fx=False)
     written = 0
     for accent, pool in sorted(bank.pools.items()):
@@ -55,7 +58,7 @@ def main() -> int:
             if not args.no_fx:
                 samples = apply_radio_fx(samples, rate)
             pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-            path = folder / f"{v.key}{'_F' if v.female else ''}.wav"
+            path = folder / f"{v.key.replace(':', '-')}{'_F' if v.female else ''}.wav"  # no ':' in Windows names
             with wave.open(str(path), "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)

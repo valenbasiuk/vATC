@@ -1,5 +1,9 @@
 # Next session plan (written 2026-10-06, end of the second session that day)
 
+> 2026-10-15: superseded in part. Current state: CLAUDE.md "Where we are"; what to check in MSFS first:
+> docs/ROADMAP.md "WATCH IN THE SIM 2026-10-15"; next build work: ROADMAP "NEXT" (block 5). Step 3.2 below (ATC-initiated
+> holding) is DONE (holding.sequence_event).
+
 Start here after a `/clear`: read CLAUDE.md (auto-loaded), then this file, then work the steps in order.
 State: 230 tests pass, 6/6 scenarios pass. Valen committed part of this session as "wait for takeoff" (46f765e);
 the rest (speed control, worldwide FIRs, voice samples, docs, ...) is uncommitted on disk (`git status`). Don't
@@ -81,7 +85,7 @@ harness used this session sets `departures.CLOCK` to the manager's clock (it run
 Done: ground conflicts, approach names, STAR descent, progressive taxi, VFR flight following, holding on request,
 own navigation, runway requests. Left:
 1. Fix what the real sim shows (WATCH IN THE SIM list) before adding more.
-2. ATC-initiated holding when the runway stays blocked (holding.py has the hold phrasing; needs a trigger).
+2. DONE 2026-10-11: ATC-initiated holding when the sequence is full (holding.sequence_event).
 3. VFR departures from Class B/C (US: "remain outside Class Bravo", departure frequency for VFR with following).
 4. Check "via <fix>" against the approach's transitions in the sim db (`transition` table) and say the IAF.
 5. Spanish phraseology + Spanish ATC voice (roadmap 20) once Valen wants it.

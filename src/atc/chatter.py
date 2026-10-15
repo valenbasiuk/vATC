@@ -14,6 +14,7 @@ channel:
 from __future__ import annotations
 
 import csv
+import random
 import re
 import threading
 import zlib
@@ -30,7 +31,8 @@ from atc.runway import magnetic, runway_in_use
 from atc.sequence import runway_status
 from atc.tracker import Event
 
-GAP_S = 4.0
+GAP_S = 4.0  # the longest gap after a transmission; each one is random from GAP_MIN_S (variety: not a metronome)
+GAP_MIN_S = 2.5
 READBACK_S = 6.0  # after ATC talks to the user, chatter waits this long for their answer (Valen: 6 s)
 STALE_S = 15.0
 MAX_QUEUE = 4
@@ -243,7 +245,7 @@ class RadioBus:
 
     def heard(self, now: float, to_user: bool = False) -> None:
         """Something was transmitted (by anyone). After ATC talks to the user, leave them time to answer."""
-        self.busy_until = max(self.busy_until, now + GAP_S)
+        self.busy_until = max(self.busy_until, now + random.uniform(GAP_MIN_S, GAP_S))
         if to_user:
             self.quiet_until = max(self.quiet_until, now + READBACK_S)
 

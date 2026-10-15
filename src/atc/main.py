@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, runway, \
-    sequence, weather
+    sequence, variety, weather
 from atc.clearance import _freq, context_lines, deliver_after_standby, handle_clearance, handle_push
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
@@ -367,6 +367,7 @@ class _Callbacks:
         self.bus = RadioBus()  # one frequency: chatter waits for gaps and for the user's turn
         self.trackers: dict[str, TrafficTracker] = {}
         self.last_chatter: list[tuple[str, str]] = []  # (who, text) of the last exchange, for tests
+        self.chatter_heard: set[tuple[str, str]] = set()  # (aircraft, position) already heard: first calls greet
         self.atis_play: dict | None = None  # the ATIS being broadcast: airport, sentences, position
         self.atis_clock_at = -1e9  # last time the ATIS of the airports in play was rebuilt
 
@@ -432,7 +433,9 @@ class _Callbacks:
             if text is None and self.session.pending_handoff is None:  # VFR circuit: downwind again, zone left
                 text = pattern.watcher_event(self.session, self.world, own,
                                              self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
-            if text is None and self.session.pending_handoff is None:
+            low_alt_pause = self.session.low_alt_at is not None and \
+                now - self.session.low_alt_at < monitor.LOW_ALT_PAUSE_S
+            if text is None and self.session.pending_handoff is None and not low_alt_pause:
                 # descent at top of descent, vectors, intercept, landing clearance, vacate
                 text = enroute.arrival_event(self.session, self.world, own,
                                              self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
@@ -571,7 +574,17 @@ class _Callbacks:
         print()
         self.last_chatter = []
         bank = getattr(self.speaker, "bank", None)
-        for who, text, voice in ex.lines:
+        audio = getattr(self.speaker, "audio", False)
+        lines = variety.say_again(ex.lines)
+        first = (ex.key, ex.role) not in self.chatter_heard
+        self.chatter_heard.add((ex.key, ex.role))
+        for i, (who, text, voice) in enumerate(lines):
+            if who == "ATC":
+                text = variety.atc_line(text, f"{apt.icao}:{ex.role}", apt.faa)
+            else:  # the AI pilot says it their way (values unchanged)
+                text = variety.pilot_line(text, who, ex.country, apt.country, first_call=first)
+                if audio and i > 0:  # reaction time before a readback
+                    time.sleep(random.uniform(*variety.REPLY_DELAY_S))
             if bank is not None:  # the controller of that position, and the AI pilot with its country's accent
                 voice = bank.controller(apt.icao, ex.role, apt.country) if who == "ATC" else \
                     bank.pilot(ex.key, ex.country) or voice

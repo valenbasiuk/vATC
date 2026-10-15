@@ -10,6 +10,15 @@ Accent pools come from the multi-speaker models' speaker lists:
   - single-speaker voices count for their locale (en_GB -> English, en_US -> American).
 Voices that aren't downloaded are simply not in the pools: with only libritts everything falls back to it.
 
+Kokoro (2026-10-15, `python tools/download_voices.py --kokoro`: voices/kokoro-v1.0.onnx + voices-v1.0.bin, 82M
+parameters, Apache-2.0) sounds clearly more natural than Piper (better intonation over a whole clearance). Its
+American and British voices go first in those pools, and voice BLENDS (two speakers' style vectors averaged:
+"am_michael+am_puck@0.5") make dozens of distinct people out of them: the generic pool is Kokoro blends. Its
+Spanish / Brazilian / Hindi / Mandarin / Italian / French / Japanese speakers reading English phonemes keep
+some of their timbre and rhythm: they join those accent pools AFTER the L2-ARCTIC speakers (real accented
+English) as more people, and are the only voices for Brazil, Italy, France and Japan. ATC_VOICE_ENGINE=piper
+leaves Kokoro out even when it is downloaded.
+
 Nobody shares a voice with another speaker heard in the last VOICE_ACTIVE_S (Valen 2026-10-08: at SABE pilots and
 controllers kept sounding alike: the Spanish pool has 4 speakers, 2 of them men). A new speaker gets a person nobody
 is using, else one of them pitched up or down a little (PITCHES: with the formants moving too, the same speaker
@@ -17,7 +26,7 @@ sounds like somebody else, more so through the radio filter), else the other sex
 generic pool. A speaker keeps their voice for the whole session.
 
 voices/blacklist.txt (optional, one per line; '#' starts a comment line, ' #' a note after the entry): a voice to
-never use, as tools/voice_samples.py names it ("en_US-l2arctic-medium#3"), or a whole accent ("accent:Spanish":
+never use, as tools/voice_samples.py names it ("en_US-l2arctic-medium#3", "kokoro-am_michael+am_puck@0.5"), or a whole accent ("accent:Spanish":
 those countries then get the next accent on their list, or the generic pool).
 """
 
@@ -25,6 +34,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import threading
 import time
@@ -36,21 +46,30 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Voice:
-    model: str  # .onnx path
+    model: str  # .onnx path (Piper voice, or the Kokoro model)
     speaker: int | None  # speaker id in a multi-speaker model
-    rate: float = 1.0  # Piper length_scale (< 1 = faster)
+    rate: float = 1.0  # Piper length_scale (< 1 = faster); Kokoro speaks at 1 / rate
     accent: str = ""
     female: bool = False
     pitch: float = 1.0  # > 1 higher (and a smaller voice): tts.py shifts the samples
+    style: str = ""  # Kokoro: "am_michael", or a blend "am_michael+am_puck@0.6" (60 % the first)
+
+    @property
+    def kokoro(self) -> bool:
+        return bool(self.style)
 
     @property
     def label(self) -> str:
         p = f" p{self.pitch:.2f}" if self.pitch != 1.0 else ""
-        return f"{Path(self.model).stem}#{self.speaker} {self.accent}{' F' if self.female else ''}{p}".strip()
+        who = f"kokoro:{self.style}" if self.kokoro else f"{Path(self.model).stem}#{self.speaker}"
+        return f"{who} {self.accent}{' F' if self.female else ''}{p}".strip()
 
     @property
     def key(self) -> str:
-        """How voices/blacklist.txt names this voice: 'en_US-l2arctic-medium#3' (the model alone if single)."""
+        """How voices/blacklist.txt names this voice: 'en_US-l2arctic-medium#3' (the model alone if single),
+        'kokoro:am_michael', 'kokoro:am_michael+am_puck@0.5'."""
+        if self.kokoro:
+            return f"kokoro:{self.style}"
         return Path(self.model).stem + (f"#{self.speaker}" if self.speaker is not None else "")
 
 
@@ -66,7 +85,9 @@ def read_blacklist(voices_dir: Path | str) -> set[str]:
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = re.split(r"\s+#", raw.strip(), maxsplit=1)[0].strip()  # "en_US-l2arctic-medium#3  # too fast"
         if line and not line.startswith("#"):
-            out.add(line)
+            if line.startswith("kokoro-"):  # copied from a voice_samples file name
+                line = "kokoro:" + line[len("kokoro-"):]
+            out.add(line.removesuffix(".wav").removesuffix("_F"))
     return out
 
 
@@ -105,6 +126,43 @@ _L2ARCTIC = {
     "EBVS": "Spanish", "ERMS": "Spanish", "MBMPS": "Spanish F", "NJS": "Spanish F",
     "HQTV": "Vietnamese", "PNV": "Vietnamese F", "THV": "Vietnamese F", "TLV": "Vietnamese",
 }
+# Kokoro v1.0 speakers worth using on the radio (hexgrad/Kokoro-82M VOICES.md grades; af_nicole whispers, am_adam is
+# graded F+): name -> accent pool. F = female from the name's second letter.
+KOKORO_FILES = ("kokoro-v1.0.onnx", "kokoro-v1.0.fp16.onnx", "kokoro-v1.0.int8.onnx")
+KOKORO_VOICES_BIN = "voices-v1.0.bin"
+_KOKORO = {
+    "af_heart": "American", "af_bella": "American", "af_sarah": "American", "af_kore": "American",
+    "af_aoede": "American", "af_alloy": "American", "af_nova": "American",
+    "am_michael": "American", "am_fenrir": "American", "am_puck": "American", "am_echo": "American",
+    "am_eric": "American", "am_liam": "American", "am_onyx": "American",
+    "bf_emma": "English", "bf_isabella": "English", "bf_alice": "English", "bf_lily": "English",
+    "bm_george": "English", "bm_fable": "English", "bm_lewis": "English", "bm_daniel": "English",
+    "em_alex": "Spanish", "em_santa": "Spanish", "ef_dora": "Spanish",
+    "pm_alex": "Portuguese", "pm_santa": "Portuguese", "pf_dora": "Portuguese",
+    "hm_omega": "Hindi", "hm_psi": "Hindi", "hf_alpha": "Hindi", "hf_beta": "Hindi",
+    "zm_yunjian": "Mandarin", "zm_yunxi": "Mandarin", "zm_yunyang": "Mandarin", "zf_xiaoxiao": "Mandarin",
+    "im_nicola": "Italian", "if_sara": "Italian", "ff_siwis": "French", "jm_kumo": "Japanese", "jf_alpha": "Japanese",
+}
+# the better-graded speakers each blend leans on: a blend of a weak and a good voice is a new, cleaner person
+_KOKORO_BASES = {("American", False): ["am_michael", "am_fenrir", "am_puck"],
+                 ("American", True): ["af_heart", "af_bella", "af_sarah"],
+                 ("English", False): ["bm_george", "bm_fable", "bm_lewis"],
+                 ("English", True): ["bf_emma", "bf_isabella"]}
+# graded D: only heard blended with one of the bases above, never on their own
+_KOKORO_BLEND_ONLY = {"am_echo", "am_eric", "am_liam", "am_onyx", "bf_alice", "bf_lily", "bm_lewis", "bm_daniel"}
+KOKORO_FIRST = {"American", "English", "generic", "Portuguese", "Italian", "French", "Japanese"}
+
+
+def kokoro_model(voices_dir: Path | str) -> Path | None:
+    """voices/kokoro-v1.0(.fp16|.int8).onnx with voices-v1.0.bin next to it, unless ATC_VOICE_ENGINE=piper."""
+    if os.environ.get("ATC_VOICE_ENGINE", "auto").lower() == "piper":
+        return None
+    d = Path(voices_dir)
+    if not (d / KOKORO_VOICES_BIN).exists():
+        return None
+    return next((d / f for f in KOKORO_FILES if (d / f).exists()), None)
+
+
 _FEMALE_NAMES = {"amy", "kathleen", "kristin", "ljspeech", "hfc_female", "jenny_dioco", "alba", "cori",
                  "southern_english_female", "lessac"}
 
@@ -115,7 +173,9 @@ _ARABIC = {"AE", "SA", "QA", "EG", "JO", "KW", "BH", "OM", "MA", "DZ", "TN", "LB
 _ACCENTS = {"US": ["American"], "CA": ["Canadian", "American"], "GB": ["English", "Scottish", "Welsh", "NorthernIrish"],
             "IE": ["Irish", "NorthernIrish"], "AU": ["Australian", "NewZealand"], "NZ": ["NewZealand", "Australian"],
             "ZA": ["SouthAfrican"], "IN": ["Indian", "Hindi"], "PK": ["Hindi", "Indian"], "CN": ["Mandarin"],
-            "TW": ["Mandarin"], "HK": ["Mandarin"], "SG": ["Mandarin"], "KR": ["Korean"], "VN": ["Vietnamese"]}
+            "TW": ["Mandarin"], "HK": ["Mandarin"], "SG": ["Mandarin"], "KR": ["Korean"], "VN": ["Vietnamese"],
+            "BR": ["Portuguese", "Spanish"], "PT": ["Portuguese", "Spanish"], "IT": ["Italian"], "FR": ["French"],
+            "BE": ["French"], "CH": ["French", "Italian"], "JP": ["Japanese"]}
 
 
 def accents_for(country: str | None) -> list[str]:
@@ -149,6 +209,9 @@ class VoiceBank:
             if info.get("language", {}).get("family") not in (None, "en"):
                 continue  # Spanish/Norwegian voices can't read English phraseology
             self._add(str(onnx), info)
+        km = kokoro_model(voices_dir)
+        if km is not None:
+            self._add_kokoro(str(km))
         for accent in list(self.pools):
             if f"accent:{accent}" in self.blacklist:
                 del self.pools[accent]
@@ -178,6 +241,30 @@ class VoiceBank:
         female = any(n in name for n in _FEMALE_NAMES)
         self.pools.setdefault(accent, []).append(Voice(model, None, accent=accent, female=female))
 
+    def _add_kokoro(self, model: str) -> None:
+        """Kokoro speakers into their accent pools, plus blends: more distinct people for the busy pools."""
+        added: dict[str, list[Voice]] = {}
+        for name, accent in _KOKORO.items():
+            if name in _KOKORO_BLEND_ONLY:
+                continue
+            v = Voice(model, None, accent=accent, female=name[1] == "f", style=name)
+            added.setdefault(accent, []).append(v)
+        for (accent, female), bases in _KOKORO_BASES.items():
+            others = [n for n, a in _KOKORO.items() if a == accent and (n[1] == "f") == female]
+            seen = set()
+            for b in bases:
+                for o in others:
+                    if o == b or (o, b) in seen:
+                        continue
+                    seen.add((b, o))
+                    w = 0.5 if o in bases else 0.65  # lean on the better-graded one
+                    pool = "generic" if accent == "American" and len(seen) % 2 == 0 else accent
+                    added.setdefault(pool, []).append(Voice(model, None, accent=pool, female=female,
+                                                            style=f"{b}+{o}@{w:g}"))
+        for accent, voices in added.items():
+            have = self.pools.get(accent, [])
+            self.pools[accent] = voices + have if accent in KOKORO_FIRST else have + voices
+
     def _pick(self, key: str, accents: list[str], female_share: float, rate: tuple[float, float]) -> Voice | None:
         with self._lock:
             now = self.clock()
@@ -201,7 +288,8 @@ class VoiceBank:
         taken = {(v.key, v.pitch) for v in active}
         for accent in accents + ["generic"]:
             # this speaker's own order through the pool: two new aircraft don't both start at its first voice
-            pool = sorted(self.pools.get(accent) or [], key=lambda v: zlib.crc32(f"{key}|{v.key}".encode()))
+            pool = sorted(self.pools.get(accent) or [],
+                          key=lambda v: (self._tier(accent, v), zlib.crc32(f"{key}|{v.key}".encode())))
             if not pool:
                 continue
             for sex in (want_female, not want_female):
@@ -210,13 +298,19 @@ class VoiceBank:
                     next(((v, p) for p in PITCHES for v in same if (v.key, p) not in taken), None)
                 if choice is not None:
                     v, pitch = choice
-                    return Voice(v.model, v.speaker, r, v.accent, v.female, pitch)
+                    return Voice(v.model, v.speaker, r, v.accent, v.female, pitch, v.style)
         for accent in accents + ["generic"]:  # every voice is talking: the old hashed pick
             pool = self.pools.get(accent) or []
             if pool:
                 v = pool[(h // 1000) % len(pool)]
-                return Voice(v.model, v.speaker, r, v.accent, v.female)
+                return Voice(v.model, v.speaker, r, v.accent, v.female, style=v.style)
         return None
+
+    @staticmethod
+    def _tier(accent: str, v: Voice) -> int:
+        """0 = the engine that pool prefers (Kokoro for American / English / generic and the accents only it has;
+        L2-ARCTIC's real accented speakers first for Spanish, Hindi, Mandarin...), 1 = the rest."""
+        return 0 if v.kokoro == (accent in KOKORO_FIRST) else 1
 
     def pilot(self, callsign: str, country: str | None) -> Voice | None:
         """Most airline pilots are men; the rate varies a little per person."""

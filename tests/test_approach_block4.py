@@ -3,6 +3,8 @@ sector altitudes (C4), the missed approach and a second approach (C5), weather d
 
 import math
 import re
+import time
+from types import SimpleNamespace
 from pathlib import Path
 
 from atc import holding, weather
@@ -14,7 +16,7 @@ from atc.geo import destination
 from atc.main import _Callbacks, handle
 from atc.models import Traffic
 from atc.readback import check_readback
-from atc.sequence import threshold
+from atc.sequence import along_cross, threshold
 from atc.session import Session
 from atc.sim.fake import FakeSim
 from atc.world import World
@@ -237,6 +239,7 @@ def _rosario(traffic_on_final: int):
     s = Session(callsign="MAR4133", plan=ROSARIO_PLAN, telephony="Martinair", clearance="confirmed",
                 departed_from="SABE")
     s.contacted.add("SAAR:tower")
+    s.where = "SAAR"  # checked in with Rosario Tower
     s.descent_given = True
     s.assign_level(5000, 20000)
     for i in range(traffic_on_final):
@@ -246,23 +249,27 @@ def _rosario(traffic_on_final: int):
     return world, sim, s, saar
 
 
-def test_full_sequence_gets_a_hold_then_vectors_once_it_thins_out():
+def test_full_sequence_gets_a_hold_then_vectors_once_it_thins_out(monkeypatch):
     world, sim, s, saar = _rosario(3)
     cb = _Callbacks(world, sim, _Q(), [], s)
     r = cb.tick(now=0)
     assert r.startswith(f"{CS}, hold at ESKON, inbound track ") and r.endswith(
-        ", right turns, maintain five thousand feet, expect approach clearance at one four three five, delay due "
+        ", right turns, maintain five thousand feet, expect approach clearance at one four three zero, delay due "
         "traffic.")
     assert s.holding == "ESKON" and s.hold_reason == "sequence"
     assert check_readback(r, "hold at ESKON, maintain 5000 feet, Martinair 4133").status == "correct"
     assert cb.tick(now=5) is None  # holding: no vectors
+    # the pilot calls on the watcher's (test) clock
+    monkeypatch.setattr(holding, "time", SimpleNamespace(monotonic=lambda: 5.0, time=time.time))
     r = _say(world, sim, s, cb, "Martinair 4133, request approach")
-    assert r == f"{CS}, unable, continue holding, expect approach clearance at one four three five."
+    assert r == f"{CS}, unable, continue holding, expect approach clearance at one four three zero."
     sim.clear_traffic()  # the three have landed
     sim.add_on_final(4.0, "ARG1300", "02")
     assert cb.tick(now=60) == f"{CS}, leave the hold, expect vectors runway zero two."
     assert s.holding is None and s.sequence_hold_done
-    assert cb.tick(now=61).startswith(f"{CS}, fly heading ")  # the vectors follow
+    assert cb.tick(now=61) is None  # ESKON lies 29 NM out: the vectors start inside enroute.VECTORS_NM (25)
+    sim.update(lat=-33.20, lon=-60.62)  # 20 NM south of Rosario
+    assert cb.tick(now=120).startswith(f"{CS}, fly heading ")
 
 
 def test_no_hold_with_two_ahead_and_a_published_hold(monkeypatch):
@@ -277,12 +284,22 @@ def test_no_hold_with_two_ahead_and_a_published_hold(monkeypatch):
                                      "approach clearance at ")
 
 
-def test_our_own_traffic_queued_on_final_holds_the_user():
+def test_our_own_traffic_queued_on_final_holds_the_user(monkeypatch):
     """With our own traffic (atc.own) filling the final, the user's arrival is held."""
+    from atc.own import manager
+    from atc.own.airport import Stand
     from atc.own.injector import FakeInjector
     from atc.own.manager import OwnTraffic
 
+    from atc.taxi import load_network
+
     world, sim, s, saar = _rosario(0)
+    net = world.taxi["SAAR"] = load_network(ROOT / "airports", "SAAR", use_navdb=False)  # OpenStreetMap
+    # Rosario's parking spots come from the sim's db (off in tests): three stands on taxi map nodes
+    off_runway = [k for k, (la, lo) in net.nodes.items()
+                  if all(abs(along_cross(saar, r, la, lo)[1]) > 0.15 for r in saar.runways)]
+    spots = [Stand(str(i + 1), *net.nodes[k], 0.0, "GATE_M", 30.0) for i, k in enumerate(off_runway[::20][:3])]
+    monkeypatch.setattr(manager, "stands", lambda icao, n: spots)
     mgr = OwnTraffic(world, sim, FakeInjector(), wind=lambda a: (20.0, 8.0))
     from atc.own.schedule import Departure
 
@@ -316,6 +333,7 @@ def test_samr_arrival_never_vectored_below_the_msa():
     sim = FakeSim(samr, callsign="MAR4133")
     s = Session(callsign="MAR4133", plan=plan, telephony="Martinair", clearance="confirmed", departed_from="SABE")
     s.contacted.add("SAMR:tower")
+    s.where = "SAMR"
     # 30 NM north-east (the plains, 4600 ft there), at FL150, inbound
     lat, lon = destination(samr.lat, samr.lon, 45.0, 30.0)
     sim.update(com1_mhz=118.1, lat=lat, lon=lon, alt_msl_ft=15000, alt_agl_ft=12500, heading_deg=225, gs_kt=250,
@@ -371,6 +389,7 @@ def test_low_altitude_warning_below_the_msa():
     sim = FakeSim(samr, callsign="MAR4133")
     s = Session(callsign="MAR4133", plan=plan, telephony="Martinair", clearance="confirmed", departed_from="SABE")
     s.contacted.add("SAMR:tower")
+    s.where = "SAMR"
     s.descent_given = True
     lat, lon = destination(samr.lat, samr.lon, 315.0, 15.0)  # north-west, toward the Andes: 8200 ft
     sim.update(com1_mhz=118.1, lat=lat, lon=lon, alt_msl_ft=6500, alt_agl_ft=4000, heading_deg=135, gs_kt=200,

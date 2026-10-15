@@ -24,6 +24,7 @@ from atc.readback import _normalize
 from atc.runway import magnetic, session_runway
 
 LEVEL_BUST_FT = 300.0
+LOW_ALT_PAUSE_S = 10.0  # after a low altitude warning: the pilot climbs and reads back before the next vector
 LOW_ALT_MARGIN_FT = 200.0  # this far below the minimum sector altitude: "low altitude warning"
 LOW_ALT_FIELD_NM = 5.0  # (not this close to the field: that is the final approach)
 GO_AROUND_NM = 1.0  # Tower orders a go-around inside this when the runway is not clear
@@ -58,6 +59,7 @@ def radar_event(session, world, own: OwnState, traffic: list[Traffic], now: floa
         return f"{cs}, check altitude, maintain {phrase.level(lvl, ref or airport)}."
     low = low_altitude(session, world, airport, facility, own)
     if low is not None:
+        session.low_alt_at = now
         return low
     # traffic alert: radar calls converging traffic once per aircraft (not near the field: Tower sequences there)
     if facility.role in ("departure", "approach", "control") and own.alt_agl_ft > 1500 \
