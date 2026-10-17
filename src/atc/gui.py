@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
@@ -31,6 +32,20 @@ STATUS = Path(tempfile.gettempdir()) / "vatc_status.json"
 STT_MODELS = ["tiny.en", "base.en", "small.en", "medium.en"]
 CREATE_NO_WINDOW = 0x08000000
 LOG_MAX_LINES = 5000  # Flight-tab transcript: older lines are dropped
+LOG_FILES_KEPT = 30  # %APPDATA%\vATC\logs\flight-*.txt: the newest are kept
+
+
+def _open_flight_log():
+    """%APPDATA%\\vATC\\logs\\flight-YYYYMMDD-HHMMSS.txt for this run (line buffered), old ones pruned; None if the
+    folder can't be written."""
+    try:
+        logs = config.path().parent / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        for old in sorted(logs.glob("flight-*.txt"))[:-(LOG_FILES_KEPT - 1)]:
+            old.unlink(missing_ok=True)
+        return open(logs / f"flight-{time.strftime('%Y%m%d-%H%M%S')}.txt", "w", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
 
 
 def _voices() -> list[str]:
@@ -416,21 +431,33 @@ class App(tk.Tk):
     def _reader(self, proc: subprocess.Popen) -> None:
         # The same line over and over (a library error in a loop) is shown once plus a count: a flood of millions of
         # lines froze the window and grew it to 3 GB (2026-10-17, SimConnect pipe errors)
+        log = _open_flight_log()  # every run kept on disk: what happened can be looked at after the flight
+
+        def emit(text: str) -> None:
+            self.lines.put(text)
+            if log is not None:
+                try:
+                    log.write(f"{time.strftime('%H:%M:%S')} {text}\n")
+                except OSError:
+                    pass
+
         last, repeats = None, 0
         for line in proc.stdout:
             line = line.rstrip("\n")
             if line == last and line.strip():
                 repeats += 1
                 if repeats % 1000 == 0:
-                    self.lines.put(f"[... the line above repeated {repeats} times]")
+                    emit(f"[... the line above repeated {repeats} times]")
                 continue
             if repeats:
-                self.lines.put(f"[... the line above repeated {repeats} times]")
+                emit(f"[... the line above repeated {repeats} times]")
             last, repeats = line, 0
-            self.lines.put(line)
+            emit(line)
         if repeats:
-            self.lines.put(f"[... the line above repeated {repeats} times]")
-        self.lines.put(f"[ATC stopped (exit {proc.wait()})]")
+            emit(f"[... the line above repeated {repeats} times]")
+        emit(f"[ATC stopped (exit {proc.wait()})]")
+        if log is not None:
+            log.close()
 
     def _send(self, text: str) -> None:
         if self.proc is None or self.proc.poll() is not None or not text.strip():
