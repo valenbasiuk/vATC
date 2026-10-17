@@ -525,3 +525,57 @@ def test_the_apron_has_parked_aircraft_at_the_start_that_leave_one_by_one():
     times = sorted(p.push_at for p in parked)
     assert 40.0 <= times[0] <= 120.0 and all(b - a >= 75.0 for a, b in zip(times, times[1:]))
     assert mgr._active() == 0  # waiting parked doesn't use up the alive cap
+
+
+def _said_by_run(mgr, user, until, watch):
+    bus = mgr.bus
+    said, t = [], 0.0
+    while t < until:
+        mgr.step(t, user, [])
+        while bus.queue:
+            ex = bus.queue.pop(0)
+            said += [f"{ln[0]}: {ln[1]}" for ln in ex.lines]
+            if ex.on_said:
+                ex.on_said()
+        if watch(t):
+            break
+        t += 0.1
+    return said
+
+
+def test_tower_sends_a_blocked_arrival_around_before_the_pilot_would():
+    # Valen 2026-10-17: with a blocked runway it's Tower that says "go around" (95 %), not the pilot on his own
+    mgr = _mgr(bus=RadioBus())
+    mgr.spawn_arrival(APT, 0.0, schedule.Departure("ARG", "1234", "B738"))
+    p = mgr.pilots["ARG1234"]
+    on_rwy = _user(lat=R13.lat, lon=R13.lon, heading_deg=124.0, com1_mhz=118.85)
+    said = _said_by_run(mgr, on_rwy, 600, watch=lambda t: p.state != "final")
+    assert p.state == "go_around" and p.approach.dist_nm > 1.2  # sent around at 1.5 NM, before the pilot's 1 NM
+    ga = [s for s in said if "go around" in s.lower()]
+    assert ga and ga[0].startswith("ATC:") and "traffic on the runway" in ga[0]
+    assert not any(s.startswith("pilot:") and s.lower().startswith("pilot: argentina one two three four, going")
+                   for s in said)
+
+
+def test_the_few_who_go_around_on_their_own_call_it_themselves(monkeypatch):
+    monkeypatch.setattr("atc.own.pilot.PILOT_GA_SHARE", 1.0)
+    mgr = _mgr(bus=RadioBus())
+    mgr.spawn_arrival(APT, 0.0, schedule.Departure("ARG", "1234", "B738"))
+    p = mgr.pilots["ARG1234"]
+    on_rwy = _user(lat=R13.lat, lon=R13.lon, heading_deg=124.0, com1_mhz=118.85)
+    said = _said_by_run(mgr, on_rwy, 600, watch=lambda t: p.state != "final")
+    assert p.state == "go_around" and p.approach.dist_nm <= 1.05  # at the pilot's own 1 NM, Tower said nothing
+    assert not any("go around" in s.lower() for s in said if s.startswith("ATC:"))
+
+
+def test_random_go_arounds_are_rare_and_a_little_likelier_in_wind(monkeypatch):
+    from atc.own import pilot
+
+    monkeypatch.setattr(pilot, "RANDOM_GA", True)
+    random.seed(7)
+    calm = sum(pilot.random_ga_point(5.0) is not None for _ in range(20000)) / 20000
+    windy = sum(pilot.random_ga_point(30.0) is not None for _ in range(20000)) / 20000
+    gale = sum(pilot.random_ga_point(60.0) is not None for _ in range(20000)) / 20000
+    assert 0.005 < calm < 0.015 and 0.03 < windy < 0.05 and gale <= 0.055
+    monkeypatch.setattr(pilot, "RANDOM_GA", False)
+    assert pilot.random_ga_point(60.0) is None

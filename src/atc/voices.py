@@ -55,6 +55,7 @@ class Voice:
     style: str = ""  # Kokoro: "am_michael", or a blend "am_michael+am_puck@0.6" (60 % the first)
     engine: str = "piper"  # or "edge" (audio/engines.py, voices/extra_voices.txt); Kokoro voices use `style`
     name: str = ""  # the engine's voice name ("en-US-GuyNeural"); Piper: the model is enough
+    fallback: Voice | None = None  # a cloud voice (Gemini): who speaks instead when it fails or its quota is gone
 
     @property
     def kokoro(self) -> bool:
@@ -78,6 +79,17 @@ class Voice:
 
 
 VOICE_ACTIVE_S = 900.0  # a voice heard this recently belongs to that speaker: nobody else gets it
+# Gemini TTS prebuilt voices for the controllers (ATC_VOICE_ENGINE=gemini, Valen 2026-10-17); pilots keep the local
+# voices (their accents, and the chatter's pace). Not the ATIS: it loops, and every loop would be a request.
+GEMINI_MALE = ("Orus", "Charon", "Fenrir", "Iapetus", "Algenib", "Alnilam", "Rasalgethi", "Sadaltager", "Schedar",
+               "Umbriel", "Enceladus", "Achird", "Zubenelgenubi", "Puck", "Algieba")
+GEMINI_FEMALE = ("Kore", "Aoede", "Leda", "Zephyr", "Despina", "Erinome", "Laomedeia", "Achernar", "Gacrux",
+                 "Pulcherrima", "Vindemiatrix", "Sulafat", "Callirrhoe", "Autonoe")
+GEMINI_NOT = ("atis",)
+
+
+def gemini_controllers() -> bool:
+    return os.environ.get("ATC_VOICE_ENGINE", "auto").lower() == "gemini"
 PITCHES = (0.92, 1.08)  # the same speaker made into another person when the pool runs out
 
 
@@ -374,8 +386,26 @@ class VoiceBank:
 
     def controller(self, icao: str, role: str, country: str | None) -> Voice | None:
         """One voice per position: Aeroparque Ground and Aeroparque Tower are different people. Controllers talk
-        a bit faster than the pilots."""
-        return self._pick(f"atc:{icao}:{role}", accents_for(country), 0.3, (0.85, 0.95))
+        a bit faster than the pilots. With Gemini on, a Gemini voice of its own (the local one as fallback)."""
+        v = self._pick(f"atc:{icao}:{role}", accents_for(country), 0.3, (0.85, 0.95))
+        if v is None or not gemini_controllers() or role in GEMINI_NOT:
+            return v
+        return replace(v, engine="gemini", name=self._gemini_name(f"atc:{icao}:{role}", v.female), style="",
+                       pitch=1.0, fallback=v)
+
+    def _gemini_name(self, key: str, female: bool) -> str:
+        """The same Gemini voice for a position all session, none shared by two positions while there are enough."""
+        with self._lock:
+            names = getattr(self, "_gemini", None)
+            if names is None:
+                names = self._gemini = {}
+            if key not in names:
+                pool = GEMINI_FEMALE if female else GEMINI_MALE
+                start = zlib.crc32(key.encode()) % len(pool)
+                used = set(names.values())
+                names[key] = next((pool[(start + i) % len(pool)] for i in range(len(pool))
+                                   if pool[(start + i) % len(pool)] not in used), pool[start])
+            return names[key]
 
     def describe(self) -> str:
         return ", ".join(f"{k} {len(v)}" for k, v in sorted(self.pools.items())) or "no voices"

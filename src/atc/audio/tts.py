@@ -143,6 +143,7 @@ class PrintTTS:
 
 
 AIR_LOG_S = 60.0
+ENGINE_REST_S = 300.0  # a cloud voice engine (Gemini) that failed: its voices' local fallbacks speak this long
 
 
 def blocked_by(air_log, on_air, start: float | None, end: float | None, min_s: float = 0.4) -> str | None:
@@ -190,6 +191,7 @@ class PiperTTS:
         self._kokoro: KokoroEngine | None = None
         self._kokoro_failed = False
         self._broken: set[str] = set()  # voice engines that failed this session (Piper takes over)
+        self._down: dict[str, float] = {}  # cloud engines resting after a failure (their voices' fallbacks speak)
         self.on_air: tuple[str, float] | None = None  # (who, since) while a transmission plays
         self.air_log: list[tuple[float, float, str]] = []  # (start, end, who) of the last minute's transmissions
 
@@ -241,8 +243,11 @@ class PiperTTS:
         if voice is not None and not isinstance(voice, int):
             pitch = getattr(voice, "pitch", 1.0) or 1.0
             engine = getattr(voice, "engine", "piper")
-            if engine != "piper" and engine not in self._broken:
+            if engine != "piper" and not self._engine_down(engine):
                 yield from self._engine_chunks(voice, text, pitch)
+                return
+            if engine != "piper" and getattr(voice, "fallback", None) is not None:  # resting: its local stand-in
+                yield from self._chunks(text, voice.fallback)
                 return
             if engine != "piper":  # that engine failed before: this voice's place is taken by the main Piper voice
                 speaker, pitch = None, 1.0
@@ -269,15 +274,30 @@ class PiperTTS:
 
         rate = voice.rate * self.length_scale * pitch
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+        if voice.engine == "gemini":  # one request per transmission (a daily quota), its own intonation across it
+            sentences = [" ".join(sentences)]
+        fallback = getattr(voice, "fallback", None)
         for i, sentence in enumerate(sentences):
             try:
                 samples, sr = engines.synthesize(voice.engine, voice.name, sentence, rate)
             except Exception as exc:  # noqa: BLE001 - never lose a transmission over a voice engine
+                rest = " ".join(sentences[i:])
+                if fallback is not None:  # a cloud voice: its local stand-in now, the cloud again in a while
+                    self._down[voice.engine] = time.monotonic() + ENGINE_REST_S
+                    print(f"[voice {voice.key} failed ({str(exc)[:120]}): local voices for "
+                          f"{ENGINE_REST_S / 60:.0f} min]")
+                    yield from self._chunks(rest, fallback)
+                    return
                 print(f"[voice {voice.key} failed ({str(exc)[:120]}): Piper from now on]")
                 self._broken.add(voice.engine)
-                yield from self._chunks(" ".join(sentences[i:]), None)
+                yield from self._chunks(rest, None)
                 return
             yield shift_pitch(samples, pitch), sr
+
+    def _engine_down(self, engine: str) -> bool:
+        if engine in self._broken:
+            return True
+        return time.monotonic() < getattr(self, "_down", {}).get(engine, 0.0)
 
     def synthesize(self, text: str, voice=None):
         """Returns (float32 mono samples, sample_rate) for the whole text."""

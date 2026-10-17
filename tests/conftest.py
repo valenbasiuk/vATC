@@ -23,6 +23,8 @@ def _no_runway_users_left_over(monkeypatch):
     monkeypatch.setattr("atc.own.OWN", {})
     monkeypatch.setattr("atc.own.APRON", {})
     monkeypatch.setattr("atc.own.EMERGENCY", {})
+    monkeypatch.setattr("atc.own.pilot.RANDOM_GA", False)  # random go-arounds only where a test turns them on
+    monkeypatch.setattr("atc.own.pilot.PILOT_GA_SHARE", 0.0)  # Tower sends a blocked arrival around, always
     monkeypatch.setattr("atc.atis.SIM_WX", {})
     from atc import departures
 

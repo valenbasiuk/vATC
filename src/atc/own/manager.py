@@ -363,7 +363,11 @@ class OwnTraffic:
             for p in pilots:
                 if isinstance(p, ArrivalPilot) and self._clear_for_emergency(p, t):
                     continue
-                if p.wants:
+                if isinstance(p, ArrivalPilot) and p.state == "final" and p.wind_kt is None:
+                    p.wind_kt = self.wind(p.airport)[1]  # (once on the final: go-arounds a little likelier in wind)
+                if isinstance(p, ArrivalPilot) and p.tower_should_send_around():  # (it still waits for "cleared")
+                    self._send_around_uncleared(p, t, others)
+                elif p.wants:
                     self._answer(p, t, others)
                 elif isinstance(p, ArrivalPilot):
                     self._check_cleared_arrival(p, t, others)
@@ -898,6 +902,26 @@ class OwnTraffic:
         a = p.airport
         climb = "climb and maintain three thousand" if a.faa else "climb straight ahead to altitude three thousand feet"
         self._radio(p, now, "tower", [("ATC", f"{{cs}}, go around, I say again, go around, traffic on the runway, {climb}"),
+                                      ("pilot", "Going around, {cs}")], priority=0)
+
+    def _send_around_uncleared(self, p: ArrivalPilot, now: float, others: list[Traffic]) -> None:
+        """Tower couldn't clear it to land (the runway still occupied) and it is close in: Tower sends it around
+        (pilot.TOWER_GA_NM) before the pilot has to do it himself (Valen: a pilot rarely goes around on his own)."""
+        from atc.sequence import runway_status
+
+        rest = [t for t in others if t.callsign != p.flight.callsign]
+        user = self.user or OwnState(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, True, 0.0)
+        st = runway_status(p.airport, p.runway, user, rest)
+        why = ", traffic on the runway" if st.occupied_by else ""
+        circuit = p.circuit
+        p.order_go_around(now)
+        a = p.airport
+        if circuit:
+            self._radio(p, now, "tower", [("ATC", f"{{cs}}, go around{why}, report downwind"),
+                                          ("pilot", "Going around, wilco, {cs}")], priority=0)
+            return
+        climb = "climb and maintain three thousand" if a.faa else "climb straight ahead to altitude three thousand feet"
+        self._radio(p, now, "tower", [("ATC", f"{{cs}}, go around, I say again, go around{why}, {climb}"),
                                       ("pilot", "Going around, {cs}")], priority=0)
 
     EMERGENCY_GAP_S = 120.0  # one of ours landing this soon before or after the user's emergency: sent around

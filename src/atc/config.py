@@ -33,7 +33,8 @@ class Config:
     mic: str = ""
     audio_out: str = ""
     stt_model: str = "small.en"
-    voice_engine: str = "auto"  # auto = Kokoro voices when downloaded (atc.voices), piper = Piper only
+    voice_engine: str = "auto"  # auto = Kokoro voices when downloaded (atc.voices), piper = Piper only,
+    # gemini = the controllers in Gemini TTS voices (cloud, GEMINI_API_KEY; pilots stay local)
     # ATC
     llm_models: str = DEFAULT_MODELS
     metar: str = "auto"  # auto (the sim's own weather is detected), on, off
@@ -101,8 +102,8 @@ class Config:
         """Environment variables for the ATC process."""
         e = {"ATC_LLM_MODEL": self.llm_models.strip(), "ATC_OWN_MODELS": self.own_models,
              "ATC_ATIS_QUESTION": "1" if self.atis_question else "0"}
-        if self.voice_engine == "piper":
-            e["ATC_VOICE_ENGINE"] = "piper"
+        if self.voice_engine in ("piper", "gemini"):
+            e["ATC_VOICE_ENGINE"] = self.voice_engine
         if self.metar == "off":
             e["ATC_METAR"] = "off"
         if not self.own_tug:

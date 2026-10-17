@@ -175,7 +175,7 @@ class App(tk.Tk):
                   "base.en if too slow")
 
         eng = ttk.Frame(ra)
-        for val, txt in (("auto", "Kokoro when downloaded"), ("piper", "Piper only")):
+        for val, txt in (("auto", "Kokoro when downloaded"), ("gemini", "Gemini controllers"), ("piper", "Piper only")):
             ttk.Radiobutton(eng, text=txt, value=val, variable=self._var("voice_engine")).pack(side="left", padx=(0, 8))
         self._row(ra, 7, "Voices", eng, "python tools/download_voices.py --kokoro")
 
@@ -382,8 +382,8 @@ class App(tk.Tk):
                 from atc.voices import VoiceBank
 
                 dev = int(out) if out.isdigit() else (out or None)
-                if self.v["voice_engine"].get() == "piper":
-                    os.environ["ATC_VOICE_ENGINE"] = "piper"
+                if self.v["voice_engine"].get() in ("piper", "gemini"):
+                    os.environ["ATC_VOICE_ENGINE"] = self.v["voice_engine"].get()
                 else:
                     os.environ.pop("ATC_VOICE_ENGINE", None)
                 path = ROOT / voice

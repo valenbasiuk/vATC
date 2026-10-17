@@ -34,6 +34,10 @@ def available(engine: str) -> str | None:
         if not (KOKORO_DIR / KOKORO_MODEL).exists() or not (KOKORO_DIR / KOKORO_VOICES).exists():
             return "model files missing: python tools/voice_compare.py --download-kokoro"
         return None
+    if engine == "gemini":
+        from atc.llm.client import env_key
+
+        return None if env_key("GEMINI_API_KEY") else "no GEMINI_API_KEY"
     if engine == "edge":
         if importlib.util.find_spec("edge_tts") is None:
             return "pip install edge-tts"
@@ -91,6 +95,67 @@ def _edge(name: str, text: str, rate: float) -> bytes:
     return asyncio.run(run())
 
 
+# Gemini TTS (Valen 2026-10-17: the 3.8 voices sound best). The plain text only: a style line in the prompt is read
+# out loud ("brisk, calm air traffic controller ...") and these models refuse a system instruction.
+GEMINI_TTS_MODELS = "gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts"  # tried in order (ATC_GEMINI_TTS)
+GEMINI_REST_S = 600.0  # a model that answered 429 (daily / minute quota) is left alone this long
+GEMINI_TIMEOUT_S = 40.0
+_gemini_rest: dict[str, float] = {}
+
+
+def _gemini(name: str, text: str):
+    """(float32 samples, rate) from the first Gemini TTS model that answers; raises if none does."""
+    import base64
+    import io
+    import json
+    import os
+    import time
+    import urllib.error
+    import urllib.request
+    import wave
+
+    import numpy as np  # type: ignore
+
+    from atc.llm.client import env_key
+
+    key = env_key("GEMINI_API_KEY")
+    if not key:
+        raise RuntimeError("no GEMINI_API_KEY")
+    body = json.dumps({"contents": [{"parts": [{"text": text}]}], "generationConfig": {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": name}}}}}).encode()
+    errors = []
+    for model in [m.strip() for m in os.environ.get("ATC_GEMINI_TTS", GEMINI_TTS_MODELS).split(",") if m.strip()]:
+        if time.monotonic() < _gemini_rest.get(model, 0.0):
+            continue
+        req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                     data=body, headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        try:
+            with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT_S) as r:
+                resp = json.load(r)
+            data = resp["candidates"][0]["content"]["parts"][0]["inlineData"]
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                _gemini_rest[model] = time.monotonic() + GEMINI_REST_S
+            errors.append(f"{model} {e.code}")
+            continue
+        except (OSError, KeyError, IndexError, ValueError) as e:
+            errors.append(f"{model} {type(e).__name__}")
+            continue
+        raw = base64.b64decode(data["data"])
+        if raw[:4] == b"RIFF":  # the 3.8 models send a WAV; 2.5 sent raw 24 kHz PCM
+            with wave.open(io.BytesIO(raw)) as w:
+                rate, ch, pcm = w.getframerate(), w.getnchannels(), w.readframes(w.getnframes())
+        else:
+            mime = data.get("mimeType", "")
+            rate, ch, pcm = int(mime.split("rate=")[1].split(";")[0]) if "rate=" in mime else 24000, 1, raw
+        x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        if ch > 1:
+            x = x.reshape(-1, ch).mean(axis=1)
+        return x, rate
+    raise RuntimeError("Gemini TTS: " + (", ".join(errors) or "every model resting after a quota answer"))
+
+
 def synthesize(engine: str, name: str, text: str, rate: float = 1.0):
     """(float32 mono samples, sample rate) of `text` in voice `name` of `engine`; `rate` as Piper's length scale
     (< 1 faster). Raises if the engine can't speak (the caller falls back to Piper)."""
@@ -102,12 +167,14 @@ def synthesize(engine: str, name: str, text: str, rate: float = 1.0):
         return np.asarray(samples, dtype=np.float32), int(sr)
     if engine == "edge":
         return _decode_mp3(_edge(name, text, rate))
+    if engine == "gemini":  # (no speed setting: it speaks at its own pace)
+        return _gemini(name, text)
     raise ValueError(f"no engine {engine!r}")
 
 
 def parse_spec(spec: str) -> tuple[str, str]:
     """'edge:en-US-GuyNeural' -> ('edge', 'en-US-GuyNeural'); a bare name is a Piper model."""
     engine, sep, name = spec.partition(":")
-    if sep and engine in ("kokoro", "edge", "piper"):
+    if sep and engine in ("kokoro", "edge", "piper", "gemini"):
         return engine, name
     return "piper", spec

@@ -42,6 +42,18 @@ STANDING = {"parked", "ask_push", "push_radio", "starting", "ask_taxi", "taxi_ra
             "lined_up", "clear_of_runway", "taxi_in_radio", "parked_in", "hold_short", "cross_radio"}
 ASK_LANDING_NM = 9.0  # checks in with Tower from here
 GO_AROUND_NM = 1.0  # no landing clearance by now: going around
+# Valen 2026-10-17: a pilot rarely goes around on his own because of a blocked runway, Tower sends him around
+# first (TOWER_GA_NM, manager._check_uncleared_arrival); only this share calls "going around" itself at GO_AROUND_NM
+PILOT_GA_SHARE = 0.05
+TOWER_GA_NM = 1.5  # Tower: "go around" to an arrival it couldn't clear to land by here
+TOWER_GA_CIRCUIT_NM = 0.6  # the same on a circuit's short final
+# Go-arounds with the landing clearance (unstable approach, a gust): rare, a little more often in strong wind
+RANDOM_GA = True  # tests switch it off (conftest)
+RANDOM_GA_BASE = 0.01  # per approach
+RANDOM_GA_PER_KT = 0.002  # more per knot of wind above RANDOM_GA_FROM_KT
+RANDOM_GA_FROM_KT = 15.0
+RANDOM_GA_MAX = 0.05
+RANDOM_GA_NM = (0.2, 1.5)  # where on the final it happens
 ROLLOUT_TAXI_KT = 25.0  # the rollout becomes a taxi below this
 PARKED_FOR_S = (240.0, 480.0)
 SPACING_NM = 3.0  # slows to the speed of the aircraft ahead on final inside this
@@ -416,6 +428,17 @@ class DeparturePilot(_Pilot):
         self._go("climbout", now)
 
 
+def random_ga_point(wind_kt: float | None) -> float | None:
+    """Where on the final a cleared arrival goes around anyway (NM), or None (most of the time): RANDOM_GA_BASE per
+    approach, a little more per knot of wind above RANDOM_GA_FROM_KT, at most RANDOM_GA_MAX."""
+    if not RANDOM_GA:
+        return None
+    chance = RANDOM_GA_BASE + RANDOM_GA_PER_KT * max(0.0, (wind_kt or 0.0) - RANDOM_GA_FROM_KT)
+    if random.random() >= min(RANDOM_GA_MAX, chance):
+        return None
+    return random.uniform(*RANDOM_GA_NM)
+
+
 class ArrivalPilot(_Pilot):
     kind = "arrival"
 
@@ -443,6 +466,9 @@ class ArrivalPilot(_Pilot):
         self.runway_reserved = False  # one of ours lined up (or lining up) to wait on its runway: the manager sets it
         self.downwind_called = False
         self.takeoff: Takeoff | None = None
+        self.ga_by_pilot = random.random() < PILOT_GA_SHARE  # blocked runway: goes around before Tower says so
+        self.wind_kt: float | None = None  # surface wind (the manager sets it): go-arounds a little more likely
+        self.random_ga_nm: float | None = None  # cleared to land, but goes around here anyway (rolled at clearance)
         if join is not None:
             self._start_join(join)
             self.state = "joining"
@@ -468,6 +494,7 @@ class ArrivalPilot(_Pilot):
     def _cleared_in_place(self, what: str, now: float) -> bool:
         if what == "landing":
             self.landing_cleared = True
+            self.random_ga_nm = random_ga_point(self.wind_kt)
             return True
         if what in ("checkin", "go_around", "ground", "downwind", "announce"):
             return True
@@ -481,11 +508,16 @@ class ArrivalPilot(_Pilot):
         return abs(along) + abs(cross) + 1.0  # joining: the way still to fly, roughly
 
     def order_go_around(self, now: float) -> None:
-        """Tower: "go around" (the runway got occupied after the landing clearance)."""
+        """Tower: "go around" (the runway is occupied; a circuit flies round again)."""
         if self.state == "final" and not self.approach.on_ground:
-            self.approach.go_around()
             self.landing_cleared = False
+            self.random_ga_nm = None
             self.wants = None
+            if self.circuit:
+                self.checked_in = self.downwind_called = False
+                self._resume_circuit(now)
+                return
+            self.approach.go_around()
             self._go("go_around", now)
 
     def step(self, now: float, dt: float, others: list[Traffic]) -> None:
@@ -519,8 +551,10 @@ class ArrivalPilot(_Pilot):
             if not self.checked_in and a.dist_nm <= ASK_LANDING_NM and self.wants is None:
                 self.wants = "landing"
             limit = GA_GO_AROUND_NM if self.circuit else GO_AROUND_NM
-            if not self.landing_cleared and a.dist_nm <= limit and not a.on_ground:
-                self.wants = "go_around"
+            unstable = self.landing_cleared and self.random_ga_nm is not None and a.dist_nm <= self.random_ga_nm
+            if ((not self.landing_cleared and a.dist_nm <= limit) or unstable) and not a.on_ground:
+                self.wants = "go_around"  # the pilot's own "going around" (Tower answers it)
+                self.landing_cleared, self.random_ga_nm = False, None
                 if self.circuit:  # round the circuit again instead of leaving
                     self.landing_cleared = self.checked_in = self.downwind_called = False
                     self._resume_circuit(now)
@@ -600,6 +634,15 @@ class ArrivalPilot(_Pilot):
             if d is not None and j - gap < d < j + gap * 1.5:
                 return True
         return False
+
+    def tower_should_send_around(self) -> bool:
+        """Not cleared to land this close in: Tower says "go around" (unless this pilot is one of the few who
+        goes around first)."""
+        if self.state != "final" or self.landing_cleared or self.ga_by_pilot or not self.checked_in:
+            return False
+        if self.approach is None or self.approach.on_ground:
+            return False
+        return self.approach.dist_nm <= (TOWER_GA_CIRCUIT_NM if self.circuit else TOWER_GA_NM)
 
     def _resume_circuit(self, now: float) -> None:
         """Climbing away from a touch and go (or a circuit takeoff): round the circuit again."""
