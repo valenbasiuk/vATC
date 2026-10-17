@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 STATUS = Path(tempfile.gettempdir()) / "vatc_status.json"
 STT_MODELS = ["tiny.en", "base.en", "small.en", "medium.en"]
 CREATE_NO_WINDOW = 0x08000000
+LOG_MAX_LINES = 5000  # Flight-tab transcript: older lines are dropped
 
 
 def _voices() -> list[str]:
@@ -180,6 +181,18 @@ class App(tk.Tk):
                                                  variable=self._var("atis_question", tk.BooleanVar)))
         self._row(at, 4, "Standby", ttk.Scale(at, from_=0.0, to=1.0, variable=self._var("standby", tk.DoubleVar)),
                   "how often Delivery says standby")
+        rb = ttk.Frame(at)
+        mode = self._var("readback")
+        for val, txt in (("strict", "strict (every item)"), ("relaxed", "relaxed (learning)")):
+            ttk.Radiobutton(rb, text=txt, value=val, variable=mode).pack(side="left", padx=(0, 8))
+        self._row(at, 5, "Readbacks", rb, "relaxed: only wrong runway / level / heading / squawk / QNH corrected")
+        self._row(at, 6, "Busy controller", ttk.Checkbutton(at, text='"standby" on a busy frequency, the answer after',
+                                                            variable=self._var("busy_standby", tk.BooleanVar)))
+        lg = ttk.Frame(at)
+        lang = self._var("language")
+        for val, txt in (("en", "English"), ("es", "Español (experimental)")):
+            ttk.Radiobutton(lg, text=txt, value=val, variable=lang).pack(side="left", padx=(0, 8))
+        self._row(at, 7, "Radio language", lg)
 
         tr = ttk.LabelFrame(f, text="Our own traffic", padding=8)
         tr.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
@@ -297,8 +310,8 @@ class App(tk.Tk):
                 (ROOT / "simbrief_last.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
                 self.after(0, lambda: (self.plan_label.config(text=self._plan_summary()),
                                        self.v["use_simbrief"].set(True)))
-            except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda: self.plan_label.config(text=f"SimBrief: {exc}"))
+            except Exception as exc:  # noqa: BLE001 - (bound now: Python deletes `exc` when the except ends)
+                self.after(0, lambda msg=str(exc): self.plan_label.config(text=f"SimBrief: {msg}"))
 
         self.plan_label.config(text="fetching ...")
         threading.Thread(target=work, daemon=True).start()
@@ -336,7 +349,7 @@ class App(tk.Tk):
                     time.sleep(0.03)
                 self.after(0, lambda: self.joy_label.config(text="nothing pressed"))
             except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda: self.joy_label.config(text=f"no joystick: {exc}"))
+                self.after(0, lambda msg=str(exc): self.joy_label.config(text=f"no joystick: {msg}"))
 
         self.joy_label.config(text="press the button now ...")
         threading.Thread(target=work, daemon=True).start()
@@ -367,7 +380,7 @@ class App(tk.Tk):
                 tts.say_as("Cleared for takeoff runway one three, Aerolineas one two three four.",
                            who="pilot", voice=bank.pilot("ARG1234", "AR"))
             except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda: messagebox.showerror("vATC", f"Voice test failed: {exc}"))
+                self.after(0, lambda msg=str(exc): messagebox.showerror("vATC", f"Voice test failed: {msg}"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -401,8 +414,22 @@ class App(tk.Tk):
         self.tabs.select(self.flight)
 
     def _reader(self, proc: subprocess.Popen) -> None:
+        # The same line over and over (a library error in a loop) is shown once plus a count: a flood of millions of
+        # lines froze the window and grew it to 3 GB (2026-10-17, SimConnect pipe errors)
+        last, repeats = None, 0
         for line in proc.stdout:
-            self.lines.put(line.rstrip("\n"))
+            line = line.rstrip("\n")
+            if line == last and line.strip():
+                repeats += 1
+                if repeats % 1000 == 0:
+                    self.lines.put(f"[... the line above repeated {repeats} times]")
+                continue
+            if repeats:
+                self.lines.put(f"[... the line above repeated {repeats} times]")
+            last, repeats = line, 0
+            self.lines.put(line)
+        if repeats:
+            self.lines.put(f"[... the line above repeated {repeats} times]")
         self.lines.put(f"[ATC stopped (exit {proc.wait()})]")
 
     def _send(self, text: str) -> None:
@@ -497,6 +524,8 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         if added:
+            if int(self.log.index("end-1c").split(".")[0]) > LOG_MAX_LINES:  # keep the window light on long flights
+                self.log.delete("1.0", f"end-{LOG_MAX_LINES}l")
             self.log.see("end")
             self.log.config(state="disabled")
         if self.proc is not None and self.proc.poll() is not None and self.status_label.cget("text") == "running":
@@ -504,6 +533,13 @@ class App(tk.Tk):
         self.after(150, self._pump)
 
     def _poll_status(self) -> None:
+        try:
+            self._show_status()
+        except Exception as exc:  # noqa: BLE001 - a field missing in the status file: keep polling
+            self.where.config(text=f"(status: {exc})")
+        self.after(1500, self._poll_status)
+
+    def _show_status(self) -> None:
         try:
             data = json.loads(STATUS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -530,7 +566,6 @@ class App(tk.Tk):
             self.own.delete(*self.own.get_children())
             for o in data.get("own", []):
                 self.own.insert("", "end", text=o["callsign"], values=(o["type"], o["kind"], o["state"]))
-        self.after(1500, self._poll_status)
 
 
 def main() -> None:

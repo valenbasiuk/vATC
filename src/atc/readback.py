@@ -22,7 +22,28 @@ _REQUEST_WORDS = ("ready", "request", "inbound", "departure", "taxi to the", "go
 @dataclass
 class ReadbackResult:
     status: str  # "none" (not a readback), "correct", "incomplete"
-    missing: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)  # items left out or said wrong
+    wrong: list[str] = field(default_factory=list)  # of those, the ones said with a different value
+
+
+# Readback mode (improvement plan G1): "strict" = every item of ICAO Doc 4444 4.5.7.5 must come back and a bare
+# "roger" gets "read back"; "relaxed" (learning) = only safety items said WRONG are corrected (runway, level, altitude,
+# heading, squawk, QNH, frequency) plus a "hold short" left out; omissions and "roger" pass. main sets it (--readback).
+MODE = "strict"
+SAFETY_ITEMS = ("runway", "level", "altitude", "heading", "squawk", "qnh", "frequency")
+
+
+def relaxed() -> bool:
+    return MODE == "relaxed"
+
+
+def needs_correction(rb: "ReadbackResult") -> bool:
+    """Whether an incomplete readback gets "negative, I say again" in the current mode."""
+    if rb.status != "incomplete":
+        return False
+    if not relaxed():
+        return True
+    return any(w.split()[0] in SAFETY_ITEMS for w in rb.wrong) or "hold short" in rb.missing
 
 
 def _normalize(text: str) -> str:
@@ -30,6 +51,9 @@ def _normalize(text: str) -> str:
     t = re.sub(r"(?<=\d)\.(?=\d)", " decimal ", t)  # "120.6" -> "120 decimal 6", same as when spoken
     t = re.sub(r"[^a-z0-9 ]", " ", t)
     t = " ".join(_DIGITS.get(w, w) for w in t.split())
+    # Whisper hears "IFR clearance" as "a fire cleanse" (Valen, 2026-10-17)
+    t = re.sub(r"\b(?:a )?(?:fire|i fr|i f r) (?:clearance|cleanse|clearence|clarence)\b", "ifr clearance", t)
+    t = re.sub(r"\b(?:cleanse|clearence|clarence)\b(?= to\b)", "clearance", t)
     # speech-to-text splits these ("cleared for take off", "left down wind"): one spelling everywhere
     return re.sub(r"\b(take|down|up|cross) (off|wind)\b",
                   lambda m: m.group(0).replace(" ", "") if (m.group(1), m.group(2)) in _JOINED else m.group(0), t)
@@ -249,8 +273,8 @@ def _pure_ack(pilot_text: str, ignore: tuple[str, ...]) -> bool:
 
 def readback_missing(atc_text: str | None, pilot_text: str, ignore: tuple[str, ...] = ()) -> bool:
     """The instruction needed a readback, but the pilot only acknowledged it. Call it when check_readback()
-    returned "none" (the pilot repeated none of the checkable items)."""
-    if not needs_readback(atc_text) or not is_acknowledgement(atc_text, pilot_text, ignore):
+    returned "none" (the pilot repeated none of the checkable items). Never in the relaxed mode."""
+    if relaxed() or not needs_readback(atc_text) or not is_acknowledgement(atc_text, pilot_text, ignore):
         return False
     if _items(atc_text):  # runway / taxiways / QNH / squawk to read back, and none of them came back
         return True
@@ -293,21 +317,26 @@ def check_readback(last_atc: str | None, pilot_text: str) -> ReadbackResult:
             return ReadbackResult("none")
     if not got:  # nothing of the instruction repeated: not a readback attempt
         return ReadbackResult("none")
-    missing = []
+    missing, wrong = [], []
     for key, val in expected.items():
         if key == "frequency":
             if "frequency" in got and not (val & got["frequency"]):
                 missing.append("frequency")
+                wrong.append("frequency")
             continue
         if key in ("qnh", "squawk", "level", "altitude", "heading", "speed"):
             if got.get(key) != val:
                 missing.append(f"{key} {val}")
+                if got.get(key) is not None:
+                    wrong.append(f"{key} {val}")
         elif key == "runway":
             if got.get("runway") != val:
                 missing.append(f"runway {val}")
+                if got.get("runway") is not None:
+                    wrong.append(f"runway {val}")
         elif key == "taxi route":
             if not val <= got.get("taxi route", frozenset()):
                 missing.append("taxi route")
         elif key not in got:
             missing.append(key)
-    return ReadbackResult("incomplete" if missing else "correct", missing)
+    return ReadbackResult("incomplete" if missing else "correct", missing, wrong)

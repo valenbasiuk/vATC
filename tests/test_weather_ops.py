@@ -10,7 +10,7 @@ from atc import atis, own, weather
 from atc.audio.tts import PrintTTS
 from atc.facility import resolve_facility
 from atc.main import _Callbacks, handle
-from atc.models import Frequency, OwnState, Runway
+from atc.models import Frequency, OwnState
 from atc.session import Session
 from atc.sim.fake import FakeSim
 from atc.taxi import handle_crossing, handle_taxi

@@ -470,7 +470,8 @@ def _speed_text(session, own: OwnState, kt: int, airport: Airport) -> str | None
     """'reduce speed to two one zero knots' (FAA without 'knots') when the aircraft is faster than that (indicated
     airspeed, else ground speed) and hasn't been given this speed or a lower one already."""
     now = own.ias_kt if own.ias_kt is not None else own.gs_kt
-    if now <= kt + 10 or (session.speed_assigned is not None and session.speed_assigned <= kt):
+    if now <= kt + 10 or (session.speed_assigned is not None and session.speed_assigned <= kt) \
+            or session.emergency is not None:  # an aircraft in an emergency flies its own speeds
         return None
     session.speed_assigned = kt
     return f"reduce speed to {phrase.digits(str(kt))}" + ("" if airport.faa else " knots")
@@ -491,15 +492,30 @@ def _traffic_ahead(dest: Airport, rwy: Runway, own: OwnState, traffic) -> tuple[
     return best
 
 
+def _rvr(session, dest: Airport, rwy: Runway, own: OwnState) -> str | None:
+    """The runway's RVR when it is low ("RVR five five zero metres", improvement plan A5), else None."""
+    from atc import atis
+
+    return atis.rvr_words(dest, rwy.ident, own, session.surface_wind.get(dest.icao))
+
+
 def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState, traffic=()) -> str:
     """Turn onto a 30-degree intercept (or straight in if already lined up) and the approach clearance, with the
-    speed: 180 kt, or 160 kt and the traffic to follow when someone is on final close ahead."""
+    speed: 180 kt, or 160 kt and the traffic to follow when someone is on final close ahead; the RVR when low."""
     _, cross = _signed_cross(dest, rwy, own.lat, own.lon)
     cleared = _cleared(_approach(dest, rwy))
     alt = phrase.level(int(session.cleared_level_ft or _arrival_altitude(dest, session)), dest)
     session.intercept_given = True
     cs = session.spoken_callsign
     ahead = _traffic_ahead(dest, rwy, own, traffic)
+    side = _sidestep_runway(dest, rwy, own, traffic) if ahead and session.emergency is None else None
+    if side is not None:  # traffic close ahead, the parallel free: land there (improvement plan C3)
+        session.runway_requests[f"{dest.icao}:arrival"] = side.ident
+        cleared += f", side-step to runway {phrase.runway(side.ident, dest.faa)}"
+        ahead = None
+    rvr = _rvr(session, dest, side or rwy, own)
+    if rvr:
+        cleared += f", {rvr}"
     speed = _speed_text(session, own, SPACING_KT if ahead else INTERCEPT_KT, dest)
     tail = (f", {speed}" if speed else "") + \
         (f", traffic to follow, {ahead[0]} on {_miles(ahead[1])} final" if ahead else "")
@@ -508,6 +524,21 @@ def intercept_text(session, dest: Airport, rwy: Runway, own: OwnState, traffic=(
     true_int = (rwy.heading_deg - 30) % 360 if cross > 0 else (rwy.heading_deg + 30) % 360
     hdg, turn, _ = _turn(dest, own, true_int)
     return f"{cs}, turn {turn} heading {hdg}, maintain {alt} until established, {cleared}{tail}."
+
+
+def _sidestep_runway(dest: Airport, rwy: Runway, own: OwnState, traffic) -> Runway | None:
+    """A parallel landing runway of the configuration in use with nobody close ahead on its final (FAA airports with
+    side-step minima: KSFO 28L/28R, JFK...), or None."""
+    if not dest.faa:
+        return None
+    from atc.flow import parallels
+    from atc.runway import runways_in_use
+
+    landing = {r.ident for r in runways_in_use(dest, own.wind_dir_deg, own.wind_kt, "arrival")}
+    for p in parallels(dest, rwy):
+        if p.ident in landing and _traffic_ahead(dest, p, own, traffic) is None:
+            return p
+    return None
 
 
 def _due_for_intercept(dest: Airport, rwy: Runway, own: OwnState, session=None) -> bool:
@@ -571,7 +602,8 @@ def handle_request(session, world, airport: Airport, facility: Facility, own: Ow
         n = max(5, int(round(distance_nm(own.lat, own.lon, *plan.tod) / 5.0) * 5)) if plan.tod else None
         return f"{cs}, expect descent in {phrase.digits(str(n))} miles." if n else f"{cs}, expect descent later."
     if re.search(r"\b(higher|climb|level)\b", norm) and plan.cruise_ft and not session.descent_given:
-        asked = re.search(r"\b(?:flight level|level|fl) (\d{2,3})\b", re.sub(r"(?<=\d) (?=\d)", "", norm))
+        asked = re.search(r"\b(?:flight level|level|fl) (\d{2,3})\b",
+                          re.sub(r"(?<=\d) (?=\d)", "", re.sub(r"(?<=[a-z])(?=\d)", " ", norm)))
         want = min(int(asked.group(1)) * 100, plan.cruise_ft) if asked else plan.cruise_ft
         origin = world.get(session.departed_from) or airport  # its transition altitude: FL or feet
         if own.alt_msl_ft >= want - 300:
@@ -646,8 +678,9 @@ def arrival_event(session, world, own: OwnState, traffic: list[Traffic]) -> str 
         if st.own_final_nm is not None and st.own_final_nm <= LANDING_CLEARANCE_NM and st.landing_blocked() is None:
             session.landing_cleared = True
             wind = phrase.wind(magnetic(dest, own.wind_dir_deg), own.wind_kt, dest.faa)
+            rvr = _rvr(session, dest, rwy, own)
             return f"{cs}, " + (f"{wind}, " if wind else "") + \
-                f"runway {phrase.runway(rwy.ident, dest.country == 'US')}, cleared to land."
+                f"runway {phrase.runway(rwy.ident, dest.country == 'US')}, cleared to land" + (f", {rvr}." if rvr else ".")
     if not _arrival_radar(world, session, airport, facility):
         return None
     if session.is_first_contact(facility.role) or session.holding:

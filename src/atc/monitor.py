@@ -21,7 +21,7 @@ from atc import phrase, terrain
 from atc.geo import distance_nm
 from atc.models import Airport, Facility, OwnState, Traffic
 from atc.readback import _normalize
-from atc.runway import magnetic, session_runway
+from atc.runway import session_runway
 
 LEVEL_BUST_FT = 300.0
 LOW_ALT_PAUSE_S = 10.0  # after a low altitude warning: the pilot climbs and reads back before the next vector
@@ -141,28 +141,17 @@ def _start_over(session, world) -> None:
 
 
 _GO_AROUND = re.compile(r"\b(going around|go around|missed approach|executing missed|discontinu\w* approach)\b")
-_MAYDAY = re.compile(r"\bmay ?day\b")
-_PAN = re.compile(r"\bpan ?pan\b")
 
 
 def handle_pilot(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str,
                  now: float) -> str | None:
     norm = _normalize(pilot_text)
     cs = session.spoken_callsign
-    if _MAYDAY.search(norm) or _PAN.search(norm):
-        kind = "mayday" if _MAYDAY.search(norm) else "pan pan"
-        first = session.emergency != kind
-        session.emergency = kind
-        if not first:
-            return None  # the follow-up (nature, intentions, souls on board) is free-form: the model answers
-        bits = [f"{cs}, roger {kind}"]
-        if not own.on_ground and facility.role in ("tower", "approach") and airport.runways:
-            rwy = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "arrival")
-            if rwy is not None:
-                wind = phrase.wind(magnetic(airport, own.wind_dir_deg), own.wind_kt, airport.faa)
-                bits.append(f"runway {phrase.runway(rwy.ident, airport.faa)} available" + (f", {wind}" if wind else ""))
-        bits.append("say intentions")
-        return ", ".join(bits) + "."
+    from atc import emergency
+
+    reply = emergency.handle(session, world, airport, facility, own, pilot_text)  # mayday / pan pan and after
+    if reply is not None:
+        return reply
     plan = session.plan
     ifr = plan is not None and plan.is_ifr
     if session.missed_approach and ifr and not own.on_ground and facility.role in ("approach", "departure") \
@@ -237,10 +226,6 @@ def missed_checkin(session, world, airport: Airport, facility: Facility, own: Ow
 
 def context_lines(session) -> list[str]:
     """Facts for the model when an emergency is on."""
-    if session.emergency is None:
-        return []
-    what = {"mayday": "MAYDAY (distress)", "pan pan": "PAN PAN (urgency)",
-            "squawk": "transponder 7700 (emergency squawk)"}[session.emergency]
-    return [f"EMERGENCY declared by the pilot: {what}. Give them priority, keep instructions short, offer the nearest "
-            "suitable runway, ask (once) for souls on board and fuel endurance if not given. Never refuse a request "
-            "on the grounds of traffic."]
+    from atc import emergency
+
+    return emergency.context_lines(session)

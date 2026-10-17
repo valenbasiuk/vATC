@@ -17,6 +17,7 @@ thread ahead of playback). ATC_KOKORO_THREADS (default 4) keeps it from taking e
 
 from __future__ import annotations
 
+import collections
 import os
 import queue
 import re
@@ -141,6 +142,27 @@ class PrintTTS:
         print(f"{'ATC' if who == 'ATC' else who}> {text}")
 
 
+AIR_LOG_S = 60.0
+
+
+def blocked_by(air_log, on_air, start: float | None, end: float | None, min_s: float = 0.4) -> str | None:
+    """Who the user's transmission (from `start` to `end`, time.monotonic()) went out on top of (improvement plan G2):
+    "pilot" if another aircraft was transmitting for at least `min_s` of it (two carriers: ATC hears a squeal),
+    "ATC" if the controller was (a controller transmitting hears nobody), else None. The ATIS is on another
+    frequency and never blocks. `air_log`: (start, end, who) of past transmissions; `on_air`: (who, start) now."""
+    if start is None or end is None:
+        return None
+    spans = list(air_log) + ([(on_air[1], end, on_air[0])] if on_air else [])
+    hit = None
+    for a, b, who in spans:
+        if who == "ATIS" or min(b, end) - max(a, start) < min_s:
+            continue
+        if who != "ATC":
+            return "pilot"
+        hit = "ATC"
+    return hit
+
+
 class PiperTTS:
     audio = True  # real sound: loops (ATIS) may repeat without flooding a console
 
@@ -167,6 +189,9 @@ class PiperTTS:
         self.length_scale = length_scale  # < 1.0 speaks faster (controllers talk fast)
         self._kokoro: KokoroEngine | None = None
         self._kokoro_failed = False
+        self._broken: set[str] = set()  # voice engines that failed this session (Piper takes over)
+        self.on_air: tuple[str, float] | None = None  # (who, since) while a transmission plays
+        self.air_log: list[tuple[float, float, str]] = []  # (start, end, who) of the last minute's transmissions
 
     def kokoro(self, model_path: str) -> KokoroEngine | None:
         """The Kokoro engine (loaded once). None if it can't load: those voices then fall back to Piper's."""
@@ -214,9 +239,16 @@ class PiperTTS:
                 yield shift_pitch(samples, pitch), sr
             return
         if voice is not None and not isinstance(voice, int):
-            model, speaker, rate = self._model(voice.model), voice.speaker, voice.rate * self.length_scale
             pitch = getattr(voice, "pitch", 1.0) or 1.0
-            rate *= pitch  # synthesized that much slower: the pitch shift below brings the length back
+            engine = getattr(voice, "engine", "piper")
+            if engine != "piper" and engine not in self._broken:
+                yield from self._engine_chunks(voice, text, pitch)
+                return
+            if engine != "piper":  # that engine failed before: this voice's place is taken by the main Piper voice
+                speaker, pitch = None, 1.0
+            else:
+                model, speaker, rate = self._model(voice.model), voice.speaker, voice.rate * self.length_scale
+                rate *= pitch  # synthesized that much slower: the pitch shift below brings the length back
         kwargs = {}
         try:
             from piper import SynthesisConfig  # type: ignore
@@ -227,6 +259,25 @@ class PiperTTS:
         for chunk in model.synthesize(text, **kwargs):
             samples = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             yield shift_pitch(samples, pitch), chunk.sample_rate
+
+    def _engine_chunks(self, voice, text: str, pitch: float):
+        """A Kokoro / Edge voice (audio/engines.py), sentence by sentence; if the engine fails (not installed,
+        offline), the rest is said in the main Piper voice and that engine isn't tried again this session."""
+        import re
+
+        from atc.audio import engines
+
+        rate = voice.rate * self.length_scale * pitch
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+        for i, sentence in enumerate(sentences):
+            try:
+                samples, sr = engines.synthesize(voice.engine, voice.name, sentence, rate)
+            except Exception as exc:  # noqa: BLE001 - never lose a transmission over a voice engine
+                print(f"[voice {voice.key} failed ({str(exc)[:120]}): Piper from now on]")
+                self._broken.add(voice.engine)
+                yield from self._chunks(" ".join(sentences[i:]), None)
+                return
+            yield shift_pitch(samples, pitch), sr
 
     def synthesize(self, text: str, voice=None):
         """Returns (float32 mono samples, sample_rate) for the whole text."""
@@ -252,6 +303,8 @@ class PiperTTS:
         stream = None
         # every station sounds a little different on the radio (its own hiss), the same each time
         hiss = 0.004 + (zlib.crc32(str(getattr(voice, "label", voice)).encode()) % 5) * 0.002
+        out_rate = None
+        feed = _Feed()
         try:
             for samples, rate in _ahead(self._chunks(text, voice)):
                 if len(samples) == 0:
@@ -260,19 +313,99 @@ class PiperTTS:
                     samples = apply_radio_fx(samples, rate, noise=hiss)
                 if stream is None:
                     self.last_synth_s = time.perf_counter() - t0  # delay before audio starts
-                    stream = sd.OutputStream(samplerate=rate, channels=1, dtype="float32", device=self.device)
-                    stream.start()
+                    out_rate = _device_rate(sd, self.device) or rate  # the device's own rate (we resample)
                     # Lead silence: the output device often clips the first word.
-                    stream.write(np.zeros(int(rate * self.lead_pad_s), dtype=np.float32))
-                stream.write(samples.astype(np.float32))
+                    feed.put(np.zeros(int(out_rate * self.lead_pad_s), dtype=np.float32))
+                    feed.put(_resample(samples, rate, out_rate))
+                    # Callback mode: the sound card pulls the audio as it plays. Blocking writes returned at once
+                    # on Valen's Samsung earphones (DirectSound, PortAudio 19.7) and stop() then cut everything:
+                    # every ATC call was silent (2026-10-17)
+                    stream = sd.OutputStream(samplerate=out_rate, channels=1, dtype="float32", device=self.device,
+                                             callback=feed.callback, finished_callback=feed.done.set)
+                    stream.start()
+                    self.on_air = (who, time.monotonic())
+                    continue
+                feed.put(_resample(samples, rate, out_rate))
             if stream is not None:
                 if self.radio_fx:
-                    stream.write(squelch_tail(rate))  # the "kssh" when the other station unkeys
-                stream.write(np.zeros(int(rate * self.tail_pad_s), dtype=np.float32))
+                    feed.put(_resample(squelch_tail(rate), rate, out_rate))  # the "kssh" when the other unkeys
+                feed.put(np.zeros(int(out_rate * self.tail_pad_s), dtype=np.float32))
+                feed.close()
+                feed.done.wait(feed.seconds(out_rate) + 5.0)  # until the card has played it all
         finally:
             if stream is not None:
+                feed.close()
                 stream.stop()
                 stream.close()
+            if self.on_air is not None:
+                now = time.monotonic()
+                self.air_log = [x for x in self.air_log if now - x[1] <= AIR_LOG_S] + \
+                    [(self.on_air[1], now, self.on_air[0])]
+                self.on_air = None
+
+
+class _Feed:
+    """Audio handed to a callback OutputStream: put() parts as they are synthesized, close() after the last one; the
+    callback plays silence while the next part is late and stops the stream once everything has been played."""
+
+    def __init__(self) -> None:
+        self._parts: collections.deque = collections.deque()
+        self._pos = 0  # samples of the first part already played
+        self._closed = False
+        self._lock = threading.Lock()
+        self._total = 0
+        self.done = threading.Event()
+
+    def put(self, samples) -> None:
+        with self._lock:
+            self._parts.append(samples)
+            self._total += len(samples)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+
+    def seconds(self, rate: int) -> float:
+        return self._total / max(rate, 1)
+
+    def callback(self, outdata, frames, _time, _status) -> None:
+        import sounddevice as sd  # type: ignore
+
+        out = outdata[:, 0]
+        n = 0
+        with self._lock:
+            while n < frames and self._parts:
+                part = self._parts[0]
+                take = min(frames - n, len(part) - self._pos)
+                out[n:n + take] = part[self._pos:self._pos + take]
+                n += take
+                self._pos += take
+                if self._pos >= len(part):
+                    self._parts.popleft()
+                    self._pos = 0
+            finished = self._closed and not self._parts
+        out[n:] = 0.0
+        if finished:
+            raise sd.CallbackStop  # this block still plays, then finished_callback
+
+
+def _device_rate(sd, device) -> int | None:
+    """The output device's default sample rate (None if it can't be asked)."""
+    try:
+        return int(sd.query_devices(device if device is not None else sd.default.device[1])["default_samplerate"])
+    except Exception:  # noqa: BLE001 - unknown device: play at the voice's rate as before
+        return None
+
+
+def _resample(samples, rate: int, out_rate: int):
+    """float32 mono from `rate` to `out_rate` (linear: fine for a band-passed radio voice)."""
+    import numpy as np  # type: ignore
+
+    samples = np.asarray(samples, dtype=np.float32)
+    if rate == out_rate or len(samples) == 0:
+        return samples
+    n = int(round(len(samples) * out_rate / rate))
+    return np.interp(np.arange(n) * (rate / out_rate), np.arange(len(samples)), samples).astype(np.float32)
 
 
 def _ahead(chunks):

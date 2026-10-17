@@ -1,9 +1,12 @@
 # Improvement plan (2026-10-07): ATIS/weather, ground ops, a launcher, and what SayIntentions does
 
-STATUS 2026-10-08: blocks 1-3 of "Order of work" BUILT (fake sim + tests, 286 tests; 16 simulated hours of our
-traffic at SABE and SARC with no runway conflict and nothing stuck): A1 A2 A3 A4 B1 B2 (block 1), I1 I2 I3 (block
-2), B3 B4 B5 (block 3), plus Ground re-routing and head-on deconfliction for our traffic. Blocks 4-7 are in
-docs/ROADMAP.md "NEXT". In-sim checks: docs/ROADMAP.md "WATCH IN THE SIM 2026-10-08".
+STATUS 2026-10-11: blocks 1-7 of "Order of work" BUILT (fake sim + tests, 365 tests; our traffic soaked 3
+simulated hours each at SABE and SARC with the real scenery data: nothing stuck, no go-arounds, holding-point waits
+under ~3.5 min). Block 1-3 (2026-10-08): A1 A2 A3 A4 B1 B2, I1 I2 I3, B3 B4 B5. Blocks 4-7 (2026-10-11): C1 C2 C4
+C5 D1, G1 G2 G3 F1 A5, H1 H2 H3/E3 C3 E1 D2 D3 G4 B6, J1 J2 (first slice: the radio in Spanish, the logic in
+English). Not built: E2 (needs the VAC reporting points by hand), F2 (7600), I4 (in-sim panel). What each one does
+and what to check in MSFS: docs/ROADMAP.md "BUILT 2026-10-11" and "WATCH IN THE SIM 2026-10-11" (blocks 1-3:
+"WATCH IN THE SIM 2026-10-08").
 
 Valen asked: crossings handed to Tower in reduced visibility; ATIS everyone follows, and at airports without one the
 controller gives the weather (VATSIM style); a graphical launcher; every ATC feature of SayIntentions.AI we could
@@ -124,22 +127,22 @@ Sources: sayintentions.ai/atc, the FSExpo 2026 announcements, simflight's roadma
 | SayIntentions | Here | Plan |
 |---|---|---|
 | Unscripted IFR/VFR ATC, clearance to arrival | yes (code-owned fixed forms + LLM free form) | - |
-| Real taxi routing, hold short / crossings matched to the active runway, progressive taxi | yes | B1 Tower crossings |
-| Conditional clearances, give way, line up and wait | yes | B3 behind our traffic by type |
-| No-delay departures with wake turbulence cautions | no | B4 |
-| Readback enforcement, strict / flexible mode | strict only | G1 |
+| Real taxi routing, hold short / crossings matched to the active runway, progressive taxi | yes (+ Tower crossings in low vis, intersections, closures) | - |
+| Conditional clearances, give way, line up and wait | yes (also for our traffic, by type) | - |
+| No-delay departures with wake turbulence cautions | yes (intervals, cautions, immediate takeoff) | - |
+| Readback enforcement, strict / flexible mode | yes | - |
 | Click-to-talk (phraseology shown before sending) | no | I3 suggested calls in the live panel |
-| Sequencing with position in line, speed restrictions, holding | partly (speed control, holding on request) | B3, C2 |
-| Charted visual approaches (River Visual...), side-step approaches | no | C1 plain visual, C3 side-step; named visuals later |
-| Terrain-aware vectoring | no | C4 |
-| Dynamic rerouting / direct-to evaluated live | direct-to yes | D1 deviations |
-| Live TFRs, NOTAM-aware (closed runways/taxiways) | no | G4 by hand; TFR US only: skip |
-| PIREPs | no | D2 by code |
-| Emergencies with souls/fuel, priority | first reply only | F1 |
+| Sequencing with position in line, speed restrictions, holding | yes (number in sequence, speed control, holds when full) | - |
+| Charted visual approaches (River Visual...), side-step approaches | plain visual + side-step | named visuals later |
+| Terrain-aware vectoring | yes (sector MSA, grid MORA, low altitude warning) | - |
+| Dynamic rerouting / direct-to evaluated live | direct-to, weather deviations | - |
+| Live TFRs, NOTAM-aware (closed runways/taxiways) | closures by hand (G4) | TFR US only: skip |
+| PIREPs | ride reports by code (D2) | - |
+| Emergencies with souls/fuel, priority | yes (F1); 7600 not yet | F2 |
 | Radio chatter, a different controller per facility with accents | yes | J1 better voices |
-| Schedule-based traffic that ATC controls ("Living World", "True IFR context") | yes (own traffic, phase 1-2) | B3, H |
-| ATIS changes reflected live | partly | A1, A2 |
-| 15 languages | English | J2 Spanish |
+| Schedule-based traffic that ATC controls ("Living World", "True IFR context") | yes (own traffic: turnarounds, joins, circuits, CTAF) | - |
+| ATIS changes reflected live | yes | - |
+| 15 languages | English, Spanish (first slice) | Norwegian later |
 | VATSIM handoffs, multiplayer sequencing | no | skip (Valen: VATSIM or AI ATC, not both) |
 | CPDLC / ACARS, copilot, cabin crew, tour guides, PlateBrief, Backtrack, Spotting, FlowPro | - | not ATC: skip (FlowPro ~ I4) |
 

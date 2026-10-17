@@ -469,7 +469,8 @@ def test_warm_start_a_departure_already_at_the_holding_point_and_one_on_final():
                                                              dist_nm=5.0)
     states = set()
     _run(mgr, _user(), 600, watch=lambda t: states.add(p.state) or False)
-    assert {"holding", "takeoff"} <= states and "pushing" not in states and "parked" not in states
+    # (the moment it is at the holding point: "behind the landing ..., line up and wait", so no tick in "holding")
+    assert {"takeoff_radio", "takeoff"} <= states and "pushing" not in states and "parked" not in states
 
 
 def test_warm_start_never_on_top_of_the_user():

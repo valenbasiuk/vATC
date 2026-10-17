@@ -36,6 +36,17 @@ def _same(ident: str, other: str) -> bool:
     return ident.lstrip("0").upper() == other.lstrip("0").upper()
 
 
+def _usable(airport: Airport) -> list[Runway]:
+    """Runways with a known heading that aren't closed (the airport file's `closed`, closures.py)."""
+    return [r for r in airport.runways if r.heading_deg is not None and not runway_closed(airport, r.ident)]
+
+
+def runway_closed(airport: Airport, ident: str) -> bool:
+    from atc.closures import runway_closed as closed
+
+    return closed(airport, ident)
+
+
 def runway_config(airport: Airport, wind_dir_deg: float | None, wind_kt: float | None) -> dict | None:
     """The airport's runway configuration for this wind (YAML `runway_configs`: arrival / departure runway lists,
     KSFO west plan: land 28L/28R, depart 1L/1R). The one whose arrival runways have the best headwind; in calm or
@@ -43,8 +54,7 @@ def runway_config(airport: Airport, wind_dir_deg: float | None, wind_kt: float |
     its arrival runways beyond MAX_TAILWIND_KT (then the plain headwind rule decides)."""
     best, best_hw = None, None
     for cfg in airport.runway_configs:
-        arr = [r for r in airport.runways if r.heading_deg is not None
-               and any(_same(r.ident, i) for i in cfg.get("arrival", []))]
+        arr = [r for r in _usable(airport) if any(_same(r.ident, i) for i in cfg.get("arrival", []))]
         if not arr:
             continue
         if wind_dir_deg is None or wind_kt is None or wind_kt <= CALM_KT:
@@ -75,7 +85,7 @@ def runway_in_use(
     is consistent; controllers announce MAGNETIC wind, so spoken values will differ slightly
     outside areas with near-zero variation (Argentina is about 5-10 degrees west).
     """
-    candidates = [r for r in airport.runways if r.heading_deg is not None]
+    candidates = _usable(airport)
     if not candidates:
         return None
     ai = _ai_runway(airport, candidates, wind_dir_deg, wind_kt, use)
@@ -134,7 +144,7 @@ def runways_in_use(airport: Airport, wind_dir_deg: float | None, wind_kt: float 
     if cfg is None or one is None:
         return [one] if one else []
     for listed in (cfg.get(use) or [], cfg.get("arrival") or []):
-        rs = [r for i in listed for r in airport.runways if _same(r.ident, i) and r.heading_deg is not None]
+        rs = [r for i in listed for r in _usable(airport) if _same(r.ident, i)]
         if any(r is one for r in rs):
             return rs
     return [one]
@@ -158,7 +168,7 @@ def session_runway(airport: Airport, wind_dir_deg: float | None, wind_kt: float 
     flight plan's (SimBrief) runway where it fits, else the airport's runway in use for `use`."""
     if session is not None:
         req = find_runway(airport, session.runway_requests.get(f"{airport.icao}:{use}"))
-        if req is not None and request_ok(req, wind_dir_deg, wind_kt):
+        if req is not None and request_ok(req, wind_dir_deg, wind_kt) and not runway_closed(airport, req.ident):
             return req
     plan = getattr(session, "plan", None)
     pref = None

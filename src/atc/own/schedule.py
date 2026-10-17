@@ -125,3 +125,37 @@ def ga_flight(country: str, rng: random.Random) -> Departure:
     if country == "US":
         return Departure("", f"N{rng.randint(100, 999)}{letters[:2]}", typ)
     return Departure("", f"LV{letters}", typ)
+
+
+_POSITIONS: dict[str, tuple[float, float]] | None = None
+
+
+def airport_position(icao: str | None, data_dir: Path = Path("data")) -> tuple[float, float] | None:
+    """Where an airport is (a departure turns toward its destination after takeoff): the sim's scenery database,
+    else OurAirports (data/airports.csv). None if unknown."""
+    global _POSITIONS
+    if not icao:
+        return None
+    from atc import navdb
+
+    con = navdb.connect()
+    if con is not None:
+        try:
+            row = con.execute("select laty, lonx from airport where ident = ?", (icao.upper(),)).fetchone()
+        except Exception:  # noqa: BLE001 - a locked or old database: the CSV
+            row = None
+        if row:
+            return float(row[0]), float(row[1])
+    if _POSITIONS is None:
+        _POSITIONS = {}
+        path = data_dir / "airports.csv"
+        if path.is_file():
+            with path.open(encoding="utf-8", errors="ignore", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    ident = (row.get("ident") or "").upper()
+                    if len(ident) == 4 and row.get("type") in ("large_airport", "medium_airport", "small_airport"):
+                        try:
+                            _POSITIONS[ident] = (float(row["latitude_deg"]), float(row["longitude_deg"]))
+                        except (KeyError, ValueError):
+                            continue
+    return _POSITIONS.get(icao.upper())

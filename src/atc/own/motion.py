@@ -302,6 +302,137 @@ class Takeoff:
         return Pose(lat, lon, agl_ft, self.heading, self.pitch, 0.0, self.v / KT, gear_down=agl_ft < self.GEAR_UP_FT)
 
 
+class Airborne:
+    """In the air without a flight model (improvement plan H2/H3): it turns at a standard rate toward the heading it
+    is given (banked into the turn, easing out near the end), climbs or descends toward a height and speeds up or
+    slows down gently. What flies a climb-out toward the destination, a downwind and base onto the final, a circuit."""
+
+    TURN_DPS = 3.0  # standard rate
+    MAX_BANK = 25.0
+    ACCEL = 0.8  # m/s2 (about 1.5 kt/s)
+    DESCENT_FPM = 1500.0
+
+    def __init__(self, lat: float, lon: float, agl_ft: float, heading_deg: float, speed_kt: float, p: Perf,
+                 vs_fpm: float = 0.0) -> None:
+        self.frame = Frame(lat, lon)
+        self.x = self.y = 0.0
+        self.agl_ft, self.heading, self.v = agl_ft, heading_deg % 360.0, speed_kt * KT
+        self.p = p
+        self.target_heading, self.target_agl, self.target_kt = self.heading, agl_ft, speed_kt
+        self.climb_fpm = p.climb_fpm
+        self.bank = 0.0
+        self.vs = vs_fpm / 60.0  # ft/s now (eased toward what the target height asks for)
+        self.gear_down = False
+
+    def latlon(self) -> tuple[float, float]:
+        return self.frame.latlon(self.x, self.y)
+
+    def step(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        diff = (self.target_heading - self.heading + 540.0) % 360.0 - 180.0
+        rate = max(-self.TURN_DPS, min(self.TURN_DPS, diff / 2.0))  # eases out over the last 6 degrees
+        self.heading = (self.heading + rate * dt) % 360.0
+        want_bank = rate / self.TURN_DPS * self.MAX_BANK
+        self.bank += max(-5.0 * dt, min(5.0 * dt, want_bank - self.bank))  # rolls in and out at 5 deg/s
+        dv = self.target_kt * KT - self.v
+        self.v += max(-self.ACCEL * dt, min(self.ACCEL * dt, dv))
+        dz = self.target_agl - self.agl_ft
+        want_vs = (self.climb_fpm if dz > 0 else self.DESCENT_FPM) / 60.0 * max(-1.0, min(1.0, dz / 200.0))
+        self.vs += max(-8.0 * dt, min(8.0 * dt, want_vs - self.vs))  # no step changes in the vertical speed
+        self.agl_ft = max(0.0, self.agl_ft + self.vs * dt)
+        h = math.radians(self.heading)
+        self.x += self.v * math.sin(h) * dt
+        self.y += self.v * math.cos(h) * dt
+
+    def pose(self) -> Pose:
+        lat, lon = self.latlon()
+        pitch = 3.0 + math.degrees(math.atan2(self.vs * FT, max(1.0, self.v)))  # (the takeoff's climb pitch too)
+        return Pose(lat, lon, max(0.1, self.agl_ft), self.heading, max(-3.0, min(12.0, pitch)), self.bank,
+                    self.v / KT, gear_down=self.gear_down)
+
+
+class Join:
+    """Onto a final from the side (improvement plan H2) or round a circuit (H3), flown by an `Airborne`: legs relative to
+    the runway (`threshold`, `heading`, `length_m`), on the `side` of it (+1 right of the landing direction, -1 left):
+
+        upwind -> crosswind -> downwind -> base -> intercept -> done (Approach takes over `dist` NM out)
+
+    Heights: the downwind at `pattern_agl_ft`, then down to where the glide path will be. The base turn and the
+    turn onto the final lead by the turn radius, and both lateral holds look ahead, so it rolls out on the centerline
+    instead of across it."""
+
+    LOOKAHEAD_S = 8.0
+    INTERCEPT_DEG_PER_NM = 150.0  # intercept angle per NM still to go across (at most 30)
+    DONE_NM = 0.02  # on the centerline this closely (and aligned): the final approach takes over
+
+    def __init__(self, threshold: tuple[float, float], heading_deg: float, length_m: float, p: Perf, air: Airborne,
+                 phase: str, side: float, offset_nm: float, join_nm: float, pattern_agl_ft: float,
+                 speeds_kt: tuple[float, float, float]) -> None:
+        self.frame = Frame(*threshold)
+        self.h, self.length_nm = heading_deg, length_m / NM
+        self.p, self.air, self.phase = p, air, phase
+        self.side, self.offset_nm, self.join_nm, self.pattern_agl = (1.0 if side >= 0 else -1.0), offset_nm, join_nm, \
+            pattern_agl_ft
+        self.v_downwind, self.v_base, self.v_final = speeds_kt
+        self.upwind_turn_agl = 500.0 if p.vapp_kt < 100 else 1500.0
+        self.extend = False  # set by the pilot while someone on the final would be too close at the join: a longer
+        # downwind (at most EXTEND_MAX_NM beyond the usual base turn)
+
+    EXTEND_MAX_NM = 8.0
+
+    def along_cross(self) -> tuple[float, float]:
+        x, y = self.frame.xy(*self.air.latlon())
+        h = math.radians(self.h)
+        return (x * math.sin(h) + y * math.cos(h)) / NM, (x * math.cos(h) - y * math.sin(h)) / NM
+
+    def _cross_rate(self) -> float:
+        """NM/s the aircraft moves to the right of the landing direction."""
+        return self.air.v * math.sin(math.radians(self.air.heading - self.h)) / NM
+
+    def _radius_nm(self) -> float:
+        return self.air.v / math.radians(Airborne.TURN_DPS) / NM
+
+    def step(self, dt: float) -> bool:
+        """One step; True once it is established on the final (hand over to an Approach at -along)."""
+        a = self.air
+        along, cross = self.along_cross()
+        s, r = self.side, self._radius_nm()
+        ahead = cross + self._cross_rate() * self.LOOKAHEAD_S  # where it will be across the runway shortly
+        if self.phase == "upwind":
+            a.target_heading, a.target_agl, a.target_kt = self.h, self.pattern_agl, self.v_downwind
+            if a.agl_ft >= self.upwind_turn_agl and along >= min(self.length_nm, 0.5):
+                self.phase = "crosswind"
+        if self.phase == "crosswind":
+            a.target_heading = (self.h + 90.0 * s) % 360.0
+            a.target_agl, a.target_kt = self.pattern_agl, self.v_downwind
+            if cross * s >= self.offset_nm - r:
+                self.phase = "downwind"
+        if self.phase == "downwind":
+            err = s * self.offset_nm - ahead  # > 0: needs to move right of the landing direction
+            a.target_heading = (self.h + 180.0 - max(-20.0, min(20.0, 30.0 * err))) % 360.0
+            a.target_agl, a.target_kt = self.pattern_agl, self.v_downwind
+            if along <= -(self.join_nm - r * 0.8) and (not self.extend or along <= -(self.join_nm + self.EXTEND_MAX_NM)):
+                self.phase = "base"
+        if self.phase == "base":
+            a.target_heading = (self.h - 90.0 * s) % 360.0
+            a.target_agl = Approach.join_height_ft(self.p, self.join_nm)
+            a.target_kt = self.v_base
+            if abs(cross) <= r * 1.1 + 0.05:
+                self.phase = "intercept"
+        if self.phase == "intercept":
+            a.target_heading = (self.h - max(-30.0, min(30.0, self.INTERCEPT_DEG_PER_NM * ahead))) % 360.0
+            a.target_agl = min(a.target_agl, Approach.join_height_ft(self.p, max(0.5, -along)))
+            a.target_kt = self.v_final
+        a.step(dt)
+        if self.phase == "intercept":
+            along, cross = self.along_cross()
+            aligned = abs((a.heading - self.h + 540.0) % 360.0 - 180.0) <= 2.0
+            if abs(cross) <= self.DONE_NM and aligned and along < -0.3:
+                return True
+        return False
+
+
 class Approach:
     """Final approach and landing on a runway: from `dist_nm` out on the extended centerline (threshold at
     (lat, lon), runway heading `heading_deg`) down a 3 degree path to a touchdown AIM_M past the threshold,
@@ -315,11 +446,16 @@ class Approach:
     GEAR_DOWN_NM = 6.0
     ROLLOUT_DECEL = 2.3  # m/s2 once all wheels are down (autobrake medium)
 
-    def __init__(self, lat: float, lon: float, heading_deg: float, p: Perf, dist_nm: float) -> None:
+    def __init__(self, lat: float, lon: float, heading_deg: float, p: Perf, dist_nm: float,
+                 agl_ft: float | None = None, speed_kt: float | None = None) -> None:
+        """`agl_ft` / `speed_kt`: where a joining aircraft (downwind, base, circuit) meets the final, so the hand-over
+        has no jump; else the usual platform height and speed of a straight-in."""
         self.frame = Frame(lat, lon)
         self.heading, self.p = heading_deg, p
         self.x = -dist_nm * NM  # metres along the runway heading from the threshold (negative = on final)
-        self.v = max(p.vapp_kt + 30.0, 170.0 if p.vapp_kt > 100 else p.vapp_kt + 20) * KT
+        # (spawned close in, warm start: already slowed to the speed it would have there, not 170 kt at 2 NM)
+        self.v = min(max(p.vapp_kt + 30.0, 170.0 if p.vapp_kt > 100 else p.vapp_kt + 20),
+                     self.profile_kt(p, dist_nm)) * KT
         self.agl_ft = min(self.PLATFORM_FT, self._glide_ft())
         self.pitch = 2.5
         self.on_ground = False
@@ -329,6 +465,21 @@ class Approach:
         self.rollout_decel = self.ROLLOUT_DECEL  # the pilot sets it at touchdown to make its planned exit
         if p.vapp_kt < 100:  # light aircraft: a lower, slower final
             self.agl_ft = min(1500.0, self._glide_ft())
+        if agl_ft is not None:
+            self.agl_ft = agl_ft  # a little above the glide path is fine: step() brings it down to it smoothly
+        if speed_kt is not None:
+            self.v = speed_kt * KT
+
+    @staticmethod
+    def profile_kt(p: Perf, nm: float) -> float:
+        """The speed flown `nm` out: Vapp + 40 kt beyond 8 NM, slowing to Vapp by 5 NM."""
+        return p.vapp_kt + max(0.0, min(1.0, (nm - 5.0) / 3.0)) * 40.0
+
+    @classmethod
+    def join_height_ft(cls, p: Perf, dist_nm: float) -> float:
+        """The height an aircraft joining the final `dist_nm` out should be at (on or under the glide path)."""
+        glide = max(0.0, (cls.AIM_M + dist_nm * NM) * math.tan(cls.GLIDE)) / FT
+        return min(cls.PLATFORM_FT if p.vapp_kt >= 100 else 1500.0, glide)
 
     def _glide_ft(self) -> float:
         return max(0.0, (self.AIM_M - self.x) * math.tan(self.GLIDE)) / FT
@@ -352,7 +503,7 @@ class Approach:
         p = self.p
         if not self.on_ground:
             nm = self.dist_nm
-            want = p.vapp_kt + max(0.0, min(1.0, (nm - 5.0) / 3.0)) * 40.0
+            want = self.profile_kt(p, nm)
             if self.slow_to_kt is not None:
                 want = max(p.vapp_kt - 5.0, min(want, self.slow_to_kt))
             dv = (want * KT - self.v)
@@ -360,7 +511,9 @@ class Approach:
             self.x += self.v * dt
             glide = self._glide_ft()
             if self.agl_ft > self.FLARE_FT:
-                self.agl_ft = min(self.agl_ft, glide)  # level at the platform until the glide path comes down
+                # level at the platform until the glide path comes down; above it (a joining aircraft a little
+                # high) down to it at no more than 1800 ft/min, never a jump
+                self.agl_ft = min(self.agl_ft, max(glide, self.agl_ft - 30.0 * dt))
                 self.pitch = 2.5
             else:  # flare: sink slows to ~2.5 ft/s, nose up a little
                 self.agl_ft = max(0.0, self.agl_ft - max(4.0, min(10.0, self.agl_ft / 2.0)) * dt)

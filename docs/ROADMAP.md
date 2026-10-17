@@ -1,45 +1,99 @@
 # Roadmap
 
-Ordered. Each item has a "done when" so it can be checked. Status as of 2026-10-15.
+Ordered. Each item has a "done when" so it can be checked. Status as of 2026-10-16.
 Legend: DONE (verified), WORKING (runs on Valen's PC, loose ends listed), TODO.
 The plan for the next session is in docs/NEXT_SESSION.md; the improvement plan (with the SayIntentions.AI
 comparison) is docs/IMPROVEMENT_PLAN.md.
 
-## NEXT: improvement plan blocks 5-7 (block 4 built 2026-10-11)
-Blocks 1-4 are built (fake sim + tests); see the "WATCH IN THE SIM" sections below. The rest, in this order (codes as
-in docs/IMPROVEMENT_PLAN.md):
-4. Approach: BUILT 2026-10-11 (tests/test_approach_block4.py, 12 tests, zero LLM calls); watch list in "WATCH IN THE
-   SIM 2026-10-15" below.
-   - C1 visual approach: DONE in the fake sim ("request visual" -> "report field in sight" -> "cleared visual
-     approach runway one three"; close in: straight to Tower; low ceiling/visibility: "unable"; VFR flight following
-     with the field in sight is handed to Tower).
-   - C2 ATC-initiated holding: DONE in the fake sim (holding.sequence_event: 3+ arrivals ahead 12-30 NM out ->
-     "hold at ESKON ..., expect approach clearance at 1430, delay due traffic"; released once at most one is left
-     ahead or at the time; our own traffic counts).
-   - C4 minimum altitudes: DONE in the fake sim (terrain.py: MSA sectors from the YAML `msa` or the Navigraph db;
-     vectors / descents never below them, the intercept point moves out; "low altitude warning" below the MSA,
-     then 10 s before the next vector). SAMR (San Rafael, Andes) is the test field.
-   - C5 missed approach: DONE in the fake sim ("going around" -> "climb straight ahead to three thousand feet,
-     contact Approach" (the published missed approach altitude from the sim's db when known), then vectors and a
-     second approach).
-   - D1 weather deviations: DONE in the fake sim (ICAO "deviation up to 20 degrees left of track approved, report
-     back on track"; FAA "deviation right of course approved, when able proceed direct DOTNE").
-5. Controller behaviour and emergencies (TODO)
-   - G1 readback mode strict / relaxed (a launcher setting). G2 "blocked, say again" when the user talks over
-     chatter. G3 a busy controller says "standby" and answers seconds later.
-   - F1 mayday / pan pan follow-ups (souls on board, fuel, runway of choice, our traffic held or sent around).
-   - A5 low-visibility procedures (vis < 550 m or ceiling < 200 ft): ATIS "LVP in operation", CAT II/III phrasing,
-     wider spacing of our arrivals, crossings by Tower only. (atis.Conditions.low_visibility exists.)
-6. Own traffic extras (TODO)
-   - H1 turnarounds (an arrival leaves again from its stand after 45-90 min); H2 arrivals from the STAR / downwind
-     and departures on the SID's first legs; H3 GA circuits and CTAF calls at small fields (E3).
-   - C3 side-step (KSFO/JFK), E1 Class B/C transitions (US), D2 ride reports by code, D3 traffic information on our
-     departures/arrivals en route, G4 closures by hand in the airport YAML, B6 Ground taxiing to an intersection
-     on request (Tower's intersection departure is built).
-7. Voices and language
-   - J1 DONE 2026-10-15: tools/compare_voices.py (same phrases per voice through the radio filter, WAVs + speed +
+## BUILT 2026-10-11: improvement plan blocks 4-7 (fake sim + tests only; 365 tests, 6/6 scenarios)
+Codes as in docs/IMPROVEMENT_PLAN.md. All code-owned (no LLM call), all untested in MSFS: see the watch list below.
+4. Approach: C1 visual approach ("field in sight" -> "cleared visual approach runway one three"), C2 ATC holding
+   when the sequence is full (holding.watcher_event), C4 minimum sector altitudes (terrain.py: YAML `msa`, else the
+   Navigraph MSA records; grid MORA for Center's descents; "low altitude warning" in monitor.py), C5 missed approach
+   (the published missed altitude from the sim's db, else "climb straight ahead to three thousand feet", then
+   vectors for another approach), D1 weather deviations ("request deviation twenty degrees left").
+5. Controller: G1 readback strict / relaxed (`--readback relaxed`, launcher), G2 "Blocked, say again" when you
+   transmit over an AI pilot, G3 a busy position says "standby" and answers a few seconds later
+   (`--no-busy-standby`), F1 emergencies (emergency.py: souls and fuel, runway of choice, divert, cancel; our
+   traffic holds / goes around), A5 low-visibility procedures (RVR from the METAR, ATIS "low visibility procedures
+   in operation", wider spacing of our arrivals, crossings by Tower).
+6. Own traffic and the rest: H1 turnarounds (60% of airline arrivals leave again from their stand after 45-90 min,
+   the same sim object), H2 arrivals joining from a downwind or a base and departures turning toward their
+   destination (kept to 25 NM: D3 traffic information for the user en route), H3 GA circuits with touch and goes
+   and E3 CTAF self-announcements at untowered fields; C3 side-step (KSFO 28L/28R, on request too), E1 Class
+   Bravo/Charlie transitions (US VFR), D2 ride reports by code (ride.py), G4 closures by hand (closures.py: YAML
+   `closed:`), B6 Ground taxi to an intersection on request.
+7. Voices and language: J1 `tools/voice_compare.py` (Piper / Kokoro / Edge neural, time to first audio printed) and
+   `voices/extra_voices.txt` to put a Kokoro or Edge voice into the bank (audio/engines.py, falls back to Piper);
+   2026-10-15 (GitHub, merged 2026-10-16):
+     J1 DONE 2026-10-15: tools/compare_voices.py (same phrases per voice through the radio filter, WAVs + speed +
      Whisper word error rate). Kokoro-82M added as a second engine (see "WATCH IN THE SIM 2026-10-15").
-   - J2 Spanish ATC (Spanish speech model, phraseology tables, es_AR daniela voice: downloaded).
+   J2 Spanish radio (`--language es`, spanish.py: calls in Spanish -> the English the parsers know, every
+   transmission said in Spanish, Spanish STT prompt, es voices).
+Then (2026-10-11) a soak test of our traffic (tools/soak_own_traffic.py: 3 simulated hours each at SABE and SARC,
+real scenery data) found and fixed: two tugs pushing into each other (one push at a time nearby + a tie-break), departures starved by a steady
+arrival flow (arrival spacing by time at the threshold, a gap kept when a departure is coming, no new arrivals while
+one has waited > 3 min), "line up and wait" for our departures (plain, and ICAO conditional "behind the landing ...,
+line up and wait ..., behind"), arrivals spawned close in at 170 kt, Tower's go-around order by distance (now by
+time), an arrival 14 NM out ignored before a SARC backtrack, a circuit Cessna missed (just airborne, or its join time
+too optimistic), a landing clearance given while a departure was about to line up, a go-around ordered behind a
+departure already airborne, "continue approach" in the circuit that counted as a landing clearance (a bug), and
+crossings: ours no longer enter a runway when the far side is blocked (one sat on SABE's 13/31 for 90 s; two nose
+to nose at both hold lines: the first one there crosses and passes; one stopped on the runway behind somebody
+who came to the far hold line meanwhile passes it after 4 s), a Cessna 2 NM out isn't sent around for one crossing
+that is off in seconds, a departure lined up waiting for a circuit Cessna that couldn't land because of it
+(once lined up, only traffic on the final holds it; arrivals on the downwind extend meanwhile, new ones are spaced
+behind it), crossings cleared only when the next arrival is further out than the crossing takes (SABE's diagonal
+324 m), and an arrival vacating SARC's single taxiway behind a departure waiting at its holding point (it passes:
+off the runway first). Result: longest wait at the holding point 574 s ->
+~200 s, no go-arounds, nothing stuck. Also fixed: the launcher's SimBrief / joystick / voice-test error messages
+(they crashed instead of showing), the live panel stopping on an odd status file.
+
+## WATCH IN THE SIM 2026-10-11 (blocks 4-7 + the soak fixes; fake sim + tests only)
+- Visual approach: say "field in sight" (or "request visual approach") to Approach in VMC: "cleared visual
+  approach runway ...". In IMC it should stay on the ILS/RNP.
+- ATC holding: with 3+ arrivals ahead (ours or the sim's), inside 30 NM: "hold at <fix> ... expect approach clearance
+  at ...". Too eager? Wrong fix? (published holds from the Navigraph db, else a fix of your route.) It lets you go
+  early once at most one is left ahead.
+- MSA (SAMR, SARC, SAEZ): descents and vectors never below the sector MSA; "low altitude warning, check your
+  altitude immediately" if you go below it under radar control. A false alarm on a visual or while established on
+  the approach = tell me where (position, altitude, what Approach had cleared).
+- Missed approach: after "going around", the published missed altitude (sim db) or "climb straight ahead to
+  three thousand feet", then "contact Approach" and vectors for another approach. Not handed to Tower too early?
+- Deviations: "request deviation twenty degrees left due weather" -> ICAO "deviation up to twenty degrees left of
+  track approved, report back on track" (FAA "... when able proceed direct <fix>").
+- Readback relaxed (launcher or `--readback relaxed`): only wrong runway / level / altitude / heading / squawk /
+  QNH / frequency and a missing "hold short" get corrected; "roger" is accepted.
+- "Blocked, say again": key the mic while an AI pilot is talking. Keying while the controller talks = not heard.
+  Depends on the speaker's air log timing: false "blocked"?
+- Busy standby: when Tower/Ground just had 2 exchanges in 45 s (or 2 waiting), 40% of requests get "standby" and
+  the answer 4-9 s later. Annoying? `--no-busy-standby` turns it off.
+- Mayday / pan pan: "mayday mayday mayday, <cs>, engine failure, request return": vectors, "report persons on board
+  and fuel endurance", any runway on request, "cancel mayday". Our departures hold, ours on final ahead go around.
+- LVP: preset weather with fog (vis < 550 m): ATIS "low visibility procedures in operation" + RVR, crossings by
+  Tower, our arrivals further apart. VERIFY AMBIENT_VISIBILITY comes in metres.
+- Our traffic: turnarounds (an arrival leaves its stand 45-90 min later as a new flight: same model, new callsign),
+  joins from a downwind / base (smooth, no jump onto the final?), departures turning toward their destination,
+  Cessnas flying circuits at SARC with touch and goes, CTAF calls at fields without Tower.
+- Our traffic crossing a runway: they wait at the hold line while somebody stands where they would come off it.
+  Watch for one sitting at a hold line for minutes (Ground never clears it): tell me the airport and taxiways.
+- Our traffic, new 2026-10-11: "line up and wait runway one three" and the conditional "behind the landing Embraer
+  one ninety, line up and wait runway one three, behind" (ICAO; FAA only the plain one), then "cleared for takeoff"
+  with no new call. Does the lined-up aircraft sit right on the centerline? Arrivals now come about 3 min apart
+  (4 min when a departure is coming), never a burst: too few arrivals at SABE? `--own-factor` raises it.
+- Side-step (KSFO): "cleared ILS two eight left, side-step to runway two eight right" or "request side-step".
+- Class Bravo (US VFR): "request Class Bravo transition" -> "cleared through the San Francisco Class Bravo airspace,
+  maintain VFR at or below ...".
+- Ride reports: "any ride reports at flight level three five zero?" (from the winds your aircraft met and METAR
+  thunderstorms; no real PIREPs).
+- Closures: put `closed: [runway 13/31 until 1800, taxiway E]` in an airport YAML: not the runway in use, taxi
+  routes go round, the ATIS says it.
+- Intersection taxi: "request taxi for intersection Bravo departure" -> Ground routes to Bravo, Tower knows.
+- Voices: `python tools/voice_compare.py` (installs are optional: `pip install kokoro-onnx`, `pip install edge-tts
+  miniaudio`; `--download-kokoro`, URL VERIFY). The Piper high voices took ~2 s per sentence here: listen for gaps.
+- Spanish (`--language es`): VERIFY the station names (Superficie? Autorizaciones? Salidas?) and anything an
+  Argentine controller says differently; STT in Spanish switches to the multilingual whisper model by itself
+  ("small", downloaded the first time): check its speed on your CPU.
 
 ## WATCH IN THE SIM 2026-10-15 (block 4, voices, radio variety, launcher; fake sim + tests; 326 tests)
 - Visual approach (C1): say "request visual approach" or "field in sight" to Approach (or a Tower doing approach

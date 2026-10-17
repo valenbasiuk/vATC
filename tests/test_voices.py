@@ -113,3 +113,68 @@ def test_kokoro_parts_start_with_the_callsign_and_keep_every_word():
     assert parts[0][0] == "Aerolineas one two three four,"
     assert " ".join(p for p, _ in parts).split() == text.split()
     assert parts[-1][1] > parts[0][1]  # a longer pause after a sentence than after a clause
+
+
+# --- J1: voices of other engines (Kokoro / Edge) in the same pools -------------------------------------------------
+
+def test_extra_voices_join_the_pools_when_their_engine_is_there(tmp_path, monkeypatch):
+    from atc.audio import engines
+
+    _fake_spanish_pool(tmp_path)
+    (tmp_path / "extra_voices.txt").write_text("# winners of tools/voice_compare.py\n"
+                                               "Spanish     edge:es-AR-TomasNeural   # Argentine controllers\n"
+                                               "American F  kokoro:af_heart\n", encoding="utf-8")
+    monkeypatch.setenv("ATC_VOICE_ENGINE", "piper")  # no Kokoro
+    monkeypatch.setattr(engines, "available", lambda e: None if e == "edge" else "pip install edge-tts")
+    bank = VoiceBank(tmp_path)
+    keys = [v.key for v in bank.pools["Spanish"]]
+    assert "edge:es-AR-TomasNeural" in keys and "American" not in bank.pools
+    assert bank.skipped[0].startswith("kokoro:af_heart (Kokoro not downloaded")
+    v = next(v for v in bank.pools["Spanish"] if v.engine == "edge")
+    assert v.label.startswith("edge:es-AR-TomasNeural Spanish")
+
+
+def test_an_engine_voice_is_spoken_by_its_engine_and_falls_back_to_piper(monkeypatch):
+    import numpy as np
+
+    from atc.audio import engines
+    from atc.audio.tts import PiperTTS
+    from atc.voices import Voice
+
+    calls = []
+
+    def fake(engine, name, text, rate=1.0):
+        calls.append((engine, name, text))
+        if len(calls) > 1:
+            raise RuntimeError("offline")
+        return np.zeros(2400, dtype=np.float32), 24000
+
+    monkeypatch.setattr(engines, "synthesize", fake)
+    tts = PiperTTS.__new__(PiperTTS)  # no Piper model needed for this
+    tts.length_scale, tts._broken = 1.0, set()
+
+    class _Chunk:
+        audio_int16_bytes = np.zeros(220, dtype=np.int16).tobytes()
+        sample_rate = 22050
+
+    class _Piper:
+        def synthesize(self, text, **kw):
+            calls.append(("piper", None, text))
+            yield _Chunk()
+
+    tts._voice = _Piper()
+    voice = Voice("", None, accent="American", engine="edge", name="en-US-GuyNeural")
+    out = list(tts._chunks("Speedbird two eight six, contact tower. Good day.", voice))
+    assert [c[:2] for c in calls] == [("edge", "en-US-GuyNeural"), ("edge", "en-US-GuyNeural"), ("piper", None)]
+    assert calls[-1][2] == "Good day." and len(out) == 2 and "edge" in tts._broken
+    calls.clear()
+    list(tts._chunks("Roger.", voice))  # broken engine: straight to Piper
+    assert calls == [("piper", None, "Roger.")]
+
+
+def test_engine_specs():
+    from atc.audio.engines import parse_spec
+
+    assert parse_spec("edge:en-GB-RyanNeural") == ("edge", "en-GB-RyanNeural")
+    assert parse_spec("kokoro:bm_george") == ("kokoro", "bm_george")
+    assert parse_spec("C:/voices/en_US-ryan-high.onnx") == ("piper", "C:/voices/en_US-ryan-high.onnx")

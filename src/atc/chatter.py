@@ -36,6 +36,9 @@ GAP_MIN_S = 2.5
 READBACK_S = 6.0  # after ATC talks to the user, chatter waits this long for their answer (Valen: 6 s)
 STALE_S = 15.0
 MAX_QUEUE = 4
+BUSY_WINDOW_S = 45.0  # a position is busy with BUSY_RECENT exchanges in this window, or BUSY_WAITING queued for it
+BUSY_RECENT = 2
+BUSY_WAITING = 2
 NUM_VOICES = 904  # en_US-libritts-high speakers
 
 
@@ -233,6 +236,17 @@ class RadioBus:
     busy_until: float = 0.0  # gap after the last transmission (anyone's)
     quiet_until: float = 0.0  # the user's turn: after ATC talked to them
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)  # own traffic offers from its thread
+    said: list[tuple[float, str]] = field(default_factory=list)  # (when, role) of the exchanges said lately
+
+    def mark_said(self, now: float, role: str) -> None:
+        self.said = [(t, r) for t, r in self.said if now - t <= BUSY_WINDOW_S] + [(now, role)]
+
+    def busy(self, role: str, now: float) -> bool:
+        """The position is busy (improvement plan G3): several exchanges on it lately, or several waiting for it."""
+        recent = sum(1 for t, r in self.said if r == role and now - t <= BUSY_WINDOW_S)
+        with self.lock:
+            waiting = sum(1 for q in self.queue if q.role == role)
+        return recent >= BUSY_RECENT or waiting >= BUSY_WAITING
 
     def offer(self, ex: Exchange) -> None:
         # a newer event replaces the one still waiting for the same aircraft on the same position (a Tower handoff

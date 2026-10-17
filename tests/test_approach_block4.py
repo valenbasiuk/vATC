@@ -14,7 +14,6 @@ from atc.enroute import _signed_cross, approach_altitude, intercept_nm
 from atc.flightplan import Fix, FlightPlan
 from atc.geo import destination
 from atc.main import _Callbacks, handle
-from atc.models import Traffic
 from atc.readback import check_readback
 from atc.sequence import along_cross, threshold
 from atc.session import Session
@@ -232,7 +231,9 @@ ROSARIO_PLAN = FlightPlan(
 def _rosario(traffic_on_final: int):
     sabe = load_airport(ROOT / "airports" / "SABE.yaml")
     saar = load_airport(ROOT / "airports" / "SAAR.yaml")
-    world = World([sabe, saar])
+    from atc.taxi import load_network
+
+    world = World([sabe, saar], taxi={"SAAR": load_network(ROOT / "airports", "SAAR", use_navdb=False)})
     sim = FakeSim(saar, callsign="MAR4133")
     sim.update(squawk=ROSARIO_PLAN.squawk, qnh_hpa=1015.0, wind_dir_deg=20.0, wind_kt=8.0, com1_mhz=118.7,
                zulu_s=14 * 3600 + 20 * 60)
@@ -304,7 +305,7 @@ def test_our_own_traffic_queued_on_final_holds_the_user(monkeypatch):
     from atc.own.schedule import Departure
 
     for i, nm in enumerate((4.0, None, None)):
-        msg = mgr.spawn_arrival(saar, 0.0, dep=Departure(f"ARG{1500 + i}", "1500", "B738"), dist_nm=nm)
+        msg = mgr.spawn_arrival(saar, 0.0, dep=Departure("ARG", str(1500 + i), "B738"), dist_nm=nm)
         assert "final runway 02" in msg, msg
     mgr.step(0.0, sim.own(), [])
     cb = _Callbacks(world, sim, _Q(), [], s)
@@ -397,7 +398,8 @@ def test_low_altitude_warning_below_the_msa():
     cb = _Callbacks(world, sim, _Q(), [], s)
     assert cb.tick(now=0) == f"{CS}, low altitude warning, check your altitude immediately, QNH one zero one six, " \
                              "the minimum flight altitude is eight thousand two hundred feet."
-    assert cb.tick(now=1) is None  # once
+    nxt = cb.tick(now=1)  # once (the vectors that follow climb it back up)
+    assert nxt is None or ("low altitude" not in nxt and "climb to eight thousand two hundred feet" in nxt)
     sim.update(alt_msl_ft=8500)
     cb.tick(now=2)
     assert not s.low_alt_warned

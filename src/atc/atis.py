@@ -13,6 +13,7 @@ in use or the QNH changes; a pilot who checks in with an old letter is told the 
 from __future__ import annotations
 
 import re
+import threading
 import time
 import zlib
 from dataclasses import dataclass
@@ -124,16 +125,18 @@ class AtisState:
 
     def __init__(self) -> None:
         self.letters: dict[str, tuple[int, tuple]] = {}
+        self._lock = threading.Lock()  # the radio loop and our own traffic's thread both build the ATIS
 
     def letter(self, icao: str, key: tuple) -> int:
-        cur = self.letters.get(icao)
-        if cur is None:
-            start = zlib.crc32(f"{icao}{time.strftime('%Y%m%d')}".encode()) % 26
-            self.letters[icao] = (start, key)
-            return start
-        if cur[1] != key:
-            self.letters[icao] = ((cur[0] + 1) % 26, key)
-        return self.letters[icao][0]
+        with self._lock:
+            cur = self.letters.get(icao)
+            if cur is None:
+                start = zlib.crc32(f"{icao}{time.strftime('%Y%m%d')}".encode()) % 26
+                self.letters[icao] = (start, key)
+                return start
+            if cur[1] != key:
+                self.letters[icao] = ((cur[0] + 1) % 26, key)
+            return self.letters[icao][0]
 
 
 def _zulu(own: OwnState | None, metar: weather.Metar | None) -> str:
@@ -221,6 +224,40 @@ def conditions(airport: Airport, own: OwnState, surface_wind: tuple[float, float
                    default=None)
         return Conditions(vis, ceil, list(metar.weather))
     return Conditions(own.visibility_m if local else None, None, [])
+
+
+RVR_SAY_M = 1500  # an RVR below this (FAA: 6000 ft) is passed to arriving aircraft
+RVR_SAY_FT = 6000
+
+
+def _rvr_value(n: int, unit: str, faa: bool) -> str:
+    words = phrase.distance(n) if n % 100 == 0 else phrase.digits(str(n))
+    return words + (" metres" if unit == "m" else ("" if faa else " feet"))
+
+
+def rvr_words(airport: Airport, runway_ident: str, own: OwnState, surface_wind=None) -> str | None:
+    """'RVR five five zero metres' (FAA 'RVR two thousand four hundred') for the runway, from the METAR's RVR group,
+    when it is low enough to matter (below RVR_SAY_M / RVR_SAY_FT); None otherwise."""
+    _, _, _, _, metar, _ = facts(airport, own, surface_wind, None)
+    if metar is None or not metar.rvr:
+        return None
+    want = runway_ident.upper().lstrip("0")
+    hit = next((v for k, v in metar.rvr.items() if k.upper().lstrip("0") == want), None)
+    if hit is None:
+        return None
+    n, unit = hit
+    if (unit == "m" and n >= RVR_SAY_M) or (unit == "ft" and n >= RVR_SAY_FT):
+        return None
+    return f"RVR {_rvr_value(n, unit, airport.faa)}"
+
+
+def low_visibility(airport: Airport, own: OwnState, surface_wind=None) -> bool:
+    """Low-visibility procedures in operation (improvement plan A5): visibility under 550 m or a ceiling under
+    200 ft, or an RVR under 550 m on any runway."""
+    if conditions(airport, own, surface_wind).low_visibility:
+        return True
+    _, _, _, _, metar, _ = facts(airport, own, surface_wind, None)
+    return metar is not None and any(u == "m" and n < 550 or u == "ft" and n < 1800 for n, u in metar.rvr.values())
 
 
 def controller_weather(airport: Airport, own: OwnState, surface_wind: tuple[float, float] | None,
@@ -314,6 +351,10 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
                 s.append(f"{app} runway {rw} approach in use.")
             s.append(f"Landing runway{'s' if len(arr) > 1 else ''} {landing}, departing runway"
                      f"{'s' if len(dep) > 1 else ''} {departing}." if split else f"Landing and departing runway {rw}.")
+        s += _lvp_lines(airport, own, surface_wind, rwy, metar, True)
+        from atc.closures import atis_lines
+
+        s += atis_lines(airport, True)  # closures typed into the airport file (G4)
         s.append(f"Advise on initial contact you have information {word}.")
     else:
         s.append(f"{name} information {word}, time {phrase.digits(_zulu(own, metar))}.")
@@ -322,6 +363,7 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
                 s.append((f"{app} approach. " if app else "") + f"Landing runway {landing}, departure runway {departing}.")
             else:
                 s.append((f"{app} approach, runway in use {rw}." if app else f"Runway in use {rw}."))
+        s += _lvp_lines(airport, own, surface_wind, rwy, metar, False)
         if wind:
             s.append(f"{wind[:1].upper()}{wind[1:]}.")
         if metar is None and local and own.visibility_m is not None:  # the sim's own weather: its visibility
@@ -343,8 +385,27 @@ def build(state: AtisState, airport: Airport, own: OwnState, surface_wind: tuple
             s.append(f"Temperature {_temp(temp)}" + (f", dew point {_temp(dew)}." if dew is not None else "."))
         if qnh:
             s.append(f"QNH {phrase.digits(f'{qnh:.0f}')}.")
+        from atc.closures import atis_lines
+
+        s += atis_lines(airport, False)  # closures typed into the airport file (G4)
         s.append(f"Acknowledge receipt of information {word} and advise aircraft type on first contact.")
     return word, [x for x in s if x]
+
+
+def _lvp_lines(airport: Airport, own: OwnState, surface_wind, rwy, metar, faa: bool) -> list[str]:
+    """ATIS sentences in low visibility (A5): "Low visibility procedures in operation." and the RVR of the runway in
+    use ("RVR runway one three, five five zero metres." / FAA "Runway two eight left RVR two thousand four hundred.")."""
+    if not low_visibility(airport, own, surface_wind):
+        return []
+    out = ["Low visibility procedures in effect." if faa else "Low visibility procedures in operation."]
+    if rwy is not None and metar is not None:
+        want = rwy.ident.upper().lstrip("0")
+        hit = next((v for k, v in metar.rvr.items() if k.upper().lstrip("0") == want), None)
+        if hit is not None:
+            rw = phrase.runway(rwy.ident, faa)
+            val = _rvr_value(hit[0], hit[1], faa)
+            out.append(f"Runway {rw} RVR {val}." if faa else f"RVR runway {rw}, {val}.")
+    return out
 
 
 _INFO = re.compile(r"\b(?:information|info)\s+([a-z]+)\b")

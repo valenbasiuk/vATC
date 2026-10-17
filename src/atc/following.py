@@ -31,20 +31,49 @@ def vfr_code(session) -> str:
     return plan.squawk if plan is not None else assign_squawk(session.callsign + "/VFR")
 
 
+_TRANSITION = re.compile(r"\b(?:class )?(bravo|charlie)(?: airspace)? (?:transition|clearance)\b|"
+                         r"\btransition (?:through |of )?(?:the )?(?:class )?(bravo|charlie)\b|"
+                         r"\b(?:through|into|across) (?:the )?(?:class )?(bravo|charlie)\b")
+
+
 def handle(session, world, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
-    """Reply to a VFR request for radar service, or None if this isn't one."""
+    """Reply to a VFR request for radar service (or, US, a Class Bravo / Charlie transition: improvement plan E1),
+    or None if this isn't one."""
     from atc.pattern import is_vfr
 
     if facility.role not in ("approach", "departure", "control") or own.on_ground or not is_vfr(session):
         return None
     norm = _normalize(pilot_text)
-    if not _REQUEST.search(norm) or "request" not in norm:
+    transit = _TRANSITION.search(norm) if airport.faa else None
+    if not (_REQUEST.search(norm) or transit) or "request" not in norm:
         return None
+    cs = session.spoken_callsign
+    if transit:
+        session.class_transition = transit.group(1) or transit.group(2) or transit.group(3)
+        if session.following and session.awaiting_squawk is None:  # identified already: the clearance now
+            session.first_contact(facility.role)
+            return f"{cs}, {transition_words(session, world, own)}."
     session.first_contact(facility.role)
     session.following = True
     session.awaiting_squawk = own.com1_mhz
-    cs = session.spoken_callsign
     return f"{cs}, {callsign_for(airport, facility)}, squawk {phrase.digits(vfr_code(session))}."
+
+
+def transition_words(session, world, own: OwnState) -> str | None:
+    """FAA 7110.65 7-9-2: "cleared through the San Francisco Class Bravo airspace, maintain VFR at or below three
+    thousand five hundred" (Class Charlie needs no clearance: "maintain VFR"). None without a transition asked."""
+    kind = session.class_transition
+    if not kind:
+        return None
+    if kind == "charlie":
+        return "maintain VFR"
+    near = world.nearest(own) if world is not None else None
+    from atc.airports.gen import spoken_name
+
+    name = (near.spoken_name or spoken_name(near.name) or near.name) if near is not None else ""
+    top = max(3500, int(-(-(own.alt_msl_ft + 100) // 500)) * 500)
+    alt = phrase.level(top, near) if near is not None else phrase.distance(top)
+    return f"cleared through the {name} Class Bravo airspace, maintain VFR at or below {alt}".replace("  ", " ")
 
 
 def identified(session, world, own: OwnState) -> str:
@@ -66,6 +95,9 @@ def identified(session, world, own: OwnState) -> str:
     if own.qnh_hpa is not None:
         bits.append(f"altimeter {phrase.digits(f'{own.qnh_hpa * 0.02953:.2f}')}" if faa else
                     f"QNH {phrase.digits(f'{own.qnh_hpa:.0f}')}")
+    transit = transition_words(session, world, own)
+    if transit:
+        bits.append(transit)
     return ", ".join(bits) + "."
 
 

@@ -39,7 +39,7 @@ import re
 import threading
 import time
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -53,6 +53,8 @@ class Voice:
     female: bool = False
     pitch: float = 1.0  # > 1 higher (and a smaller voice): tts.py shifts the samples
     style: str = ""  # Kokoro: "am_michael", or a blend "am_michael+am_puck@0.6" (60 % the first)
+    engine: str = "piper"  # or "edge" (audio/engines.py, voices/extra_voices.txt); Kokoro voices use `style`
+    name: str = ""  # the engine's voice name ("en-US-GuyNeural"); Piper: the model is enough
 
     @property
     def kokoro(self) -> bool:
@@ -61,15 +63,17 @@ class Voice:
     @property
     def label(self) -> str:
         p = f" p{self.pitch:.2f}" if self.pitch != 1.0 else ""
-        who = f"kokoro:{self.style}" if self.kokoro else f"{Path(self.model).stem}#{self.speaker}"
+        who = self.key if self.kokoro or self.engine != "piper" else f"{Path(self.model).stem}#{self.speaker}"
         return f"{who} {self.accent}{' F' if self.female else ''}{p}".strip()
 
     @property
     def key(self) -> str:
         """How voices/blacklist.txt names this voice: 'en_US-l2arctic-medium#3' (the model alone if single),
-        'kokoro:am_michael', 'kokoro:am_michael+am_puck@0.5'."""
+        'kokoro:am_michael', 'kokoro:am_michael+am_puck@0.5', 'edge:en-US-GuyNeural'."""
         if self.kokoro:
             return f"kokoro:{self.style}"
+        if self.engine != "piper":
+            return f"{self.engine}:{self.name}"
         return Path(self.model).stem + (f"#{self.speaker}" if self.speaker is not None else "")
 
 
@@ -164,7 +168,7 @@ def kokoro_model(voices_dir: Path | str) -> Path | None:
 
 
 _FEMALE_NAMES = {"amy", "kathleen", "kristin", "ljspeech", "hfc_female", "jenny_dioco", "alba", "cori",
-                 "southern_english_female", "lessac"}
+                 "southern_english_female", "lessac", "daniela"}
 
 _SPANISH = {"AR", "ES", "MX", "CL", "CO", "PE", "UY", "PY", "BO", "EC", "VE", "PA", "CR", "DO", "CU", "GT", "HN",
             "SV", "NI", "PR"}
@@ -190,8 +194,11 @@ def accents_for(country: str | None) -> list[str]:
 class VoiceBank:
     """All Piper voices in a folder, sorted into accent pools."""
 
-    def __init__(self, voices_dir: Path | str = "voices", default_model: Path | str | None = None) -> None:
+    def __init__(self, voices_dir: Path | str = "voices", default_model: Path | str | None = None,
+                 language: str = "en") -> None:
+        """`language` "es" (improvement plan J2): only the Spanish voices, and everybody speaks with one of them."""
         self.default_model = str(default_model) if default_model else None
+        self.language = language
         self.pools: dict[str, list[Voice]] = {}
         self.clock = time.monotonic
         self._lock = threading.Lock()  # the chatter thread and the main loop both ask
@@ -206,12 +213,21 @@ class VoiceBank:
                 info = json.loads(meta.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if info.get("language", {}).get("family") not in (None, "en"):
+            family = info.get("language", {}).get("family")
+            if language != "en":
+                if family == language:  # Spanish radio: the Spanish voices for everybody (the generic pool)
+                    female = any(n in onnx.stem.lower() for n in _FEMALE_NAMES)
+                    for pool in ("Spanish", "generic"):
+                        self.pools.setdefault(pool, []).append(Voice(str(onnx), None, accent=pool, female=female))
+                continue
+            if family not in (None, "en"):
                 continue  # Spanish/Norwegian voices can't read English phraseology
             self._add(str(onnx), info)
         km = kokoro_model(voices_dir)
         if km is not None:
             self._add_kokoro(str(km))
+        self.skipped: list[str] = []  # extra voices whose engine isn't there (said at startup)
+        self._add_extra(Path(voices_dir) / "extra_voices.txt", km)
         for accent in list(self.pools):
             if f"accent:{accent}" in self.blacklist:
                 del self.pools[accent]
@@ -265,6 +281,46 @@ class VoiceBank:
             have = self.pools.get(accent, [])
             self.pools[accent] = voices + have if accent in KOKORO_FIRST else have + voices
 
+    def _add_extra(self, path: Path, kokoro: Path | None = None) -> None:
+        """voices/extra_voices.txt (improvement plan J1): voices of other engines in the accent pools, one per line,
+        '<accent> [F] <engine>:<voice>':
+
+            American      edge:en-US-GuyNeural
+            American F    kokoro:af_heart
+            English       kokoro:bm_george
+            Spanish       edge:es-AR-TomasNeural
+
+        A line whose engine isn't installed is skipped (and said at startup). Kokoro lines use the Kokoro model of
+        the bank (voices/kokoro-v1.0.onnx, `kokoro`) and are left out if that voice is in the pools already."""
+        if not path.exists():
+            return
+        from atc.audio import engines
+
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = re.split(r"\s+#", raw.strip(), maxsplit=1)[0].strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            engine, name = engines.parse_spec(parts[-1])
+            if engine == "piper":
+                continue
+            female = len(parts) > 2 and parts[1].upper() == "F"
+            if engine == "kokoro":
+                if kokoro is None:
+                    self.skipped.append(f"{parts[-1]} (Kokoro not downloaded: python tools/download_voices.py --kokoro)")
+                elif not any(v.style == name for v in self.pools.get(parts[0], [])):
+                    self.pools.setdefault(parts[0], []).append(Voice(str(kokoro), None, accent=parts[0],
+                                                                     female=female, style=name))
+                continue
+            why = engines.available(engine)
+            if why:
+                self.skipped.append(f"{parts[-1]} ({why})")
+                continue
+            self.pools.setdefault(parts[0], []).append(Voice("", None, accent=parts[0], female=female, engine=engine,
+                                                             name=name))
+
     def _pick(self, key: str, accents: list[str], female_share: float, rate: tuple[float, float]) -> Voice | None:
         with self._lock:
             now = self.clock()
@@ -298,12 +354,12 @@ class VoiceBank:
                     next(((v, p) for p in PITCHES for v in same if (v.key, p) not in taken), None)
                 if choice is not None:
                     v, pitch = choice
-                    return Voice(v.model, v.speaker, r, v.accent, v.female, pitch, v.style)
+                    return replace(v, rate=r, pitch=pitch)
         for accent in accents + ["generic"]:  # every voice is talking: the old hashed pick
             pool = self.pools.get(accent) or []
             if pool:
                 v = pool[(h // 1000) % len(pool)]
-                return Voice(v.model, v.speaker, r, v.accent, v.female, style=v.style)
+                return replace(v, rate=r)
         return None
 
     @staticmethod

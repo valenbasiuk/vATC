@@ -17,6 +17,8 @@ class PushToTalk:
         self.sample_rate = sample_rate
         self.mic = mic  # sounddevice input device (index or name part); None = Windows default
         self.talking = threading.Event()  # set while held: controller-initiated calls and chatter wait
+        self.pressed_at: float | None = None  # time.monotonic() of the last press and release (blocked calls, G2)
+        self.released_at: float | None = None
         self._key_down = threading.Event()
         self._listener = None
         self._joy = None
@@ -72,9 +74,11 @@ class PushToTalk:
             while not self._down():
                 time.sleep(0.02)
             self.talking.set()
+            self.pressed_at = time.monotonic()
             recording.set()
             while self._down():
                 time.sleep(0.02)
             recording.clear()
+            self.released_at = time.monotonic()
             self.talking.clear()
         return np.concatenate(chunks)[:, 0] if chunks else np.zeros(0, dtype="float32")

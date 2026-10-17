@@ -10,6 +10,7 @@ Times are the wall clock (time.monotonic). The user is USER.
 
 from __future__ import annotations
 
+import threading
 import time
 
 from atc import phrase
@@ -20,6 +21,7 @@ _order = [0]  # ties on the clock (Windows ticks are ~15 ms): whoever joined fir
 LAST_DEPARTURE: dict[str, dict[str, tuple[float, str, str | None]]] = {}  # ICAO -> runway -> (airborne at, cs, type)
 LAST_LANDING: dict[str, dict[str, tuple[float, str, str | None]]] = {}  # ICAO -> runway -> (touchdown at, cs, type)
 STALE_S = 900.0  # somebody "ready" this long ago and still not gone: forgotten
+_LOCK = threading.RLock()  # our own traffic's thread and the radio loop both use these tables
 
 _HEAVY = ("A30", "A33", "A34", "A35", "A38", "B74", "B76", "B77", "B78", "MD11", "DC10", "IL96", "A124", "KC1",
           "KC4", "A400")
@@ -58,35 +60,41 @@ def _now(now: float | None) -> float:
 
 def ready(icao: str, callsign: str, runway: str, now: float | None = None) -> None:
     """Reported ready (or arrived at the holding point): joins the queue, keeping its place if already in it."""
-    q = QUEUE.setdefault(icao, {})
-    if callsign not in q or q[callsign][2] != runway:
-        _order[0] += 1
-        q[callsign] = (_now(now), _order[0], runway)
+    with _LOCK:
+        q = QUEUE.setdefault(icao, {})
+        if callsign not in q or q[callsign][2] != runway:
+            _order[0] += 1
+            q[callsign] = (_now(now), _order[0], runway)
 
 
 def gone(icao: str, callsign: str) -> None:
-    QUEUE.get(icao, {}).pop(callsign, None)
+    with _LOCK:
+        QUEUE.get(icao, {}).pop(callsign, None)
 
 
 def ahead(icao: str, callsign: str, runway: str, now: float | None = None) -> list[str]:
     """Who is before `callsign` in the queue for `runway` (in order)."""
     now = _now(now)
-    q = QUEUE.get(icao, {})
-    for cs in [c for c, (t, _, _) in q.items() if now - t > STALE_S]:
-        q.pop(cs, None)
-    mine = q.get(callsign)
-    if mine is None:
-        return []
-    return [c for c, (t, n, r) in sorted(q.items(), key=lambda kv: kv[1][:2]) if r == runway and (t, n) < mine[:2]]
+    with _LOCK:
+        q = QUEUE.get(icao, {})
+        for cs in [c for c, (t, _, _) in q.items() if now - t > STALE_S]:
+            q.pop(cs, None)
+        mine = q.get(callsign)
+        if mine is None:
+            return []
+        return [c for c, (t, n, r) in sorted(q.items(), key=lambda kv: kv[1][:2])
+                if r == runway and (t, n) < mine[:2]]
 
 
 def airborne(icao: str, runway: str, callsign: str, type_icao: str | None, now: float | None = None) -> None:
-    LAST_DEPARTURE.setdefault(icao, {})[runway] = (_now(now), callsign, type_icao)
-    gone(icao, callsign)
+    with _LOCK:
+        LAST_DEPARTURE.setdefault(icao, {})[runway] = (_now(now), callsign, type_icao)
+        gone(icao, callsign)
 
 
 def landed(icao: str, runway: str, callsign: str, type_icao: str | None, now: float | None = None) -> None:
-    LAST_LANDING.setdefault(icao, {})[runway] = (_now(now), callsign, type_icao)
+    with _LOCK:
+        LAST_LANDING.setdefault(icao, {})[runway] = (_now(now), callsign, type_icao)
 
 
 def gap_left(icao: str, runway: str, type_icao: str | None, now: float | None = None) -> float:
@@ -117,6 +125,7 @@ def minutes_words(seconds: float) -> str:
 
 
 def reset() -> None:
-    QUEUE.clear()
-    LAST_DEPARTURE.clear()
-    LAST_LANDING.clear()
+    with _LOCK:
+        QUEUE.clear()
+        LAST_DEPARTURE.clear()
+        LAST_LANDING.clear()

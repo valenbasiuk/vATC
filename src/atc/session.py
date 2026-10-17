@@ -100,11 +100,13 @@ class Session:
     # name), waiting for "affirm" / "negative"
     intersection: str | None = None
     intersection_offer: str | None = None
+    intersection_planned: str | None = None  # Ground taxied the pilot to this intersection (B6): Tower departs them there
     taxi_cleared: bool = False  # Ground gave the departure taxi clearance (the Ground -> Tower handoff needs it)
     # push delayed at a busy time (improvement plan B5): {"icao", "at" (latest time), "text" (the approval)}; the
     # watcher gives the approval when the apron gets quieter or at "at"
     push_waiting: dict | None = None
     following: bool = False  # VFR flight following / flight information service (following.py)
+    class_transition: str | None = None  # "bravo" / "charlie": a US Class B / C transition asked for (E1)
     runway_requests: dict[str, str] = field(default_factory=dict)  # "ICAO:departure" -> runway the pilot got
     holding: str | None = None  # fix the pilot is holding at (holding.py): no descent or vectors meanwhile
     holding_until: float | None = None  # watcher time of the expected further clearance
@@ -118,9 +120,16 @@ class Session:
     visual: str | None = None  # runway of a visual approach clearance (improvement plan C1): no vectors, no level
     visual_asked: bool = False  # "report field in sight" said
     deviating: bool = False  # weather deviation approved (D1), until "back on track"
+    ride_samples: list = field(default_factory=list)  # ride.py: (altitude ft, wind east kt, wind north kt) on the way
     low_alt_warned: bool = False  # "low altitude warning" said; again only after climbing back above the minimum
     low_alt_at: float | None = None  # when it was said: the radar waits a little before the next vector
     missed_approach: bool = False  # went around: the next call on the radar position is the re-check-in (C5)
+    # emergency.py (F1): {"airport": ICAO landing at, "souls", "fuel_min", "asked", "services"}
+    emergency_info: dict = field(default_factory=dict)
+    original_destination: str | None = None  # the filed destination before an emergency return / diversion
+    # busy controller (G3): a reply held back after "standby" {"text", "at", "mhz", "key"}, said by the watcher
+    deferred: dict | None = None
+    busy: object | None = field(default=None, repr=False)  # role -> is that frequency busy (set by main's watcher)
 
     def __post_init__(self) -> None:
         if self.telephony is not None:

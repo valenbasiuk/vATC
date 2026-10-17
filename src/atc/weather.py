@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -45,6 +46,20 @@ class Metar:
     clouds: list[Cloud] = field(default_factory=list)
     cavok: bool = False
     weather: list[str] = field(default_factory=list)  # METAR present weather groups: "-RA", "BR", "TSRA"
+    rvr: dict[str, tuple[int, str]] = field(default_factory=dict)  # runway -> (lowest value, "m" or "ft")
+
+
+_RVR = re.compile(r"^R(\d{2}[LRC]?)/[PM]?(\d{4})(?:V[PM]?\d{4})?(FT)?(?:/?[UDN])?$")
+
+
+def rvr_groups(raw: str) -> dict[str, tuple[int, str]]:
+    """'R13/0550N R31/P2000 R28L/2400FT' -> {'13': (550, 'm'), '31': (2000, 'm'), '28L': (2400, 'ft')}."""
+    out = {}
+    for tok in raw.split():
+        m = _RVR.match(tok)
+        if m:
+            out[m.group(1)] = (int(m.group(2)), "ft" if m.group(3) else "m")
+    return out
 
 
 _cache: dict[str, tuple[float, Metar | None]] = {}
@@ -136,6 +151,7 @@ def parse(d: dict) -> Metar:
         wind_kt=_num(d.get("wspd")), gust_kt=_num(d.get("wgst")),
         visibility_m=vis_m, temp_c=_num(d.get("temp")), dew_c=_num(d.get("dewp")), qnh_hpa=_num(d.get("altim")),
         clouds=clouds, cavok="CAVOK" in tokens or (d.get("cover") or "").upper() == "CAVOK", weather=weather,
+        rvr=rvr_groups(raw),
     )
 
 

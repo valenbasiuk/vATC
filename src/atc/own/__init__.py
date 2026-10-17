@@ -19,6 +19,9 @@ from atc.models import Traffic
 
 OWN: dict[str, Traffic] = {}  # callsign -> current state; the manager replaces the whole dict each update
 APRON: dict[str, int] = {}  # ICAO -> our departures between push and takeoff (the user's push waits if many)
+# ICAO -> the user's emergency is landing there (atc.emergency): our departures hold, no new arrivals, ours on final
+# close to the user's landing are sent around. Cleared when the user lands or cancels.
+EMERGENCY: dict[str, dict] = {}  # {"runway": ident or None}
 
 
 def publish(states: dict[str, Traffic]) -> None:

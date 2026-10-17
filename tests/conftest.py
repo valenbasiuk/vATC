@@ -22,6 +22,7 @@ def _no_runway_users_left_over(monkeypatch):
     monkeypatch.setattr("atc.runway.AI_FLOW", {})
     monkeypatch.setattr("atc.own.OWN", {})
     monkeypatch.setattr("atc.own.APRON", {})
+    monkeypatch.setattr("atc.own.EMERGENCY", {})
     monkeypatch.setattr("atc.atis.SIM_WX", {})
     from atc import departures
 

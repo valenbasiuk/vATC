@@ -123,7 +123,7 @@ def handle(session, airport: Airport, facility: Facility, own: OwnState, pilot_t
             bits.append("report downwind")
         from atc.flow import _backtrack_blocked, intersection_offer, needs_backtrack
 
-        if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end, the takeoff once lined up
+        if session.intersection is None and needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack first
             session.takeoff_waiting = (rwy.ident, ", ".join(bits))
             why = _backtrack_blocked(st, airport)
             session.backtrack = "pending" if why else "lining"

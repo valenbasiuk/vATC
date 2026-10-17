@@ -45,8 +45,9 @@ def issuing_role(airport: Airport) -> str:
 
 def _compact(text: str) -> str:
     """Normalized text with digit groups joined: 'one two zero decimal six' -> '1206', '120.600' -> '120600'.
-    A comma ends a number, so 'flight level 200, 120.6' stays '200 1206' (not '2001206')."""
-    return " ".join(join_digits(_normalize(part)) for part in re.split(r"[,;]", text))
+    A comma ends a number, so 'flight level 200, 120.6' stays '200 1206' (not '2001206'); letters glued to digits
+    come apart ('FL200' -> 'fl 200')."""
+    return " ".join(join_digits(re.sub(r"(?<=[a-z])(?=\d)", " ", _normalize(part))) for part in re.split(r"[,;]", text))
 
 
 # What speech-to-text writes for a spoken single digit in a SID name ("ATOVO four bravo" -> "Atovil for Bravo").
@@ -122,6 +123,12 @@ def is_clearance_request(pilot_text: str) -> bool:
     return "clearance" in t or ("ifr" in t and "request" in t)
 
 
+def is_ifr_request(pilot_text: str) -> bool:
+    """An IFR clearance request (a VFR one is the circuit's / the model's business)."""
+    t = _normalize(pilot_text)
+    return is_clearance_request(pilot_text) and "vfr" not in t
+
+
 def handle_clearance(
     session: Session, airport: Airport, facility: Facility, pilot_text: str, dest_name: str
 ) -> str | None:
@@ -155,6 +162,10 @@ def handle_clearance(
             return f"{cs}, I say again, {session.clearance_text}."
         compact = _compact(pilot_text)
         its = [i for i in items(session, airport, dest_name) if i.required]
+        from atc import readback
+
+        if readback.relaxed():  # learning mode (G1): the SID, the level and the squawk are what must come back
+            its = [i for i in its if i.key in ("SID", "level", "squawk")]
         if session.pending:  # after a correction only the corrected items need reading back
             its = [i for i in its if i.key in session.pending]
         got = [i for i in its if re.search(i.pattern, compact)]

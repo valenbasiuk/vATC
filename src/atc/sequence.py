@@ -74,7 +74,21 @@ def final_distance(airport: Airport, rwy: Runway, a: Traffic | OwnState) -> floa
         return None
     if heading_diff(a.heading_deg, rwy.heading_deg) > FINAL_TRACK_DEG:
         return None
+    if _nearer_a_parallel(airport, rwy, a, cross):
+        return None  # on the final of the parallel runway (KSFO 28L / 28R are 750 ft apart: both funnels see it)
     return max(dist, 0.0)
+
+
+def _nearer_a_parallel(airport: Airport, rwy: Runway, a, cross: float) -> bool:
+    num = rwy.ident.rstrip("LRC").lstrip("0")
+    if num == rwy.ident.lstrip("0"):  # no side letter: no parallels
+        return False
+    for p in airport.runways:
+        if p is rwy or p.ident == rwy.ident or p.heading_deg is None or p.ident.rstrip("LRC").lstrip("0") != num:
+            continue
+        if along_cross(airport, p, a.lat, a.lon)[1] < cross - 0.01:
+            return True
+    return False
 
 
 def on_runway(airport: Airport, rwy: Runway, a: Traffic | OwnState) -> bool:

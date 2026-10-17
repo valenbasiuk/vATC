@@ -13,6 +13,7 @@ REPL commands (fake sim only):  /state  /freq 118.1  /wind 270 8 1013  /air  /gr
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import re
 import threading
@@ -22,7 +23,7 @@ from pathlib import Path
 
 from atc import atis, enroute, factcheck, flow, following, ground, holding, info, monitor, pattern, phrase, runway, \
     sequence, variety, weather
-from atc.clearance import _freq, context_lines, deliver_after_standby, handle_clearance, handle_push
+from atc.clearance import _freq, context_lines, deliver_after_standby, handle_clearance, handle_push, is_ifr_request
 from atc.facility import callsign_for
 from atc.flightplan import load_simbrief
 from atc.flow import handle_flow
@@ -30,7 +31,7 @@ from atc.geo import distance_nm
 from atc.llm.client import make_llm
 from atc.llm.prompt import build_context, build_messages, build_system_prompt
 from atc.models import Airport
-from atc.readback import _normalize, check_readback, is_acknowledgement, readback_missing
+from atc.readback import _normalize, check_readback, is_acknowledgement, needs_correction, readback_missing
 from atc.runway import session_runway
 from atc.sequence import context_lines as sequence_context
 from atc.sequence import debug_line, guard, runway_status
@@ -63,6 +64,12 @@ def handle(
 ) -> str | None:
     """One pilot transmission -> one ATC reply (or None if nobody answers).
     With a `world`, the tuned frequency picks the airport (origin, destination, area control...)."""
+    if LANGUAGE[0] == "es":  # Spanish radio (improvement plan J2): the logic reads the English form
+        from atc.spanish import to_english
+
+        english = to_english(pilot_text)
+        print(f"[es -> {english}]")
+        pilot_text = english
     own = sim.own()
     world = world or World([airport])
     picked = world.pick(own)
@@ -130,12 +137,21 @@ def handle(
             reply = reply.rstrip(".") + f". {atis_note[:1].upper()}{atis_note[1:]}."
             if not atis_note.startswith(("confirm information", "verify you have")):
                 instruction = reply
+        if deferrable and not atis_note and not asked_again:  # a busy controller: "standby", the answer later (G3)
+            reply = instruction = _busy_standby(session, facility, own, cs, station, reply)
         history.append((pilot_text, instruction))
+        session.acked_atc = None  # a new transmission (even word for word the last one) is read back again
         session.last_role = session._key(facility.role)
         _say_timed(speaker, reply, stt_s, llm_s, _atc_voice(speaker, airport, facility.role))
         return reply
 
     traffic = sim.traffic(airport.lat, airport.lon, TRAFFIC_RADIUS_NM)
+    deferrable = False  # the reply answers a request a busy controller may put off with "standby"
+    pending = session.deferred
+    asked_again = pending is not None and pending["key"] == session._key(facility.role) and \
+        re.search(r"\b(?:request|requesting|ready)\b", norm_call) is not None
+    if asked_again:
+        session.deferred = None  # asked again before the controller came back: answered now
     reply = None
     if session.names_other_flight(pilot_text):  # misheard or wrong callsign: never answer it as ours
         reply = f"Station calling {station}, say again your callsign."
@@ -147,20 +163,36 @@ def handle(
         reply = flow.frequency_request(session, world, airport, facility, own, pilot_text)
     if reply is None:  # "request own navigation" / "full procedure" / "RNAV via DOKMU": no vectors
         reply = enroute.own_nav_request(session, world, airport, facility, own, pilot_text)
+        deferrable = reply is not None
     if reply is None:  # "request visual approach" / "field in sight": cleared visual approach (or report it in sight)
         reply = enroute.visual_request(session, world, airport, facility, own, pilot_text, traffic)
     if reply is None:  # "request deviation twenty degrees left due weather" / "back on track"
         reply = enroute.deviation_request(session, world, airport, facility, own, pilot_text)
+    if reply is None:  # "request side-step to runway 28R" on the approach to 28L (KSFO, JFK)
+        reply = flow.sidestep_request(session, world, airport, facility, own, pilot_text, traffic)
     if reply is None:  # "request runway 13" / "request ILS 13": approved (then used everywhere) or unable
         reply = flow.runway_request(session, world, airport, facility, own, pilot_text)
+        deferrable = reply is not None
     if reply is None:  # "request hold at DOTNE" / "request approach" out of the hold
         reply = holding.handle(session, world, airport, facility, own, pilot_text)
+        deferrable = reply is not None
     if reply is None:  # radio check, time check, "say QNH / wind"
         reply = info.handle(session, airport, facility, own, pilot_text)
+    if reply is None:  # "any ride reports at flight level three five zero?"
+        from atc import ride
+
+        reply = ride.handle(session, world, airport, facility, own, pilot_text)
     if reply is None:  # VFR "request flight following": squawk, then "radar contact, <position>" by the watcher
         reply = following.handle(session, world, airport, facility, own, pilot_text)
+        deferrable = reply is not None
     if reply is None and plan is not None:  # IFR clearance is code's job: issue, readback check, correction
         reply = handle_clearance(session, airport, facility, pilot_text, session.dest_name or plan.destination_name)
+    if reply is None and plan is None and own.on_ground and facility.role in ("clearance", "ground", "tower") \
+            and is_ifr_request(pilot_text):
+        # No plan loaded: the model once read out "flight planned route, squawk 1234" (invented). Code says it.
+        print("[no flight plan loaded: tick SimBrief in the launcher's Setup tab, or --simbrief simbrief_last.json]")
+        reply = f"{session.spoken_callsign}, {callsign_for(airport, facility)}, no flight plan received for you, " \
+                "check your filing and call back."
     if reply is None:
         def push_way() -> str | None:  # "tail left": where the tug leaves them, from the taxi map
             from atc.own.airport import user_push_words
@@ -176,6 +208,7 @@ def handle(
             return push_delay(own_traffic.APRON.get(airport.icao, 0))
 
         reply = handle_push(session, airport, facility, pilot_text, push_way, apron_busy)
+        deferrable = reply is not None and "no clearance" not in reply
     if reply is None:  # "on holding point runway 31" to Ground: "contact Tower ..."
         reply = flow.at_holding_point(session, airport, facility, own, pilot_text)
     if reply is None and _SAY_AGAIN.search(_normalize(pilot_text)) and history \
@@ -202,6 +235,7 @@ def handle(
         reply = f"{cs}, read back."
     elif reply is None and (
         rb.status == "correct" or (rb.status == "none" and is_acknowledgement(last_atc, pilot_text, words))
+        or (rb.status == "incomplete" and not needs_correction(rb))  # relaxed mode: only safety items corrected
     ):
         # Decided by code, no LLM call. Real controllers don't answer a correct readback or a "roger".
         session.acked_atc = last_atc
@@ -227,10 +261,12 @@ def handle(
         reply = traffic_reply(cs, own, sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
     if reply is None:
         reply = handle_taxi(session, airport, facility, own, pilot_text, world.taxi.get(airport.icao), traffic, rwy)
+        deferrable = reply is not None and "no clearance" not in reply
     if reply is None:
         reply = handle_flow(session, world, airport, facility, own, pilot_text, traffic, preferred)
     if reply is None:  # direct to / higher / descent / vectors, from the SimBrief route and the telemetry
         reply = enroute.handle_request(session, world, airport, facility, own, pilot_text)
+        deferrable = reply is not None
     if reply is not None:
         return say(reply)
 
@@ -287,6 +323,43 @@ def handle(
         print(f"[sequence guard replaced: {reply}]")
         reply = safe
     return say(reply, llm_s)
+
+
+BUSY_STANDBY = [True]  # improvement plan G3 (--no-busy-standby turns it off)
+LANGUAGE = ["en"]  # radio language (--language): "es" = calls and replies in Spanish (atc/spanish.py)
+BUSY_STANDBY_CHANCE = 0.4  # on a busy frequency, this share of requests get "standby" first
+DEFERRED_S = (4.0, 9.0)  # ... and the answer this many seconds later
+
+
+def _busy_standby(session: Session, facility, own, cs: str, station: str, reply: str) -> str:
+    """On a busy position (several exchanges lately or waiting: chatter.RadioBus.busy) the controller sometimes says
+    "standby" and gives the answer a few seconds later (the watcher says session.deferred). The reply as it was
+    otherwise."""
+    if not BUSY_STANDBY[0] or session.busy is None or session.deferred is not None or "standby" in reply:
+        return reply
+    if not session.busy(facility.role) or random.random() >= BUSY_STANDBY_CHANCE:
+        return reply
+    pre = f"{cs}, {station}, "
+    first = reply.startswith(pre)
+    body = reply[len(pre):] if first else reply.removeprefix(f"{cs}, ")
+    session.deferred = {"text": f"{cs}, {body}", "at": time.monotonic() + random.uniform(*DEFERRED_S),
+                        "mhz": own.com1_mhz, "key": session._key(facility.role)}
+    print("[busy frequency: standby, the answer follows]")
+    return f"{pre}standby." if first else f"{cs}, standby."
+
+
+def _deferred_due(session: Session, own, now: float) -> str | None:
+    """The answer held back after "standby", when its time has come (lost if the pilot left the frequency)."""
+    d = session.deferred
+    if d is None:
+        return None
+    if abs(own.com1_mhz - d["mhz"]) >= 0.005:
+        session.deferred = None
+        return None
+    if now < d["at"]:
+        return None
+    session.deferred = None
+    return d["text"]
 
 
 def _state_lines(session: Session) -> list[str]:
@@ -370,6 +443,7 @@ class _Callbacks:
         self.chatter_heard: set[tuple[str, str]] = set()  # (aircraft, position) already heard: first calls greet
         self.atis_play: dict | None = None  # the ATIS being broadcast: airport, sentences, position
         self.atis_clock_at = -1e9  # last time the ATIS of the airports in play was rebuilt
+        session.busy = lambda role: self.bus.busy(role, time.monotonic())  # a busy controller says "standby" (G3)
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="atc-watcher").start()
@@ -398,15 +472,24 @@ class _Callbacks:
             if hasattr(self.sim, "step"):  # fake sim: move the scripted AI traffic
                 self.sim.step(now)
             own = self.sim.own()
+            from atc import closures
+
+            closures.ZULU[0] = own.zulu_s  # "closed until 1800" runs on the sim's clock
             here = self.world.pick(own)
             if here is not None:
                 self.session.faa = here[0].faa  # FAA or ICAO callsign form for what the controller says now
+                # "first contact?" and the readback keys are about the position tuned now, not the airport of the
+                # pilot's last call (Rosario Tower tuned, the last call made to Aeroparque Tower)
+                self.session.where = here[0].icao
             near = self.world.nearest(own)
             if near is not None:  # keep the airport's surface wind current (ATIS, chatter, runway in use)
                 _surface_wind(own, near, self.session)
             flow.track(self.session, self.world, own, now)
-            text = flow.squawk_now_correct(self.session, own, self.world) or flow.repeat_or_clear(self.session, own, now) \
-                or flow.push_when_ready(self.session, self.world, own, now)
+            from atc import ride
+
+            ride.observe(self.session, own)  # the wind on the way up and down: ride reports (D2)
+            text = _deferred_due(self.session, own, now) or flow.squawk_now_correct(self.session, own, self.world) \
+                or flow.repeat_or_clear(self.session, own, now) or flow.push_when_ready(self.session, self.world, own, now)
             if text is None:  # "hold position, traffic on short final" earlier: the takeoff clearance, now free
                 text = flow.takeoff_when_clear(self.session, self.world, own,
                                                self.sim.traffic(own.lat, own.lon, TRAFFIC_RADIUS_NM))
@@ -466,6 +549,9 @@ class _Callbacks:
         if now - self.atis_clock_at < ATIS_CLOCK_S:
             return None
         self.atis_clock_at = now
+        from atc import closures
+
+        closures.refresh(self.world)  # closed taxiways out of the routes (and back in once a closure ends)
         picked = self.world.pick(own)
         plan = self.session.plan
         said = None
@@ -565,7 +651,9 @@ class _Callbacks:
             print(f"[AI runway use at {apt.icao}: {flow_now or 'none'}]")
         runway.AI_FLOW[apt.icao] = flow_now
         picked = self.world.pick(own)
-        role = picked[1].role if picked and picked[0].icao == apt.icao and picked[1].can_reply else None
+        # a controller's frequency, or the common frequency of a field without a Tower (our pilots' own calls, E3)
+        role = picked[1].role if picked and picked[0].icao == apt.icao and \
+            (picked[1].can_reply or picked[1].role == "advisory") else None
         ex = self.bus.next_due(now, role)
         if ex is None:
             return False
@@ -598,6 +686,7 @@ class _Callbacks:
             ex.on_said()
         print(self.prompt, end="", flush=True)
         self.bus.heard(now)
+        self.bus.mark_said(now, ex.role)
         return True
 
     def _transmit(self, text: str, pilot_side: str) -> None:
@@ -607,6 +696,7 @@ class _Callbacks:
             self.session.last_role = self.session._key(picked[1].role)
         print()
         self.history.append((pilot_side, text))
+        self.session.acked_atc = None
         _say_timed(self.speaker, text, None, 0.0,
                    _atc_voice(self.speaker, picked[0], picked[1].role) if picked else None)
         print(self.prompt, end="", flush=True)
@@ -743,7 +833,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--own-max", type=int, help="own traffic: at most this many aircraft at once (default: by airport)")
     p.add_argument("--status-file", help="write the live status (JSON) here every 1.5 s (the launcher's panel)")
     p.add_argument("--stdin", action="store_true", help="with --ptt: typed calls and /commands on stdin too")
+    p.add_argument("--readback", choices=("strict", "relaxed"), default=os.environ.get("ATC_READBACK", "strict"),
+                   help="strict: every readback item checked; relaxed (learning): only wrong safety items corrected")
+    p.add_argument("--language", choices=("en", "es"), default=os.environ.get("ATC_LANGUAGE", "en"),
+                   help="radio language: es = Spanish (experimental, improvement plan J2)")
+    p.add_argument("--no-busy-standby", action="store_true",
+                   help="a busy controller never says 'standby' before answering (improvement plan G3)")
     args = p.parse_args(argv)
+    from atc import readback
+
+    readback.MODE = args.readback
+    BUSY_STANDBY[0] = not args.no_busy_standby
 
     plan = load_simbrief(args.simbrief) if args.simbrief else None
     if plan is not None:
@@ -793,14 +893,21 @@ def main(argv: list[str] | None = None) -> None:
             sim.update(lat=stand[1][0], lon=stand[1][1])
             print(f"fake sim: parked on stand {stand[0]}")
 
+    LANGUAGE[0] = args.language
+    if args.voice and args.language != "en":  # a voice of that language in the same folder for the main voice
+        same = sorted(args.voice.parent.glob(f"{args.language}_*.onnx"))
+        if same and not args.voice.name.startswith(args.language):
+            args.voice = next((v for v in same if "_AR-" in v.name), same[0])
     if args.voice:
         from atc.audio.tts import PiperTTS
 
         from atc.voices import VoiceBank
 
-        bank = VoiceBank(args.voice.parent, args.voice)
+        bank = VoiceBank(args.voice.parent, args.voice, language=args.language)
         print(f"voices: {bank.describe()}" + ("" if len(bank.pools) > 2 else
                                                "  (more accents: python tools/download_voices.py)"))
+        if bank.skipped:  # voices/extra_voices.txt lines whose engine isn't installed
+            print("voices not used: " + "; ".join(bank.skipped))
         speaker = PiperTTS(args.voice, device=_device(args.audio_out), bank=bank)
         models = {v.model for pool in bank.pools.values() for v in pool}
         threading.Thread(target=speaker.preload, args=(sorted(models),), daemon=True, name="voices").start()
@@ -808,6 +915,11 @@ def main(argv: list[str] | None = None) -> None:
         from atc.audio.tts import PrintTTS
 
         speaker = PrintTTS()
+    if args.language == "es":
+        from atc.spanish import SpanishSpeaker
+
+        speaker = SpanishSpeaker(speaker)
+        print("radio language: Spanish (experimental: phrase tables in atc/spanish.py)")
 
     import atc.session as session_mod
 
@@ -1101,7 +1213,7 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
 
     airport = world.airports[0]
     print(f"loading speech model {args.stt_model} ...")
-    stt = FasterWhisperSTT(model_size=args.stt_model)
+    stt = FasterWhisperSTT(model_size=args.stt_model, language=args.language)
     ptt = PushToTalk(key=args.ptt_key, joy_button=args.ptt_joy, joy_device=args.ptt_joy_device,
                      mic=_device(args.mic))
     print(f"{airport.icao} {airport.name}. Hold {ptt.describe()} to talk. Ctrl+C to exit.")
@@ -1111,9 +1223,24 @@ def _run_ptt(args, world, sim, llm, speaker, history, session) -> None:
     _start_status(args, world, sim, cb)
     if getattr(args, "stdin", False):
         _start_stdin(world, sim, llm, speaker, history, session, cb, own_mgr)
+    from atc.audio.tts import blocked_by
+
     while True:
         audio = ptt.record_once()
         if len(audio) < 4800:  # under 0.3 s: a tap, not a call
+            continue
+        over = blocked_by(getattr(speaker, "air_log", []), getattr(speaker, "on_air", None), ptt.pressed_at,
+                          ptt.released_at)
+        if over == "pilot":  # two aircraft at once: the controller hears a squeal (improvement plan G2)
+            print("[blocked: you transmitted over another aircraft]")
+            with cb.lock:
+                picked = world.pick(sim.own())
+                if picked is not None and picked[1].can_reply:
+                    _say_timed(speaker, "Blocked, say again.", None, 0.0, _atc_voice(speaker, picked[0], picked[1].role))
+            cb.after_turn(replied=True)
+            continue
+        if over == "ATC":  # a controller who is transmitting hears nobody
+            print("[not heard: you transmitted while the controller was talking; say it again]")
             continue
         t0 = time.perf_counter()
         text = stt.transcribe(audio, hint=_stt_hint(world, session), hotwords=_hotwords(world, session))

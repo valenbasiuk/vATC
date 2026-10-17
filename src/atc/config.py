@@ -39,6 +39,9 @@ class Config:
     metar: str = "auto"  # auto (the sim's own weather is detected), on, off
     standby: float = 0.3
     atis_question: bool = True
+    readback: str = "strict"  # strict / relaxed (learning: only wrong safety items corrected)
+    busy_standby: bool = True  # a busy controller says "standby" and answers a few seconds later
+    language: str = "en"  # radio language: "es" = Spanish (experimental)
     # traffic
     own_traffic: bool = False
     own_factor: float = 1.0
@@ -80,6 +83,12 @@ class Config:
         if self.audio_out.strip():
             a += ["--audio-out", self.audio_out.strip()]
         a += ["--standby", f"{self.standby:g}"]
+        if self.readback == "relaxed":
+            a += ["--readback", "relaxed"]
+        if not self.busy_standby:
+            a.append("--no-busy-standby")
+        if self.language and self.language != "en":
+            a += ["--language", self.language]
         if self.own_traffic:
             a += ["--own-traffic", "--own-factor", f"{self.own_factor:g}"]
             if self.own_max:

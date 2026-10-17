@@ -76,6 +76,7 @@ def track(session, world, own: OwnState, now: float | None = None) -> None:
     user_type = session.plan.aircraft_type if session.plan else own.aircraft_type
     if not own.on_ground and close:
         session.departed_from, session.airborne_at, session.landed = near.icao, now, False
+        session.intersection_planned = None
         rwy = session_runway(near, own.wind_dir_deg, own.wind_kt, session, "departure")
         if rwy is not None:  # behind the user, the next departure waits its wake turbulence interval
             departures.airborne(near.icao, rwy.ident, departures.USER, user_type)
@@ -84,6 +85,9 @@ def track(session, world, own: OwnState, now: float | None = None) -> None:
     elif close and session.airborne_at is not None \
             and (session.departed_from != near.icao or now - session.airborne_at > 120):
         session.landed, session.landed_at = True, near.icao
+        from atc import emergency
+
+        emergency.landed(session, near.icao)
         rwy = session_runway(near, own.wind_dir_deg, own.wind_kt, session, "arrival")
         if rwy is not None:
             departures.landed(near.icao, rwy.ident, departures.USER, user_type)
@@ -171,7 +175,10 @@ def next_handoff(session, world, own: OwnState) -> tuple[str, str] | None:
         rwy = session_runway(dest, own.wind_dir_deg, own.wind_kt, session, "arrival")
         established = rwy is not None and final_distance(dest, rwy, own) is not None
         vectoring = session.missed_approach or (session.vectors_given and not session.intercept_given)
-        if not vectoring and (established or (d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000)):
+        # (just cleared to intercept: Tower once on the localizer, or 6 NM out at the latest)
+        close = d_dest <= ARRIVAL_TWR_NM and own.alt_agl_ft <= 5000 and \
+            (not session.intercept_given or session.visual is not None or d_dest <= 6.0)
+        if not vectoring and (established or close):
             return due(f"{dest.icao}:tower", _contact(dest, ("TWR",)))
     return None
 
@@ -500,6 +507,8 @@ def note_intersection(session, world, airport: Airport, rwy, own: OwnState, norm
     where it starts and the runway left."""
     if wants_intersection(norm) and not lined_up_at_end(airport, rwy, own):
         session.intersection = intersection_at(world, airport, rwy, own)
+    elif session.intersection_planned and "full length" not in norm and not lined_up_at_end(airport, rwy, own):
+        session.intersection = session.intersection_planned  # Ground taxied them to it (B6)
 
 
 def is_ready_call(norm: str, departure_runway: str) -> bool:
@@ -557,7 +566,11 @@ def runway_request(session, world, airport: Airport, facility: Facility, own: Ow
     rwy = find_runway(airport, ident)
     if rwy is None:
         return None if combined else reply("say again the runway")
-    if not request_ok(rwy, own.wind_dir_deg, own.wind_kt):
+    from atc.closures import runway_closed
+
+    if runway_closed(airport, rwy.ident):  # closed in the airport file (G4)
+        return None if combined else reply(f"unable, runway {phrase.runway(rwy.ident, faa)} closed")
+    if not request_ok(rwy, own.wind_dir_deg, own.wind_kt) and session.emergency is None:  # emergency: pilot's choice
         if combined:
             return None
         tail = -headwind_kt(own.wind_dir_deg, own.wind_kt, rwy.heading_deg)
@@ -577,6 +590,50 @@ def runway_request(session, world, airport: Airport, facility: Facility, own: Ow
 
         return reply(f"expect {_approach(airport, rwy)}")
     return reply(f"runway {phrase.runway(rwy.ident, faa)} approved")
+
+
+def parallels(airport: Airport, rwy) -> list:
+    """The other runways of a parallel set (28L for 28R): same number, another side letter."""
+    num = rwy.ident.rstrip("LRC").lstrip("0")
+    return [r for r in airport.runways if r is not rwy and r.ident != rwy.ident
+            and r.ident.rstrip("LRC").lstrip("0") == num and r.heading_deg is not None]
+
+
+_SIDESTEP = re.compile(r"\bside ?step\b(?: (?:to|for))?(?: runway)? (\d{1,2}) ?(left|right|center|l|r|c)\b")
+
+
+def sidestep_request(session, world, airport: Airport, facility: Facility, own: OwnState,
+                     pilot_text: str, traffic: list[Traffic]) -> str | None:
+    """Improvement plan C3: 'request side-step to runway two eight right' while on the approach to the parallel:
+    approved (the approach is flown as cleared, the landing is on the other runway); on Tower inside 6 NM with the
+    runway free, the landing clearance for it at once."""
+    from atc.readback import join_digits
+    from atc.runway import find_runway
+
+    if own.on_ground or facility.role not in ("approach", "tower"):
+        return None
+    m = _SIDESTEP.search(join_digits(_normalize(pilot_text)))
+    plan = session.plan
+    if m is None or plan is None or plan.destination != airport.icao:
+        return None
+    current = session_runway(airport, own.wind_dir_deg, own.wind_kt, session, "arrival")
+    want = find_runway(airport, m.group(1).zfill(2) + {"left": "L", "right": "R", "center": "C"}.get(
+        m.group(2), m.group(2).upper()))
+    cs = session.spoken_callsign
+    if current is None or want is None or want not in parallels(airport, current):
+        return f"{cs}, unable side-step."
+    from atc.closures import runway_closed
+
+    if runway_closed(airport, want.ident):
+        return f"{cs}, unable side-step, runway {phrase.runway(want.ident, airport.faa)} closed."
+    session.runway_requests[f"{airport.icao}:arrival"] = want.ident
+    rw = phrase.runway(want.ident, airport.faa)
+    if facility.role == "tower":
+        st = runway_status(airport, want, own, traffic)
+        if st.landing_blocked() is None and (st.own_final_nm is not None or session.intercept_given):
+            session.landing_cleared = True
+            return f"{cs}, side-step approved, runway {rw}, cleared to land."
+    return f"{cs}, side-step to runway {rw} approved."
 
 
 def at_holding_point(session, airport: Airport, facility: Facility, own: OwnState, pilot_text: str) -> str | None:
@@ -770,7 +827,7 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
         departures.ready(airport.icao, departures.USER, rwy.ident)  # its place in the departure queue
         clearance = None  # made when it is given: "immediate", "caution wake turbulence" depend on that moment
         note_intersection(session, world, airport, rwy, own, norm)
-        if needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack to the end first, then the takeoff
+        if session.intersection is None and needs_backtrack(airport, rwy, own, norm):  # SARC: backtrack first
             session.takeoff_waiting = (rwy.ident, clearance)
             why = _backtrack_blocked(st, airport)
             if why:
@@ -787,17 +844,19 @@ def handle_flow(session, world, airport: Airport, facility: Facility, own: OwnSt
 
     on_final = st.own_final_nm is not None
     if not own.on_ground and (on_final or (arriving and first)) and not is_transit(norm) and \
-            (first or "final" in norm or "landing" in norm or "land" in norm.split()):
+            (first or "final" in norm or "landing" in norm or "land" in norm.split() or "in sight" in norm):
         session.first_contact(facility.role)
         why = st.landing_blocked()
         if why:
             return f"{pre}, {why}, continue approach." if why.startswith("number") else \
                 f"{pre}, continue approach, {why}."
         if on_final:
-            from atc import departures
+            from atc import atis, departures
 
             caution = departures.wake_caution(airport.icao, rwy.ident, user_type(session, own), landing=True)
+            rvr = atis.rvr_words(airport, rwy.ident, own, session.surface_wind.get(airport.icao))
+            session.landing_cleared = True
             return f"{pre}, " + (f"{wind}, " if wind else "") + f"runway {rw}, cleared to land" + \
-                (f", {caution}." if caution else ".")
+                "".join(f", {x}" for x in (rvr, caution) if x) + "."
         return f"{pre}, continue approach runway {rw}, report final."
     return None

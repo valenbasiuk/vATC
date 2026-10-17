@@ -268,7 +268,8 @@ def reroute(net: TaxiNetwork, lat: float, lon: float, goals: set[int], avoid: li
     banned = {n for n, (la, lo) in net.nodes.items()
               if any(distance_nm(la, lo, a, b) * 1852.0 < REROUTE_AVOID_M for a, b in avoid)}
     sub = TaxiNetwork(nodes={n: xy for n, xy in net.nodes.items() if n not in banned},
-                      edges={n: [e for e in es if e[0] not in banned] for n, es in net.edges.items() if n not in banned})
+                      edges={n: [e for e in es if e[0] not in banned] for n, es in net.edges.items() if n not in banned},
+                      closed=set(net.closed))
     if not sub.edges:
         return None
     ok = [n for n in sub.edges if n not in banned]

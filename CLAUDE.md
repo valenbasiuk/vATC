@@ -4,21 +4,36 @@ Read this first, then **docs/NEXT_SESSION.md (the plan to continue with: work it
 docs/ROADMAP.md (status per item) and docs/OPEN_QUESTIONS.md.
 docs/PRE_IDE_CHECKLIST.md is the original setup checklist; most of it is done (see "Where we are").
 
-## Where we are (2026-10-15)
-- Block 4 (approach) was built on 2026-10-11 (visual approach, ATC holding when the sequence is full, MSA /
-  terrain.py with SAMR as the test field, missed approach + second approach, weather deviations); its tests were
-  finished and the roadmap brought up to date on 2026-10-15. 326 tests, 6/6 scenarios.
-- Voices: Kokoro-82M as a second engine (audio/tts.py KokoroEngine; voices.py puts it first for American / British /
-  generic + blends, after L2-ARCTIC for Spanish; `python tools/download_voices.py --kokoro`, `pip install
-  kokoro-onnx`; ATC_VOICE_ENGINE=piper turns it off, ATC_KOKORO_THREADS=4). tools/compare_voices.py compares
-  engines (WAVs + Whisper word error rate). Synthesis runs ahead of playback in a thread (no gaps).
-- Radio variety (src/atc/variety.py): AI pilots / controllers say things their own way when chatter is spoken
-  (values never change; the user's own replies untouched; tests switch it off in conftest).
-- Launcher: own traffic "Parked at start", "Lights", "FS Traffic AI" (atc/own/fstraffic.py parks
-  justflight-fstraffic-controlcentre outside Community while our traffic flies), "Voices: Kokoro / Piper only".
-- Next: Valen flies (docs/ROADMAP.md "WATCH IN THE SIM 2026-10-15" first), then block 5.
+## Where we are (2026-10-16)
+- Two lines of work met on 2026-10-16 (merge of GitHub 8dcabe0 with the local blocks 4-7): 388 tests, 6/6 scenarios.
+  Voices: Kokoro is GitHub's (Voice.style, tts.KokoroEngine, auto-first in the pools); Edge voices stay local
+  (audio/engines.py via voices/extra_voices.txt; a `kokoro:` line there uses the same Kokoro model). The radio
+  variety's courtesies ("bye bye", "good morning") are in spanish.py's table.
+- Improvement plan blocks 4-7 BUILT (fake sim + tests; 365 tests, 6/6 scenarios; details and the in-sim checks in
+  docs/ROADMAP.md "BUILT 2026-10-11" / "WATCH IN THE SIM 2026-10-11"): visual approach, ATC holds when the sequence
+  is full, sector MSA + grid MORA + low altitude warning (terrain.py), missed approach, weather deviations; readback
+  strict/relaxed (`--readback`), "Blocked, say again", busy "standby" (`--no-busy-standby`), emergencies
+  (emergency.py), LVP; own traffic turnarounds / downwind-base joins / circuits + CTAF / departures toward their
+  destination; side-step, Class Bravo transitions, ride reports (ride.py), closures (closures.py, YAML `closed:`),
+  intersection taxi; tools/voice_compare.py + Kokoro/Edge voices (audio/engines.py, voices/extra_voices.txt);
+  Spanish radio (`--language es`, spanish.py: the logic stays English).
+- Then a full code review (threads: AI reader lock, departure queue lock, ATIS letter lock; the launcher's error
+  callbacks) and a soak test of our traffic (3 simulated h each at SABE/SARC with real data): fixed a push deadlock,
+  starved departures (arrivals spaced by time at the threshold, a gap when a departure is coming), "line up and
+  wait" + the ICAO conditional for our departures, Tower's go-around order by time. Nothing stuck, no go-arounds.
+- 2026-10-15 (GitHub): block 4 tests finished; 10 s pause after a low altitude warning (monitor.LOW_ALT_PAUSE_S).
+  - Voices: Kokoro-82M as a second engine (audio/tts.py KokoroEngine; voices.py puts it first for American / British /
+    generic + blends, after L2-ARCTIC for Spanish; `python tools/download_voices.py --kokoro`, `pip install
+    kokoro-onnx`; ATC_VOICE_ENGINE=piper turns it off, ATC_KOKORO_THREADS=4). tools/compare_voices.py compares
+    engines (WAVs + Whisper word error rate). Synthesis runs ahead of playback in a thread (no gaps).
+  - Radio variety (src/atc/variety.py): AI pilots / controllers say things their own way when chatter is spoken
+    (values never change; the user's own replies untouched; tests switch it off in conftest).
+  - Launcher: own traffic "Parked at start", "Lights", "FS Traffic AI" (atc/own/fstraffic.py parks
+    justflight-fstraffic-controlcentre outside Community while our traffic flies), "Voices: Kokoro / Piper only".
+- Next: Valen flies with docs/NEXT_SESSION.md step 1 (ROADMAP "WATCH IN THE SIM 2026-10-11" and "2026-10-15");
+  nothing of blocks 4-7 has been in MSFS yet.
 
-## Before (2026-10-08, night)
+## 2026-10-08, night
 - Late: taxiway names the default scenery leaves out are filled from airports/osm/<ICAO>.json (taxi.fill_names,
   sim geometry kept; checked against the SBFI and SBGR AD charts of AISWEB), holding point search along the whole
   runway (SBFI 15 had no route), short crossing runs dropped from spoken routes. `/fly LAT LON ALT HDG [GS] [xN]`
@@ -113,6 +128,8 @@ Launcher (2026-10-08): double-click `vATC.bat` (or `pythonw -m atc.gui`): Setup 
 voice + test, PTT key / yoke button detection, mic / headset, LLM providers with key check, weather, own traffic) and
 Flight tab (transcript, typed calls, live panel). It runs `python -m atc` with the same options as by hand
 (`--status-file`, `--stdin` added). Settings: %APPDATA%\vATC\config.json (atc/config.py).
+Controller options (2026-10-11, also in the launcher): `--readback relaxed` (only wrong safety items corrected),
+`--no-busy-standby`, `--language es` (Spanish radio; VERIFY list in spanish.py). Closures: `closed:` in the YAML.
 Own traffic (departures + arrivals): add `--own-traffic [--own-factor 1.5] [--own-max N]`, sim AI traffic and
 parked aircraft OFF; REPL `/owndep [ARG B738]`, `/ownarr [ga]`. Env: ATC_OWN_MODELS=fsltl, ATC_OWN_TUG=off|<title>,
 ATC_OWN_PITCH_SIGN, ATC_OWN_TUG_YAW, ATC_OWN_LIGHTS=events|data|both. `tools/probe_inject.py` = the injection
@@ -178,10 +195,16 @@ src/atc/atis.py          ATIS text (ICAO/FAA) + letter state + "information X is
 src/atc/weather.py       METAR from aviationweather.gov (cached, background thread; ATC_METAR=off)
 src/atc/ground.py        taxi conflicts with moving AI: give way / hold position / continue taxi (watcher)
 src/atc/following.py     VFR flight following: squawk, "radar contact, <position>", termination near the field
-src/atc/holding.py       holds on request (published ones from the Navigraph db), EFC, leaving the hold
+src/atc/holding.py       holds on request (published ones from the Navigraph db), EFC, leaving the hold; ATC holds
+                         an arrival when 3+ are ahead (watcher_event, EAT), lets it go early when the line thins
+src/atc/terrain.py       minimum altitudes: sector MSA (YAML `msa` / Navigraph), floor along a vector, grid MORA
+src/atc/emergency.py     mayday / pan pan after the first reply: souls + fuel, runway of choice, divert, cancel
+src/atc/closures.py      closures by hand (airport YAML `closed:`, optional 'until HHMM' UTC): runways, taxiways
+src/atc/ride.py          ride reports by code (winds the user's aircraft met, METAR thunderstorms)
+src/atc/spanish.py       Spanish radio (--language es): pilot Spanish -> parser English, every transmission -> Spanish
 src/atc/info.py          radio check, time check, "say QNH / wind" answered by code
-src/atc/monitor.py       radar watch: level bust, 7700, traffic alerts, go-around; pilot mayday/pan pan/going around
-src/atc/terrain.py       minimum sector altitudes (MSA) near airports: floor for vectors/descents, low altitude warning
+src/atc/monitor.py       radar watch: level bust, 7700, traffic alerts, go-around + missed approach instructions,
+                         low altitude warning (below the MSA); pilot mayday/pan pan/going around
 src/atc/variety.py       natural variety in AI chatter (readback order, courtesies, "say again"), applied when spoken
 src/atc/pattern.py       VFR circuit at towered fields: join/straight-in, sequence, touch and go, turn-outs, zone exit
 src/atc/voices.py        voice bank: accent pools from voices/*.onnx; pilot voice by country, one per ATC position
@@ -219,19 +242,22 @@ src/atc/sim/             base.py (interface), fake.py (works), simconnect_source
                          ai_traffic.py (raw ctypes AI traffic, parsing tested, DLL calls UNTESTED)
 src/atc/airports/        gen.py (OurAirports CSV -> YAML), schema.py (load/save/validate)
 src/atc/llm/             prompt.py (where quality work happens), client.py (stub + OpenAI-compatible)
-src/atc/audio/           tts.py (Piper + Kokoro; voice bank, models cached + preloaded), stt.py, ptt.py (keyboard + joystick),
-                         joystick.py (WinMM buttons), radio_fx.py (band-pass, hiss, squelch tail)
+src/atc/audio/           tts.py (Piper + Kokoro; voice bank, models cached + preloaded; air log for "blocked"), stt.py
+                         (en / es), ptt.py (keyboard + joystick), joystick.py (WinMM buttons), radio_fx.py (band-pass,
+                         hiss, squelch tail), engines.py (Edge voices from voices/extra_voices.txt)
 tools/                   build_centers.py (world Centers -> data/centers.json), compare_voices.py (engines side by
                          side: WAVs, speed, Whisper WER), check_env.py, probe_own.py, probe_traffic.py, probe_voice.py, probe_stt.py, probe_ptt.py,
                          probe_simbrief.py (fetch OFP), compare_models.py (score LLM-owned turns),
                          download_voices.py (accent voices -> voices/), voice_samples.py (one WAV per voice, for
                          voices/blacklist.txt), list_models.py,
-                         fetch_osm_taxi.py (OSM taxiways -> airports/osm/), probe_taxi.py (MSFS taxi data, UNTESTED)
+                         fetch_osm_taxi.py (OSM taxiways -> airports/osm/), probe_taxi.py (MSFS taxi data, UNTESTED),
+                         voice_compare.py (Piper / Kokoro / Edge on the same lines, time to first audio)
+                         soak_own_traffic.py (hours of our traffic at SABE/SARC on a sim clock: stuck, go-arounds)
 scenarios/               6 scenarios (YAML; `silence_ok` / `expect_silence` for turns ATC shouldn't answer)
 airports/                SABE, SARC, SAAR, SAAV, KSFO (+ any the world writes when you spawn/tune there); osm/ maps
 airspace/                one per Argentine FIR: SAEF Ezeiza, SARR Resistencia, SACF Cordoba, SAMF Mendoza, SAVF
                          Comodoro Rivadavia (VATSIM Argentina manual); elsewhere the navdata FIRs (AIRAC 1801)
-tests/                   326 tests (test_whole_flight.py: SABE -> SAAR end to end, zero LLM calls); synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
+tests/                   388 tests (test_whole_flight.py: SABE -> SAAR end to end, zero LLM calls); synthetic fixtures (KTST, SATS, SADX, KNTW are made up); conftest keeps tests off
                          the LNM db, off the network (ATC_METAR=off) and from writing airport files (AUTO_GENERATE)
 ```
 

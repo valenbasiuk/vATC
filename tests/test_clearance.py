@@ -175,3 +175,21 @@ def test_simbrief_sid_and_star_names(tmp_path):
     path.write_text(json.dumps(ofp), encoding="utf-8")
     plan = load_simbrief(path)
     assert (plan.sid, plan.star, plan.star_transition) == ("ATOVO4B", "ASADO8Q", "ESKON")  # ICAO names from the route
+
+
+def test_no_plan_ifr_request_is_answered_by_code_not_invented(capsys):
+    # 2026-10-17: with no SimBrief plan the model read out "flight planned route, squawk one two three four"
+    sim = FakeSim(APT, callsign=PLAN.callsign)
+    sim.update(com1_mhz=129.3)
+    s = Session(callsign=PLAN.callsign, plan=None)
+    reply = handle(APT, sim, StubLLM(), _Quiet(), [], "Testa Delivery, Martinair 4133, requesting a fire cleanse to "
+                   "Rosario with Oscar", session=s)
+    assert "no flight plan received" in reply and "squawk" not in reply
+    assert "tick SimBrief" in capsys.readouterr().out
+
+
+def test_stt_fire_cleanse_reads_as_ifr_clearance():
+    from atc.clearance import is_ifr_request
+
+    assert is_ifr_request("requesting a fire cleanse to Rosario")
+    assert not is_ifr_request("request VFR clearance to the north")

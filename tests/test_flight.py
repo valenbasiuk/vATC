@@ -383,7 +383,8 @@ def test_fact_check_retries_then_says_say_again():
     s.first_contact("approach")
     s.where = "SATS"
     s.contacted.add("SATS:approach")
-    r = handle(ORIGIN, sim, Liar(), _Quiet(), [], "Testa Approach, Martinair 4133, how is the ride ahead?", session=s)
+    r = handle(ORIGIN, sim, Liar(), _Quiet(), [], "Testa Approach, Martinair 4133, are there any military areas "
+               "active ahead?", session=s)
     assert r == f"{CS}, say again." and Liar.calls == 2
 
 

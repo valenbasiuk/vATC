@@ -1,103 +1,73 @@
-# Next session plan (written 2026-10-06, end of the second session that day)
+# Next session plan (written 2026-10-11, after improvement plan blocks 4-7 and the full code review)
 
 > 2026-10-15: superseded in part. Current state: CLAUDE.md "Where we are"; what to check in MSFS first:
 > docs/ROADMAP.md "WATCH IN THE SIM 2026-10-15"; next build work: ROADMAP "NEXT" (block 5). Step 3.2 below (ATC-initiated
 > holding) is DONE (holding.sequence_event).
 
 Start here after a `/clear`: read CLAUDE.md (auto-loaded), then this file, then work the steps in order.
-State: 230 tests pass, 6/6 scenarios pass. Valen committed part of this session as "wait for takeoff" (46f765e);
-the rest (speed control, worldwide FIRs, voice samples, docs, ...) is uncommitted on disk (`git status`). Don't
-commit unless Valen asks.
+State: 365 tests pass, 6/6 scenarios pass. Everything since commit 1d26ed1 is uncommitted on disk (`git status`):
+Valen commits himself; don't commit unless he asks.
 
-## Done this session (all fake sim / sim db; nothing flown in MSFS yet)
-- VFR circuit wired in (`pattern.py`, tests/test_pattern.py): a whole SABE circuit in the REPL makes no LLM call.
-  REPL `/leg downwind|base|final [nm]|upwind|out` places you in the circuit.
-- Argentine FIR files (airspace/SARR, SACF, SAMF, SAVF): SARC departures -> "Resistencia Control". Tower with no
-  Departure on file hands over to Control itself. Worldwide Center from the Navigraph FIR boundaries
-  (`navdb.fir_at`), Center -> Center handoffs en route.
-- FAA "maintain five thousand" (no SID), runway crossings ("hold short of runway 28R" -> "cross runway 28R"),
-  runway thresholds from the sim's db (KSFO had none), `runway_configs` (KSFO departs 1L/1R, lands 28L/28R).
-- Approach/Departure chatter for AI; ICAO conditional line-up + takeoff clearance said once the runway is free;
-  speed control on the arrival (210 / 180 / 160 + traffic to follow); tools/voice_samples.py + voices/blacklist.txt.
-- Then (Valen couldn't fly): ground conflicts (`ground.py`), approach names with suffix ("ILS Zulu") + FAA order,
-  STAR from SimBrief ("descend via ..."), progressive taxi, VFR flight following (`following.py`).
-- Then: runway requests, "say again", radio/time checks + QNH/wind by code, holding on request, own navigation,
-  line up and wait behind a rolling departure, VFR "departure to the north", STT compound words, AI request cache,
-  whole-flight test, PILOT STATE context lines. Every feature's in-sim risk: docs/ROADMAP.md "WATCH IN THE SIM".
+## Done 2026-10-08 .. 10-11 (fake sim + tests only; nothing of it flown in MSFS yet)
+- Improvement plan blocks 1-7 (docs/IMPROVEMENT_PLAN.md): ATIS on a clock, the launcher, one runway controller,
+  approach work (visual, ATC holds, MSA, missed approach, deviations), controller behaviour (readback modes,
+  "blocked", busy "standby"), emergencies, LVP, own-traffic extras (turnarounds, joins, circuits, CTAF, toward the
+  destination), side-step, Class Bravo, ride reports, closures, intersection taxi, the voice comparison tool and
+  Spanish radio. What each does: docs/ROADMAP.md "BUILT 2026-10-11".
+- Code review of every module: race conditions fixed (the AI reader shared by two threads, the departure queue,
+  the ATIS letters), the launcher's error messages (crashed instead of showing), many small fixes.
+- Soak test of our traffic (tools/soak_own_traffic.py: the manager + the watcher on the sim clock, 3 simulated
+  hours at SABE and SARC with the real scenery and FSLTL/FS Traffic data): push deadlock, starved departures, burst arrivals,
+  go-arounds after a backtrack found and fixed; "line up and wait" for our departures added. Now: nothing stuck,
+  no go-arounds, the longest wait at the holding point ~200 s.
 
-## 1. Things only the real sim can tell (Valen flies, brings the terminal output)
-**Read docs/ROADMAP.md "WATCH IN THE SIM" first**: every feature built without the sim, what may go wrong in MSFS,
-and the constant to tune. When Valen brings output, match it against that list.
-Ask Valen to run (voice, PTT, no --airport, no --simbrief first, then with it):
-`python -m atc --sim --voice voices/en_US-libritts-high.onnx --ptt [--ptt-joy N --ptt-joy-device D]`
-- Carried over: spawn at a random airport (YAML written? Ground answers?), callsign from the sim's ATC settings,
-  ATIS on COM1/COM2, voices by ear, pushback detection with real AI, radar monitoring false alarms, `[timing]` STT.
-- New: a VFR circuit at SABE or SARC (Tower 118.85 / 118.3): join, downwind number, touch and go, "report downwind"
-  after it, full stop + vacate. Does the downwind report come out right with real STT?
-- New: KSFO taxi from a gate to 1L: "hold short of runway two eight right"; stop at the line and say "holding short
-  of runway two eight right": "cross runway ...". The position check is 0.25 NM from the crossing point: too tight
-  or too loose with real taxi data?
-- New: a departure that climbs out of an FIR (KSFO -> KLAX at FL300): Oakland Center 127.8, then the upper
-  frequency above FL245, then Los Angeles Center. These are AIRAC 1801 frequencies: do they match what MSFS shows?
-- New: speed control: does `AIRSPEED_INDICATED` come back in knots? `tools/probe_own.py` prints `ias_kt` now.
-- New: Approach chatter for real AI arrivals (on the Approach frequency): too chatty? Wrong runway?
-- New: taxi with real AI moving around: "give way ..." / "hold position" -> "continue taxi": false alarms? (the
-  prediction is straight lines for 30 s; real AI turns a lot on taxiways.) Progressive taxi: "request progressive
-  taxi" and listen for "turn left on ..." before each turn (too early / late?).
-- New: a SimBrief plan with a STAR into SABE or KSFO: does SimBrief fill `star_ident`, and is "descend via ..."
-  said by Center? A VFR flight with "request flight following" (US) / "flight information service" (Argentina).
-- `python tools/voice_samples.py` once, listen, put bad voices in voices/blacklist.txt (or `accent:Spanish` if the
-  Argentine controllers are too hard to understand).
-Fix what comes back before step 3.
-
-## 1b. First real-sim flight, 2026-10-07 (SABE, IFR): fixed
-- Startup SIM_ON_GROUND glitch read as a landing -> Ground gave "taxi to stand" (flow.track ignores slow/low
-  "airborne" reads, a landing needs an airborne phase seen first).
-- "On holding point ... runway 13" to Tower went to the LLM, which cleared takeoff with an AI lined up on 31:
-  now code-owned (flow.is_ready_call); Tower remembers the AI it put on a runway (sequence.RUNWAY_USERS from
-  tracker.runway_users) and prints a `[runway ..]` debug line per decision: if it happens again, read that line.
-- The runway in use follows the sim's AI (runway.AI_FLOW from tracker.ai_flow, majority of the last 20 min) up to
-  10 kt tailwind; the taxi clearance pins the pilot's runway (session.runway_requests).
-- MSFS AI taxis through the user in the holding-point queue (it ignores this ATC). Valen OK'd building OWN traffic
-  if viable. Step 0 = `python tools/probe_inject.py` (UNTESTED: create a non-ATC aircraft, AIReleaseControl +
-  freeze events, move it with SetDataOnSimObject at 20 Hz, remove it): PASSED in MSFS. Phase 1 (departures) is
-  built and tested in the fake sim: `--own-traffic`. Full plan, status and the in-sim watch list:
-  docs/OWN_TRAFFIC_PLAN.md. Next: Valen flies with it at SABE; then phase 2 (arrivals); voices track (V1 compare tool).
-
-## 1c. Improvement plan (2026-10-07/08): blocks 1-3 BUILT, blocks 4-7 in docs/ROADMAP.md "NEXT"
-Built (fake sim + tests): ATIS/weather (A1-A4), Tower crossings (B1), backtrack (B2), the launcher (I1-I3), the
-shared runway controller (B3-B5), Ground re-routing for our traffic. First: Valen flies with the launcher at SABE
-and SARC and brings the log (Flight tab) -> match it against docs/ROADMAP.md "WATCH IN THE SIM 2026-10-08".
-Then block 4 (approach: visual approach, ATC holding, MVA, missed approach, deviations).
-Notes: patch scripts written to files (not bash heredocs: they eat backslashes); the SABE/SARC traffic simulation
-harness used this session sets `departures.CLOCK` to the manager's clock (it runs faster than real time).
+## 1. Valen flies (brings the launcher's Flight-tab log or the terminal output)
+Read docs/ROADMAP.md "WATCH IN THE SIM 2026-10-11" first (then the 2026-10-08 lists): every feature built without
+the sim, what may go wrong in MSFS, and the constant to tune. Match what Valen brings against it.
+Suggested flights, each short:
+1. SABE IFR departure with own traffic (launcher, own traffic on): our departures' "line up and wait" and the
+   conditional behind a landing one; arrivals ~3-4 min apart; turnarounds after 45-90 min.
+2. An IFR arrival into SABE or SAEZ with own traffic busy: ATC hold when 3+ are ahead, the visual approach on
+   "field in sight", a go-around for the missed-approach handling.
+3. SAMR or Mendoza area (MSA): descents never below the sector MSA, the low altitude warning if he dives under it.
+4. A mayday on the climb out ("engine failure, request return").
+5. SARC VFR circuits with our Cessnas in the circuit; then a field without Tower for the CTAF calls.
+6. `--language es` once: station names and phrases (VERIFY list in src/atc/spanish.py).
+7. `python tools/voice_compare.py` (optional installs) -> pick voices into voices/extra_voices.txt.
+Carried over, still never seen in MSFS: STT + PTT timing (`[timing]` lines), radio filter by ear, ATIS on COM2,
+callsign from the sim's ATC settings, spawn at a random airport (YAML written?), AIRSPEED_INDICATED in knots,
+AMBIENT_VISIBILITY in metres, tools/probe_lights.py (which way lights our aircraft).
+Fix what comes back before adding anything new.
 
 ## 2. Questions for Valen (don't guess)
+- Spanish station names as Argentine controllers say them: Ground "Superficie"? Delivery "Autorizaciones"?
+  Departure "Salidas"? (src/atc/spanish.py STATIONS, marked VERIFY).
 - SARC approach: the sim's db gives APP 118.1 / 118.7 "Resistencia"; the VATSIM manual has SARE_APP 119.4
   "Resistencia Control". Which does MSFS show at SARC? Only then change SARC.yaml.
-- VFR reporting points (SABE river points, SARC): neither the sim db nor the Navigraph db has VFR reporting points
-  in Argentina; joins via a reporting point need them by hand (AIP VAC) in the airport YAML.
-- SABE circuit: the YAML says "ASSUMED: pattern 1000 ft AGL, left traffic". Real Aeroparque VFR procedures differ
-  (river reporting points); ask what he flies, or take it from the AIP VAC.
-- KSFO `runway_configs` (west plan 28s/1s, SE plan 19s/10s) were written from general knowledge: fine for him?
+- VFR reporting points (SABE river points, SARC): not in any database here; joins via a reporting point (and
+  improvement plan E2) need them by hand (AIP VAC) in the airport YAML.
+- SABE circuit: the YAML says "ASSUMED: pattern 1000 ft AGL, left traffic"; real Aeroparque VFR procedures differ.
+- With arrivals now spaced by time (3 min, 4 min when a departure is coming), is SABE busy enough? `--own-factor`.
 
-## 3. Next realism items (in this order unless Valen asks otherwise)
-Done: ground conflicts, approach names, STAR descent, progressive taxi, VFR flight following, holding on request,
-own navigation, runway requests. Left:
-1. Fix what the real sim shows (WATCH IN THE SIM list) before adding more.
-2. DONE 2026-10-11: ATC-initiated holding when the sequence is full (holding.sequence_event).
-3. VFR departures from Class B/C (US: "remain outside Class Bravo", departure frequency for VFR with following).
-4. Check "via <fix>" against the approach's transitions in the sim db (`transition` table) and say the IAF.
-5. Spanish phraseology + Spanish ATC voice (roadmap 20) once Valen wants it.
+## 3. Next items (after the flights, unless Valen asks otherwise)
+1. Fix what the real sim shows.
+2. docs/MAP_PLAN.md: the live map (VATGlasses-like) and world traffic beyond 40 NM (plan only so far).
+3. F2 radio failure (7600), E2 Argentine CTR entry/exit with reporting points (needs the points), named visuals.
+4. Norwegian radio (Valen practices it): the Spanish layer is the pattern (a table both ways + a speaker wrapper).
+5. Check "via <fix>" against the approach's transitions in the sim db (`transition` table) and say the IAF.
 
 ## Notes for whoever picks this up
 - Git Bash heredocs on this PC eat backslash-newline line continuations even with a quoted delimiter
   (`<<'EOF'`), and Python heredocs mangle `\b`/`\d` in replacement strings. Edit code that has either with the Edit
-  tool, or write a helper file and splice it in. (Four joined lines from earlier sessions were found and fixed.)
+  tool, or write the patch script to a file first and run it.
 - Git Bash turns arguments starting with "/" into paths (`/freq` -> `C:/Program Files/Git/freq`): set
-  `MSYS_NO_PATHCONV=1` when driving the REPL with "/" commands from bash, or drive it from a Python subprocess
-  that writes lines to its stdin with short sleeps (that also works for the watcher's timed calls).
+  `MSYS_NO_PATHCONV=1` when driving the REPL with "/" commands from bash, or drive it from a Python subprocess.
 - Tests run with `world.AUTO_GENERATE = False`, `ATC_METAR=off` and a fake `ATC_LNM_DB` (conftest): no navdata FIRs
   and no sim db in normal tests. tests/test_navdb.py opts back in and runs only where the databases exist.
-- `runway_in_use(..., use="departure"|"arrival")`: pass `use` at every new call site; without it the runway configs
-  are ignored (the plain best-headwind runway).
+- `runway_in_use(..., use="departure"|"arrival")`: pass `use` at every new call site.
+- Soak-testing our traffic: `python tools/soak_own_traffic.py [--airports SABE,SARC] [--hours 3] [--seed N]
+  [--fake-data] [--log]` (the manager + the watcher on a sim clock, the real scenery and FSLTL / FS Traffic data).
+  Run it after any change in src/atc/own/ or departures.py: it reports aircraft stuck > 15 min in a state, one
+  running into another on a runway, every go-around with who was on the runway, the longest holding-point waits.
+- Python deletes the `except ... as exc` name when the block ends: a lambda run later (tkinter `after`) must bind
+  it (`lambda msg=str(exc): ...`).

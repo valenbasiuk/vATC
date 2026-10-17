@@ -39,6 +39,7 @@ HOLD_DECIDE_NM = 30.0  # the decision is taken inside this, before the vectors s
 HOLD_MIN_NM = 12.0  # (not this close in: then it is sequenced on the final)
 ARRIVAL_SLOT_S = 150.0  # each arrival ahead: about this much delay
 HOLD_FIX_NM = 40.0  # a holding fix this close to the destination
+AHEAD_RANGE_NM = 25.0  # arrivals this close to the field (nearer than the user, inbound, low) count as ahead
 
 
 def published(ident: str, near: tuple[float, float]) -> tuple[float, str] | None:
@@ -187,7 +188,7 @@ def arrivals_ahead(dest: Airport, rwy, own: OwnState, traffic: list[Traffic]) ->
             continue
         d = distance_nm(t.lat, t.lon, dest.lat, dest.lon)
         inbound = heading_diff(t.heading_deg, bearing_deg(t.lat, t.lon, dest.lat, dest.lon)) < 90
-        if d < d_own and d <= 20.0 and t.alt_msl_ft - dest.elevation_ft <= 6000 and inbound:
+        if d < d_own and d <= AHEAD_RANGE_NM and t.alt_msl_ft - dest.elevation_ft <= 6000 and inbound:
             n += 1
     return n
 
@@ -237,10 +238,13 @@ def sequence_event(session, world, own: OwnState, dest_traffic: list[Traffic], n
     if not HOLD_MIN_NM < d <= HOLD_DECIDE_NM:
         return None
     rwy = _arrival_runway(dest, own, session)
-    if rwy is None:
+    from atc.closures import runway_closed
+
+    closed = rwy is None and bool(dest.runways) and all(runway_closed(dest, r.ident) for r in dest.runways)
+    if rwy is None and not closed:
         return None
-    n = arrivals_ahead(dest, rwy, own, dest_traffic)
-    if n < SEQUENCE_FULL:
+    n = 0 if closed else arrivals_ahead(dest, rwy, own, dest_traffic)
+    if n < SEQUENCE_FULL and not closed:
         return None
     found = hold_fix(session, dest, own)
     if found is None:
@@ -251,8 +255,9 @@ def sequence_event(session, world, own: OwnState, dest_traffic: list[Traffic], n
 
     floor = terrain.floor_at(dest, *pos)
     lvl = max(x for x in (session.cleared_level_ft or 0, floor or 0, min_alt or 0, 1000))
-    return give_hold(session, airport, own, name, pos, now, reason="sequence",
-                     minutes=max(5.0, n * ARRIVAL_SLOT_S / 60.0), level_ft=terrain.round_up(lvl))
+    return give_hold(session, airport, own, name, pos, now, reason="runway" if closed else "sequence",
+                     minutes=EFC_MIN if closed else max(5.0, n * ARRIVAL_SLOT_S / 60.0),
+                     level_ft=terrain.round_up(lvl))
 
 
 def watcher_event(session, world, own: OwnState, now: float, dest_traffic: list[Traffic] | None = None) -> str | None:
@@ -264,6 +269,19 @@ def watcher_event(session, world, own: OwnState, now: float, dest_traffic: list[
         return None
     picked = world.pick(own)
     if picked is None or not _radar(session, world, *picked):
+        return None
+    if session.hold_reason == "runway":  # held for a closed runway: out as soon as one is open, not before
+        from atc.enroute import _arrival_runway, _dest
+
+        dest = _dest(world, session)
+        if dest is not None and _arrival_runway(dest, own, session) is not None:
+            return release(session, world, own)
+        if now >= session.holding_until:  # still closed: a revised expected time
+            efc, wait_s = _efc(own)
+            session.holding_until = now + wait_s
+            words = phrase.digits(efc)
+            return f"{session.spoken_callsign}, " + (f"expect further clearance {words}" if picked[0].faa
+                                                     else f"revised expected approach time {words}") + "."
         return None
     if now >= session.holding_until:
         return release(session, world, own)

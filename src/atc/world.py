@@ -126,6 +126,9 @@ class World:
             return None
         self.airports.append(apt)
         self.taxi[apt.icao] = load_network(Path(self.airports_dir), apt.icao, self.use_navdb)
+        from atc.closures import refresh
+
+        refresh(self)
         return apt
 
     def _nearest_in_csv(self, own: OwnState, within_nm: float, have: set):
@@ -314,5 +317,9 @@ def load_world(primary: str | None, airports_dir: Path, plan=None, airspace_dir:
             a = load_airport(f)
             if a.frequencies:
                 spaces.append(a)
-    return World(airports, spaces, {a.icao: load_network(airports_dir, a.icao, use_navdb) for a in airports},
-                 airports_dir=Path(airports_dir), data_dir=Path(data_dir), use_navdb=use_navdb)
+    world = World(airports, spaces, {a.icao: load_network(airports_dir, a.icao, use_navdb) for a in airports},
+                  airports_dir=Path(airports_dir), data_dir=Path(data_dir), use_navdb=use_navdb)
+    from atc.closures import refresh
+
+    refresh(world)  # taxiways closed in the airport files stay out of the routes
+    return world

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 import time
 
 from atc.geo import distance_nm, heading_diff
@@ -21,9 +22,44 @@ AI_CACHE_S = 0.8  # one AI request per watcher tick (1 s) at most
 AI_MIN_REACH_M = int(30 * 1852)  # ask for at least 30 NM so the next callers' smaller radii hit the cache
 AI_RETRY_S = (5.0, 15.0, 30.0, 60.0)  # after a failed AI read: wait, then try again (never off for good)
 AI_RECONNECT_AFTER = 3  # failed reads in a row -> a new SimConnect connection for the reader
+PIPE_DISCONNECTED = 0xC00000B0  # STATUS_PIPE_DISCONNECTED: the sim closed our connection
+DISPATCH_FAILS_LOST = 50  # dispatch errors in a row (0.1 s apart) -> the link counts as lost
+RECONNECT_S = 5.0  # a lost own-aircraft link: try a new connection this often
+
+
+def _safe_simconnect(base):
+    """Python-SimConnect with a dispatch loop that survives a broken link. The package's own loop prints 'OS error'
+    and calls again with no pause when the pipe breaks: a hot loop that printed millions of lines, starved the radio
+    threads and froze the launcher (Valen, 2026-10-17, WinError 0xC00000B0). Here: one message, a pause between
+    tries, and `lost` set so SimConnectSource opens a new connection."""
+
+    class SafeSimConnect(base):
+        lost = False
+
+        def _run(self):
+            fails = 0
+            while self.quit == 0:
+                try:
+                    self.dll.CallDispatch(self.hSimConnect, self.my_dispatch_proc_rd, None)
+                    fails = 0
+                    time.sleep(0.002)
+                except OSError as err:
+                    fails += 1
+                    if fails == 1:
+                        print(f"[sim: SimConnect dispatch error ({err})]", file=sys.stderr)
+                    code = (getattr(err, "winerror", None) or 0) & 0xFFFFFFFF
+                    if code == PIPE_DISCONNECTED or fails >= DISPATCH_FAILS_LOST:
+                        self.lost = True
+                        print("[sim: the SimConnect link to the sim is lost; reconnecting]", file=sys.stderr)
+                        return
+                    time.sleep(0.1)
+
+    return SafeSimConnect
 
 
 class SimConnectSource:
+    _ai_lock = threading.Lock()  # (each instance makes its own; this one serves objects built without __init__)
+
     def __init__(self, callsign: str = "N123AB", library_path: str | None = None) -> None:
         try:
             from SimConnect import AircraftRequests, SimConnect  # type: ignore
@@ -31,7 +67,12 @@ class SimConnectSource:
             raise RuntimeError("Install the sim extra: pip install -e .[sim] (64-bit Python)") from exc
 
         # library_path lets you point at the MSFS 2024 SDK's SimConnect.dll if the bundled one fails.
-        self._sm = SimConnect(library_path=library_path) if library_path else SimConnect()
+        self._library_path = library_path
+        self._sm_class = _safe_simconnect(SimConnect)
+        self._requests_class = AircraftRequests
+        self._sm = self._sm_class(library_path=library_path) if library_path else self._sm_class()
+        self._reconnect_at = 0.0
+        self._last_own: OwnState | None = None  # the last good read, served while the link is down
         self._ai = None
         self._ai_failed = False  # kept for old callers/tests; a failed read now backs off instead (_ai_retry_at)
         self._ai_errors = 0  # failed AI reads in a row
@@ -39,6 +80,9 @@ class SimConnectSource:
         self._ai_cache: tuple[float, int, list] | None = None  # (time, radius_m, records) of the last AI read
         self._own_object_id: int | None = None
         self._own_record = None  # the user's aircraft as the AI list shows it: ATC ID, airline, flight number
+        # The watcher and our own traffic's reader thread both ask for traffic: one AI request at a time, or the two
+        # reads drain each other's records from the reader's single SimConnect queue (empty lists, exceptions)
+        self._ai_lock = threading.Lock()
         self._aq = AircraftRequests(self._sm, _time=500)
         self._callsign = callsign
 
@@ -50,7 +94,37 @@ class SimConnectSource:
         """Like _get but keeps 'unknown' as None, so a failed read is never spoken as 'calm'."""
         return self._aq.get(name)
 
+    def _link_ok(self) -> bool:
+        """False while the own-aircraft connection is down (a new one is tried every RECONNECT_S)."""
+        sm = getattr(self, "_sm", None)
+        if not getattr(sm, "lost", False):
+            return True
+        now = time.monotonic()
+        if now < getattr(self, "_reconnect_at", 0.0):
+            return False
+        self._reconnect_at = now + RECONNECT_S
+        try:
+            new = self._sm_class(library_path=self._library_path) if self._library_path else self._sm_class()
+        except Exception as exc:  # noqa: BLE001 - sim not answering yet: try again later
+            print(f"[sim: reconnect failed ({exc}); retrying in {RECONNECT_S:.0f} s]", file=sys.stderr)
+            return False
+        try:
+            sm.dll.Close(sm.hSimConnect)
+        except Exception:  # noqa: BLE001 - the old pipe is already gone
+            pass
+        self._sm = new
+        self._aq = self._requests_class(new, _time=500)
+        print("[sim: SimConnect link back]", file=sys.stderr)
+        return True
+
     def own(self) -> OwnState:
+        if not self._link_ok() and getattr(self, "_last_own", None) is not None:
+            return self._last_own  # stale but sane (a dead link reads every simvar as 0: lat/lon 0, COM1 0.000)
+        st = self._read_own()
+        self._last_own = st
+        return st
+
+    def _read_own(self) -> OwnState:
         # VERIFY: simvar names with an index (":1") and the units each one returns.
         # In particular PLANE_HEADING_DEGREES_TRUE may come back in radians.
         heading = self._get("PLANE_HEADING_DEGREES_TRUE")
@@ -98,10 +172,6 @@ class SimConnectSource:
         if self._ai_failed or time.monotonic() < getattr(self, "_ai_retry_at", 0.0):
             return own_traffic.merge([], center_lat, center_lon, radius_nm)
         try:
-            if self._ai is None:
-                from atc.sim.ai_traffic import AiTrafficReader
-
-                self._ai = AiTrafficReader()
             from atc.sim.ai_traffic import to_traffic
 
             own = self.own()
@@ -136,24 +206,31 @@ class SimConnectSource:
         self._ai_retry_at = time.monotonic() + wait
         self._ai_cache = None
         print(f"[traffic: AI read failed ({exc}), retrying in {wait:.0f} s]", file=sys.stderr)
-        if n % AI_RECONNECT_AFTER == 0 and self._ai is not None:
-            try:
-                self._ai.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._ai = None  # the next try opens a new connection
+        if n % AI_RECONNECT_AFTER == 0:
+            with self._ai_lock:  # (not while the other thread reads through it)
+                if self._ai is not None:
+                    try:
+                        self._ai.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._ai = None  # the next try opens a new connection
 
     def _ai_records(self, reach_m: int) -> list:
         """One SimConnect AI request serves every caller for AI_CACHE_S (the watcher asks up to six times per tick:
         takeoff, radar, ground, circuit, arrival, chatter), as long as the cached radius covers the new one."""
-        now = time.monotonic()
-        c = self._ai_cache
-        if c is not None and now - c[0] < AI_CACHE_S and c[1] >= reach_m:
-            return c[2]
-        reach = max(reach_m, AI_MIN_REACH_M)
-        recs = self._ai.read(reach)
-        self._ai_cache = (now, reach, recs)
-        return recs
+        with self._ai_lock:
+            now = time.monotonic()
+            c = self._ai_cache
+            if c is not None and now - c[0] < AI_CACHE_S and c[1] >= reach_m:
+                return c[2]
+            if self._ai is None:  # first read, or a new connection after failures
+                from atc.sim.ai_traffic import AiTrafficReader
+
+                self._ai = AiTrafficReader()
+            reach = max(reach_m, AI_MIN_REACH_M)
+            recs = self._ai.read(reach)
+            self._ai_cache = (time.monotonic(), reach, recs)
+            return recs
 
     def identity(self) -> dict | None:
         """The user's aircraft as the sim's ATC knows it (from the aircraft/flight settings): ATC ID (tail number),

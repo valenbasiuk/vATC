@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import math
 import re

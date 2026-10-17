@@ -32,6 +32,7 @@ class TaxiNetwork:
     holds: list[tuple[int, str]] = field(default_factory=list)  # (node id, type) runway/ILS/intermediate
     stands: dict[str, int] = field(default_factory=dict)  # stand ref -> nearest graph node
     source: str = ""  # where the map came from (shown at startup)
+    closed: set[str] = field(default_factory=set)  # taxiways closed now (closures.py): routes never use them
 
     def nearest(self, lat: float, lon: float, among=None) -> int | None:
         ids = among if among is not None else self.edges.keys()
@@ -240,6 +241,8 @@ def route_path(net: TaxiNetwork, start: int, goals: set[int]) -> tuple[list[str 
             nodes = nodes[::-1]
             return _clean_names(net, nodes) or list(names), nodes
         for to, m, ename in net.edges.get(node, ()):
+            if ename is not None and ename in net.closed:
+                continue  # closed by hand in the airport file (closures.py)
             change = ename is not None and name is not None and ename != name
             nxt_name = ename if ename is not None else name
             nxt_names = names if (ename is None or (names and names[-1] == ename)) else names + (ename,)
@@ -576,8 +579,13 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
     # in use changes while they taxi
     session.runway_requests[f"{airport.icao}:departure"] = rwy.ident
     session.taxi_cleared = True
-    via = departure_route(net, airport, rwy, own)
     rw = phrase.runway(rwy.ident, faa)
+    inter = _wanted_intersection(norm)
+    if inter is not None and net is not None:  # improvement plan B6: "request taxi for intersection Bravo departure"
+        reply = _intersection_taxi(session, airport, own, net, rwy, inter, cs, station, qnh, norm)
+        if reply is not None:
+            return reply
+    via = departure_route(net, airport, rwy, own)
     # runways on the way: hold short of the first one; the pilot calls holding short and Ground clears the crossing
     found = None if airport.taxi_routes.get(rwy.ident) else _departure_path(net, airport, rwy, own)
     session.crossings = crossings(net, airport, found[1], rwy, (own.wind_dir_deg, own.wind_kt)) if found else []
@@ -588,6 +596,69 @@ def handle_taxi(session, airport: Airport, facility, own: OwnState, pilot_text: 
     if faa:
         return f"{cs}{station}, runway {rw}, taxi" + (f" via {via}" if via else "") + f"{hold}{qnh}."
     return f"{cs}{station}, taxi to holding point runway {rw}" + (f" via {via}" if via else "") + f"{hold}{qnh}."
+
+
+_INTERSECTION_REQ = re.compile(r"\bintersection (?:departure )?(?:from |at |via )?(?:taxiway )?([a-z]+(?: \d)?)\b|"
+                               r"\b(?:departure|depart|takeoff|take off) from (?:taxiway |intersection )?"
+                               r"([a-z]+(?: \d)?)\b")
+_NOT_TAXIWAY = {"present", "position", "here", "the", "runway", "holding", "stand", "gate", "full", "length"}
+
+
+def _wanted_intersection(norm: str) -> str | None:
+    """'request taxi for intersection departure from Bravo' / 'departure from B1' -> 'B' / 'B1' (None if no
+    intersection is named)."""
+    m = _INTERSECTION_REQ.search(norm)
+    if not m:
+        return None
+    words = (m.group(1) or m.group(2) or "").split()
+    if not words or words[0] in _NOT_TAXIWAY:
+        return None
+    from atc.readback import _NATO_WORDS
+
+    head = words[0][0].upper() if words[0] in _NATO_WORDS else words[0].upper() if len(words[0]) <= 2 else None
+    if head is None:
+        return None
+    return head + (words[1] if len(words) > 1 else "")
+
+
+def intersection_hold(net: TaxiNetwork, airport: Airport, rwy: Runway, taxiway: str) -> int | None:
+    """The holding point of `rwy` on taxiway `taxiway` (a hold node that one of its segments reaches), None if the
+    map has none: the start of an intersection departure."""
+    length = (rwy.length_ft or 0.0) / 6076.1
+    best = None
+    for node, kind in net.holds:
+        along, cross = _signed(airport, rwy, *net.nodes[node])
+        if not (-0.1 <= along <= length and abs(cross) <= 0.15):
+            continue
+        near = {node} | {to for to, _, _ in net.edges.get(node, ())}
+        names = {n for a in near for _, _, n in net.edges.get(a, ()) if n}
+        if taxiway.upper() in names and (best is None or (kind != "runway", along) < best[0]):
+            best = ((kind != "runway", along), node)
+    return best[1] if best else None
+
+
+def _intersection_taxi(session, airport: Airport, own: OwnState, net: TaxiNetwork, rwy: Runway, taxiway: str,
+                       cs: str, station: str, qnh: str, norm: str) -> str | None:
+    """Ground's taxi clearance to an intersection departure: ICAO "taxi to holding point Bravo runway one three via
+    Alfa", FAA "runway one three at Bravo, taxi via Alfa". Tower then clears the takeoff from there (no backtrack,
+    the runway left said). None if that taxiway doesn't reach the runway on the map."""
+    hold = intersection_hold(net, airport, rwy, taxiway)
+    start = net.nearest(own.lat, own.lon)
+    found = route_path(net, start, {hold}) if hold is not None and start is not None else None
+    if found is None:
+        return None
+    faa = airport.faa
+    names, nodes = found
+    via = spoken_route([n for n in names if n != taxiway.upper()] or names)
+    spoken = spoken_route([taxiway.upper()])
+    session.intersection_planned = spoken
+    session.crossings = crossings(net, airport, nodes, rwy, (own.wind_dir_deg, own.wind_kt))
+    hold_short = f", hold short of runway {phrase.runway(session.crossings[0][0], faa)}" if session.crossings else ""
+    session.progressive = turn_calls(net, nodes) if _is_progressive(norm) else []
+    if faa:
+        return f"{cs}{station}, runway {phrase.runway(rwy.ident, faa)} at {spoken}, taxi via {via}{hold_short}{qnh}."
+    return f"{cs}{station}, taxi to holding point {spoken} runway {phrase.runway(rwy.ident, faa)} via {via}" \
+           f"{hold_short}{qnh}."
 
 
 CROSSING_NEAR_NM = 0.25  # holding short of a crossing: this close to where the route crosses that runway
@@ -601,6 +672,8 @@ def crossing_by_tower(airport: Airport, own: OwnState, surface_wind=None) -> boo
 
     if _freq(airport, "GND", "RMP") is None or _freq(airport, "TWR") is None:
         return False
+    if atis.low_visibility(airport, own, surface_wind):  # low-visibility procedures: always Tower (A5)
+        return True
     rule = (airport.crossings_by or "auto").lower()
     if rule in ("tower", "ground"):
         return rule == "tower"
